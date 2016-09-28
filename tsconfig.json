@@ -1,0 +1,15 @@
+{
+	"compilerOptions": {
+		"target": "es6",
+		"module": "commonjs",
+		"rootDir": "src",
+		"outDir": "build"
+	},
+	"exclude": [
+		"dist",
+		"build",
+		"node_modules",
+		"src/api-defs/client-app.d.ts",
+		"src/api-defs/startup-app.d.ts"
+	]
+}

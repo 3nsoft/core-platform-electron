@@ -1,0 +1,10 @@
+/node_modules/
+/dist/
+/dist-mock/
+/build/
+/.idea/
+/.vscode/
+/3NWeb/
+/3NWeb-mock/
+/npm-debug.log
+/test-data-*/

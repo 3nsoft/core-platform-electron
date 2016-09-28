@@ -1,0 +1,43 @@
+{
+  "name": "3nweb",
+  "productName": "3NWeb",
+  "version": "0.2.7",
+  "description": "3NWeb platform client for desktop environments",
+  "main": "build/main.js",
+  "scripts": {
+    "gulp": "./node_modules/.bin/gulp"
+  },
+  "devDependencies": {
+    "electron-packager": "^7.1.0",
+    "electron-prebuilt": "^1.2.5",
+    "gulp": "github:gulpjs/gulp#4.0",
+    "gulp-shell": "^0.5.2",
+    "gulp-typescript": "^2.13.6",
+    "jasmine": "^2.4.1",
+    "spectron": "^3.2.4"
+  },
+  "repository": {
+    "type": "git",
+    "url": " "
+  },
+  "keywords": [
+    "3NWeb",
+    "desktop",
+    "client",
+    "ASMail",
+    "MailerId",
+    "3NStorage"
+  ],
+  "author": {
+    "name": "3NSoft Inc.",
+    "url": "https://3nsoft.com",
+    "email": "hq@3nsoft.com"
+  },
+  "license": "GPL-3.0",
+  "dependencies": {
+    "ecma-nacl": "^2.4.0",
+    "xsp-files": "^0.7.0",
+    "jsuri": "^1.3.1",
+    "xhr2": "^0.1.3"
+  }
+}
