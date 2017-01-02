@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2016 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,17 +19,11 @@
  * both main and worker processes.
  */
 
-export interface RuntimeException {
-	runtimeException: boolean;
-	type?: string;
-}
+export type RuntimeException = web3n.RuntimeException;
 
-export function makeRuntimeException(flag: string, type?: string):
+export function makeRuntimeException(flag: string, type: string, cause?: any):
 		RuntimeException {
-	let e: RuntimeException = { runtimeException: true };
-	if (type) {
-		e.type = type;
-	}
+	let e: RuntimeException = { runtimeException: true, type, cause };
 	e[flag] = true;
 	return e;
 }

@@ -23,6 +23,7 @@ import { DeviceFS, FS } from './device-fs';
 import { stat, mkdir } from '../../lib-common/async-fs-node';
 import { utf8, base64urlSafe } from '../../lib-common/buffer-utils';
 import { FileException } from '../../lib-common/exceptions/file';
+import { errWithCause } from '../../lib-common/exceptions/error';
 
 function userIdToFolderName(userId: string): string {
 	return base64urlSafe.pack(utf8.pack(userId));
@@ -48,19 +49,21 @@ const appDir = (() => {
 })();
 
 async function appFS(): Promise<FS> {
-	await stat(appDir).catch((e: FileException) => {
+	await stat(appDir).catch(async (e: FileException) => {
 		if (!e.notFound) { throw e; }
-		return mkdir(appDir).catch((exc) => { throw new Error(
-			`Cannot create app folder on the disk due to: ${exc.message}`); });
+		await mkdir(appDir).catch((e: FileException) => {
+			if (e.alreadyExists) { return; }
+			throw errWithCause(e, `Cannot create app folder on the disk`);
+		});
 	});
 	return DeviceFS.make(appDir);
 }
 
 export async function getUsersOnDisk(): Promise<string[]> {
 	let rootFS = await appFS();
-	let entries = await rootFS.listFolder('');
+	let lst = await rootFS.listFolder('');
 	let users: string[] = [];
-	for (let entry of entries) {
+	for (let entry of lst) {
 		if (!entry.isFolder || (entry.name === UTIL_DIR)) { continue; }
 		try {
 			users.push(folderNameToUserId(entry.name));
@@ -70,11 +73,12 @@ export async function getUsersOnDisk(): Promise<string[]> {
 }
 
 export async function getUtilFS(): Promise<FS> {
-	return (await appFS()).makeSubRoot(UTIL_DIR);
+	return (await appFS()).writableSubRoot(UTIL_DIR);
 }
 
 export async function getInUserFS(user: string, path: string): Promise<FS> {
-	return (await appFS()).makeSubRoot(userIdToFolderName(user)+'/'+path);
+	return (await appFS()).writableSubRoot(
+		userIdToFolderName(user)+'/'+path);
 }
 
 export function makeStorageFS(user: string): Promise<FS> {

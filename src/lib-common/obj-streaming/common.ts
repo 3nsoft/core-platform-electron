@@ -27,8 +27,10 @@ import { ByteSink, ByteSource } from '../byte-streaming/common';
 export interface ObjSource {
 	/**
 	 * @return a version of an object, associated with this byte source.
+	 * Rerturned value can be undefined, if a byte source does not know its
+	 * object's version, yet.
 	 */
-	getObjVersion(): number;
+	getObjVersion(): number|undefined;
 	
 	/**
 	 * @return a promise, resolvable to a complete header byte array.
@@ -70,7 +72,7 @@ export interface ObjSink {
 	 * such is setup.
 	 * @return a promise, resolvable when write operation is done.
 	 */
-	writeHeader(bytes: Uint8Array, err?: any): Promise<void>;
+	writeHeader(bytes: Uint8Array|null, err?: any): Promise<void>;
 
 	segSink: ByteSink;
 }

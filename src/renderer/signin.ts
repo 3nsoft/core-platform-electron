@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,35 +19,42 @@ import { signIn } from './common';
 
 let names = signIn.reqNames;
 
-export function makeSignInOnUISide(core: Duplex): Web3N.Startup.SignInService {
+export function makeSignInOnUISide(core: Duplex): web3n.startup.SignInService {
 	let s = {
 		
 		getUsersOnDisk(): Promise<string[]> {
 			return core.makeRequest<string[]>(names.getUsersOnDisk, null);
 		},
 		
-		startMidProvisioning(address: string): Promise<boolean> {
-			return core.makeRequest<boolean>(names.startMidProv, address);
+		startLoginToRemoteStorage(address: string): Promise<boolean> {
+			return core.makeRequest<boolean>(
+				names.startLoginToRemoteStorage, address);
 		},
 		
-		completeMidProvisioning(pass: string,
+		async completeLoginAndLocalSetup(pass: string,
 				progressCB: (progress: number) => void): Promise<boolean> {
-			return core.makeRequest<boolean>(names.completeMidProv,
-				pass, progressCB);
+			let isSet = await core.makeRequest<boolean>(
+				names.completeLoginAndLocalSetup, pass, progressCB);
+			// when setup is done, duplex can be closed
+			if (isSet) {
+				core.close();
+				core = (undefined as any);
+			}
+			return isSet;
 		},
 		
-		async setupStorage(address: string, pass: string,
+		async useExistingStorage(address: string, pass: string,
 				progressCB: (progress: number) => void): Promise<boolean> {
 			let req: signIn.SetupStoreRequest = {
 				user: address,
 				pass: pass
 			};
-			let isSet = await core.makeRequest<boolean>(names.setupStorage,
-				req, progressCB);
+			let isSet = await core.makeRequest<boolean>(
+				names.useExistingStorage, req, progressCB);
 			// when setup is done, duplex can be closed
 			if (isSet) {
 				core.close();
-				core = null;
+				core = (undefined as any);
 			}
 			return isSet;
 		},

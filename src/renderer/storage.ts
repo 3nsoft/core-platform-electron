@@ -15,115 +15,352 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { Duplex } from '../lib-common/ipc/electron-ipc';
-import { storage, sinkProxy, sourceProxy, fsProxy } from './common';
-import { wrapFSImplementation } from '../lib-client/3nstorage/xsp-fs/common';
+import { storage, sinkProxy, sourceProxy, fsProxy, fileProxy, linkProxy,
+	FileDetails, FSDetails, SinkDetails, SourceDetails }
+	from './common';
 
-export function makeStorageOnUISide(core: Duplex): Web3N.Storage.Service {
+export { FSDetails, FileDetails }	from './common';
+
+type FS = web3n.storage.FS;
+type File = web3n.storage.File;
+type SymLink = web3n.storage.SymLink;
+type ByteSource = web3n.ByteSource;
+type ByteSink = web3n.ByteSink;
+
+const fsToIdMap = new WeakMap<FS, string>();
+const fileToIdMap = new WeakMap<File, string>();
+
+export interface Proxies {
+	fsToIdMap: WeakMap<FS, string>;
+	fileToIdMap: WeakMap<File, string>;
+	getFS: (info: FSDetails) => FS;
+	getFile: (info: FileDetails) => File;
+}
+
+export function makeStorageOnUISide(core: Duplex):
+		{ storage: web3n.storage.Service; proxies: Proxies; } {
 	let s = {
 		
-		async getAppFS(appDomain: string): Promise<Web3N.Storage.FS> {
+		async getAppLocalFS(appDomain: string): Promise<FS> {
 			let fsId = await core.makeRequest<string>(
-				storage.reqNames.openAppFS, appDomain);
-			return makeFSView(fsId, core, storage.reqNames.PREFIX);
+				storage.reqNames.openAppLocalFS, appDomain);
+			return makeFSView(
+				{ fsId, name: appDomain, versioned: true, writable: true },
+				core);
 		},
+		
+		async getAppSyncedFS(appDomain: string): Promise<FS> {
+			let fsId = await core.makeRequest<string>(
+				storage.reqNames.openAppSyncedFS, appDomain);
+			return makeFSView(
+				{ fsId, name: appDomain, versioned: true, writable: true },
+				core);
+		}
 		
 	};
 	Object.freeze(s);
-	return s;
-}
-
-function makeByteSrcView(srcId: string, seekable: boolean, core: Duplex,
-		prefix: string): Web3N.ByteSource {
-	function makeMethod(reqName: string) {
-		return function(...args: any[]) {
-			return core.makeRequest<any>(prefix + reqName, { srcId, args });
+	let proxies: Proxies = {
+		fsToIdMap,
+		fileToIdMap,
+		getFS(info: FSDetails): FS {
+			return makeFSView(info, core);
+		},
+		getFile(info: FileDetails): File {
+			return makeFileView(info, core);
 		}
 	};
-	let src: Web3N.ByteSource = {
-		read: makeMethod(sourceProxy.reqNames.read),
-		getSize: makeMethod(sourceProxy.reqNames.getSize)
+	Object.freeze(proxies);
+	return { storage: s, proxies };
+}
+
+function makeMethod(core: Duplex, id: string, reqName: string) {
+	return function(...args: any[]) {
+		return core.makeRequest<any>(reqName, { id, args });
+	}
+}
+
+function makeByteSrcView(info: SourceDetails, core: Duplex):
+		{ src: ByteSource; version: number } {
+	let reqNames = sourceProxy.reqNames;
+	let src: ByteSource = {
+		read: makeMethod(core, info.srcId, reqNames.read),
+		getSize: makeMethod(core, info.srcId, reqNames.getSize)
 	};
-	if (seekable) {
-		src.seek = makeMethod(sourceProxy.reqNames.seek);
-		src.getPosition = makeMethod(sourceProxy.reqNames.getPosition);
+	if (info.seekable) {
+		src.seek = makeMethod(core, info.srcId, reqNames.seek);
+		src.getPosition = makeMethod(core, info.srcId, reqNames.getPosition);
 	}
 	Object.freeze(src);
-	return src;
+	let version = info.version!;
+	return { src, version };
 }
 
-function makeByteSinkView(sinkId: string, seekable: boolean, core: Duplex,
-		prefix: string): Web3N.ByteSink {
-	function makeMethod(reqName: string) {
-		return function(...args: any[]) {
-			return core.makeRequest<any>(prefix + reqName, { sinkId, args });
-		}
+function makeByteSinkView(info: SinkDetails, core: Duplex):
+		{ sink: ByteSink; version: number; } {
+	let reqNames = sinkProxy.reqNames;
+	let sink: ByteSink = {
+		write: makeMethod(core, info.sinkId, reqNames.write),
+		getSize: makeMethod(core, info.sinkId, reqNames.getSize),
+		setSize: makeMethod(core, info.sinkId, reqNames.setSize),
 	};
-	let sink: Web3N.ByteSink = {
-		write: makeMethod(sinkProxy.reqNames.write),
-		getSize: makeMethod(sinkProxy.reqNames.getSize),
-		setSize: makeMethod(sinkProxy.reqNames.setSize),
-	};
-	if (seekable) {
-		sink.seek = makeMethod(sinkProxy.reqNames.seek);
-		sink.getPosition = makeMethod(sinkProxy.reqNames.getPosition);
+	if (info.seekable) {
+		sink.seek = makeMethod(core, info.sinkId, reqNames.seek);
+		sink.getPosition = makeMethod(core, info.sinkId, reqNames.getPosition);
 	}
 	Object.freeze(sink);
-	return sink;
+	let version = info.version!;
+	return { sink, version };
 }
 
-function makeFSView(fsId: string, core: Duplex, prefix: string):
-		Web3N.Storage.FS {
+function throwFileReadonlyExc(): never {
+	throw new Error(`File is readonly, and writing methods are not available`);
+}
 
-	function makeMethod(reqName: string) {
-		return function(...args: any[]) {
-			return core.makeRequest<any>(prefix + reqName, { fsId, args });
-		}
+function makeFileView(info: FileDetails, core: Duplex): File {
+	let reqNames = fileProxy.reqNames;
+	let id = info.fileId;
+	let file: File = {
+		versioned: info.versioned,
+		writable: info.writable,
+		name: info.name,
+		isNew: info.isNew,
+		async getByteSource(...args: any[]): Promise<ByteSource> {
+			let sInfo = await core.makeRequest<SourceDetails>(
+				reqNames.getByteSource, { id, args });
+			return makeByteSrcView(sInfo, core).src;
+		},
+		versionedGetByteSource: ((info.versioned) ?
+			async (...args: any[]):
+					Promise<{ src: ByteSource; version: number; }> => {
+				let sInfo = await core.makeRequest<SourceDetails>(
+					reqNames.versionedGetByteSource, { id, args });
+				return makeByteSrcView(sInfo, core);
+			} : (undefined as any)),
+		readBytes: makeMethod(core, id, reqNames.readBytes),
+		readTxt: makeMethod(core, id, reqNames.readTxt),
+		readJSON: makeMethod(core, id, reqNames.readJSON),
+		versionedReadBytes: ((info.versioned) ?
+			makeMethod(core, id, reqNames.versionedReadBytes): (undefined as any)),
+		versionedReadTxt: ((info.versioned) ?
+			makeMethod(core, id, reqNames.versionedReadTxt): (undefined as any)),
+		versionedReadJSON: ((info.versioned) ?
+			makeMethod(core, id, reqNames.versionedReadJSON): (undefined as any)),
+		stat: makeMethod(core, id, reqNames.stat),
+		getByteSink: ((info.writable) ?
+			async (...args: any[]): Promise<ByteSink> => {
+				let sInfo = await core.makeRequest<SinkDetails>(
+					reqNames.getByteSink, { id, args });
+				return makeByteSinkView(sInfo, core).sink;
+			} : throwFileReadonlyExc),
+		versionedGetByteSink: ((info.versioned) ? ((info.writable) ?
+			async (...args: any[]):
+					Promise<{ sink: ByteSink; version: number; }> => {
+				let sInfo = await core.makeRequest<SinkDetails>(
+					reqNames.versionedGetByteSink, { id, args });
+				return makeByteSinkView(sInfo, core);
+			} : throwFileReadonlyExc) : (undefined as any)),
+		writeBytes: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeBytes) : throwFileReadonlyExc),
+		writeTxt: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeTxt) : throwFileReadonlyExc),
+		writeJSON: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeJSON) : throwFileReadonlyExc),
+		versionedWriteBytes: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteBytes) :
+			throwFileReadonlyExc) : (undefined as any)),
+		versionedWriteTxt: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteTxt) :
+			throwFileReadonlyExc) : (undefined as any)),
+		versionedWriteJSON: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteJSON) :
+			throwFileReadonlyExc) : (undefined as any)),
+		copy: ((info.writable) ?
+			async (...args: any[]): Promise<void> => {
+				let srcFileId = fileToIdMap.get(args[0]);
+				args[0] = srcFileId;
+				await core.makeRequest<void>(reqNames.copy, { id, args });
+			} : throwFileReadonlyExc),
+		versionedCopy: ((info.writable) ?
+			(...args: any[]): Promise<number> => {
+				let srcFileId = fileToIdMap.get(args[0]);
+				args[0] = srcFileId;
+				return core.makeRequest<number>(
+					reqNames.versionedCopy, { id, args });
+			} : throwFileReadonlyExc),
+	};
+	Object.freeze(file);
+	fileToIdMap.set(file, id);
+	return file;
+}
+
+function makeLinkView(params: fsProxy.LinkDetails, core: Duplex): SymLink {
+	let linkId = params.linkId;
+	let readonly = params.readonly;
+	let link: SymLink;
+	if (params.isFile) {
+		link = {
+			isFile: true,
+			readonly,
+			target: async (): Promise<File> => {
+				let fInfo = await core.makeRequest<FileDetails>(
+					linkProxy.reqNames.target, { id: linkId, args: [] });
+				return makeFileView(fInfo, core);
+			}
+		};
+	} else if (params.isFolder) {
+		link = {
+			isFolder: true,
+			readonly,
+			target: async (): Promise<FS> => {
+				let fsInfo = await core.makeRequest<FSDetails>(
+					linkProxy.reqNames.target, { id: linkId, args: [] });
+				return makeFSView(fsInfo, core);
+
+			}
+		};
+	} else {
+		throw new Error('Link is neither to file, nor to folder');
 	}
+	Object.freeze(link);
+	return link;
+}
 
-	let fs: Web3N.Storage.FS = {
-		async makeSubRoot(...args: any[]): Promise<Web3N.Storage.FS> {
-			let subFSId = await core.makeRequest<string>(
-				prefix + fsProxy.reqNames.makeSubRoot, { fsId, args });
-			return makeFSView(subFSId, core, prefix);
+function throwFSReadonlyExc(): never {
+	throw new Error(`File system is readonly, and writing methods are not available`);
+}
+
+function makeFSView(info: FSDetails, core: Duplex): FS {
+	let id = info.fsId;
+	let reqNames = fsProxy.reqNames;
+	let fs: FS = {
+		versioned: info.versioned,
+		writable: info.writable,
+		name: info.name,
+		async readonlySubRoot(...args: any[]): Promise<FS> {
+			let subFSInfo = await core.makeRequest<FSDetails>(
+				reqNames.readonlySubRoot, { id, args });
+			return makeFSView(subFSInfo, core);
 		},
-		async getByteSink(...args: any[]): Promise<Web3N.ByteSink> {
-			let sInfo = await core.makeRequest<fsProxy.SinkDetails>(
-				prefix + fsProxy.reqNames.getByteSink, { fsId, args });
-			let pref = prefix + fsProxy.reqNames.PREFIX;
-			return makeByteSinkView(sInfo.sinkId, sInfo.seekable, core, pref);
+		async getByteSource(...args: any[]): Promise<ByteSource> {
+			let sInfo = await core.makeRequest<SourceDetails>(
+				reqNames.getByteSource, { id, args });
+			return makeByteSrcView(sInfo, core).src;
 		},
-		async getByteSource(...args: any[]): Promise<Web3N.ByteSource> {
-			let sInfo = await core.makeRequest<fsProxy.SourceDetails>(
-				prefix + fsProxy.reqNames.getByteSource, { fsId, args });
-			let pref = prefix + fsProxy.reqNames.PREFIX;
-			return makeByteSrcView(sInfo.srcId, sInfo.seekable, core, pref);
+		versionedGetByteSource: ((info.versioned) ?
+			async (...args: any[]):
+					Promise<{ src: ByteSource; version: number; }> => {
+				let sInfo = await core.makeRequest<SourceDetails>(
+					reqNames.versionedGetByteSource, { id, args });
+				return makeByteSrcView(sInfo, core);
+			} : (undefined as any)),
+		async readonlyFile(...args: any[]): Promise<File> {
+			let fInfo = await core.makeRequest<FileDetails>(
+				reqNames.readonlyFile, { id, args });
+			return makeFileView(fInfo, core);
 		},
-		async readonlyFile(path: string): Promise<Web3N.Files.File> {
-			// XXX add implementation
-			throw new Error('Method readonlyFile is not implemented, yet.');
-		},
-		async writableFile(path: string, create?: boolean, exclusive?: boolean):
-				Promise<Web3N.Files.File> {
-			// XXX add implementation
-			throw new Error('Method writableFile is not implemented, yet.');
-		},
-		writeJSONFile: makeMethod(fsProxy.reqNames.writeJSONFile),
-		readJSONFile: makeMethod(fsProxy.reqNames.readJSONFile),
-		writeTxtFile: makeMethod(fsProxy.reqNames.writeTxtFile),
-		readTxtFile: makeMethod(fsProxy.reqNames.readTxtFile),
-		writeBytes: makeMethod(fsProxy.reqNames.writeBytes),
-		readBytes: makeMethod(fsProxy.reqNames.readBytes),
-		listFolder: makeMethod(fsProxy.reqNames.listFolder),
-		makeFolder: makeMethod(fsProxy.reqNames.makeFolder),
-		deleteFolder: makeMethod(fsProxy.reqNames.deleteFolder),
-		deleteFile: makeMethod(fsProxy.reqNames.deleteFile),
-		move: makeMethod(fsProxy.reqNames.move),
-		checkFolderPresence: makeMethod(fsProxy.reqNames.checkFolderPresence),
-		checkFilePresence: makeMethod(fsProxy.reqNames.checkFilePresence),
-		statFile: makeMethod(fsProxy.reqNames.statFile),
-		close: makeMethod(fsProxy.reqNames.close)
+		readJSONFile: makeMethod(core, id, reqNames.readJSONFile),
+		readTxtFile: makeMethod(core, id, reqNames.readTxtFile),
+		readBytes: makeMethod(core, id, reqNames.readBytes),
+		listFolder: makeMethod(core, id, reqNames.listFolder),
+		versionedReadJSONFile: ((info.versioned) ? makeMethod(core, id,
+			reqNames.versionedReadJSONFile) : (undefined as any)),
+		versionedReadTxtFile: ((info.versioned) ? makeMethod(core, id,
+			reqNames.versionedReadTxtFile) : (undefined as any)),
+		versionedReadBytes: ((info.versioned) ? makeMethod(core, id,
+			reqNames.versionedReadBytes) : (undefined as any)),
+		versionedListFolder: ((info.versioned) ? makeMethod(core, id,
+			reqNames.versionedListFolder) : (undefined as any)),
+		checkFolderPresence: makeMethod(
+			core, id, reqNames.checkFolderPresence),
+		checkFilePresence: makeMethod(
+			core, id, reqNames.checkFilePresence),
+		statFile: makeMethod(core, id, reqNames.statFile),
+		readLink: ((info.versioned) ?
+			async (...args: any[]): Promise<SymLink> => {
+				let linkInfo = await core.makeRequest<fsProxy.LinkDetails>(
+					reqNames.readLink, { id, args });
+				return makeLinkView(linkInfo, core);
+			} : (undefined as any)),
+		close: makeMethod(core, id, reqNames.close),
+		writableSubRoot: ((info.versioned) ?
+			async (...args: any[]): Promise<FS> => {
+				let subFSInfo = await core.makeRequest<FSDetails>(
+					reqNames.writableSubRoot, { id, args });
+				return makeFSView(subFSInfo, core);
+			} : throwFSReadonlyExc),
+		getByteSink: ((info.writable) ?
+			async (...args: any[]): Promise<ByteSink> => {
+				let sInfo = await core.makeRequest<SinkDetails>(
+					reqNames.getByteSink, { id, args });
+				return makeByteSinkView(sInfo, core).sink;
+			} : throwFSReadonlyExc),
+		versionedGetByteSink: ((info.versioned) ? ((info.writable) ?
+			async (...args: any[]):
+					Promise<{ sink: ByteSink; version: number; }> => {
+				let sInfo = await core.makeRequest<SinkDetails>(
+					reqNames.versionedGetByteSink, { id, args });
+				return makeByteSinkView(sInfo, core);
+			} : throwFSReadonlyExc) : (undefined as any)),
+		writeBytes: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeBytes) : throwFSReadonlyExc),
+		writeTxtFile: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeTxtFile) : throwFSReadonlyExc),
+		writeJSONFile: ((info.writable) ?
+			makeMethod(core, id, reqNames.writeJSONFile) : throwFSReadonlyExc),
+		versionedWriteBytes: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteBytes) : throwFSReadonlyExc) : (undefined as any)),
+		versionedWriteTxtFile: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteTxtFile) : throwFSReadonlyExc) : (undefined as any)),
+		versionedWriteJSONFile: ((info.versioned) ? ((info.writable) ?
+			makeMethod(core, id, reqNames.versionedWriteJSONFile) : throwFSReadonlyExc) : (undefined as any)),
+		makeFolder: ((info.writable) ?
+			makeMethod(core, id, reqNames.makeFolder) : throwFSReadonlyExc),
+		deleteFile: ((info.writable) ?
+			makeMethod(core, id, reqNames.deleteFile) : throwFSReadonlyExc),
+		deleteLink: ((info.writable) ?
+			makeMethod(core, id, reqNames.deleteLink) : throwFSReadonlyExc),
+		deleteFolder: ((info.writable) ?
+			makeMethod(core, id, reqNames.deleteFolder) : throwFSReadonlyExc),
+		move: ((info.writable) ?
+			makeMethod(core, id, reqNames.move) : throwFSReadonlyExc),
+		link: ((info.versioned) ? ((info.writable) ?
+			async (path: string, target: File|FS) => {
+				let targetIsFolder = !!(<FS> target).listFolder;
+				let targetId = (targetIsFolder ?
+					fsToIdMap.get(<FS> target) :
+					fileToIdMap.get(<File> target));
+				if (!targetId) { throw new TypeError('Target object is not known'); }
+				let req: fsProxy.RequestToMakeLink = {
+					fsId: id, targetIsFolder, targetId, path };
+				return core.makeRequest<any>(reqNames.link, req);
+			} : throwFSReadonlyExc) : (undefined as any)),
+		writableFile: ((info.writable) ?
+			async (...args: any[]): Promise<File> => {
+				let fInfo = await core.makeRequest<FileDetails>(
+					reqNames.writableFile, { id, args });
+				return makeFileView(fInfo, core);
+			} : throwFSReadonlyExc),
+		copyFile: ((info.writable) ?
+			makeMethod(core, id, reqNames.copyFile) : throwFSReadonlyExc),
+		copyFolder: ((info.writable) ?
+			makeMethod(core, id, reqNames.copyFolder) : throwFSReadonlyExc),
+		saveFile: ((info.writable) ?
+			async (...args: any[]): Promise<void> => {
+				let fileId = fileToIdMap.get(args[0]);
+				args[0] = fileId;
+				await core.makeRequest<void>(
+					reqNames.saveFile, { id, args });
+			} : throwFSReadonlyExc),
+		saveFolder: ((info.writable) ?
+			async (...args: any[]): Promise<void> => {
+				let fsId = fsToIdMap.get(args[0]);
+				args[0] = fsId;
+				await core.makeRequest<void>(
+					reqNames.saveFolder, { id, args });
+			} : throwFSReadonlyExc)
 	};
 	Object.freeze(fs);
+	fsToIdMap.set(fs, id);
 	return fs;
 }
 

@@ -38,7 +38,7 @@ export function syncWrapObjSink(sink: ObjSink,
 		writingProc = new SingleProc<any>()): ObjSink {
 	let synced: ObjSink = {
 		setObjVersion: bind(sink, sink.setObjVersion),
-		writeHeader: (bytes: Uint8Array, err?: any): Promise<void> => {
+		writeHeader: (bytes: Uint8Array|null, err?: any): Promise<void> => {
 			return writingProc.startOrChain(() => {
 				return sink.writeHeader(bytes, err);
 			});

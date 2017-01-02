@@ -32,26 +32,34 @@ export function itAsync(expectation: string,
 
 export function xitAsync(expectation: string,
 		assertion?: (done?: DoneFn) => Promise<void>, timeout?: number): void {
-	xit(expectation, async (done) => {
-		try {
-			await assertion(done);
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
-	}, timeout);
+	if (assertion) {
+		xit(expectation, async (done) => {
+			try {
+				await assertion(done);
+				done();
+			} catch (err) {
+				done.fail(err);
+			}
+		}, timeout);
+	} else {
+		xit(expectation);
+	}
 }
 
 export function fitAsync(expectation: string,
 		assertion?: (done?: DoneFn) => Promise<void>, timeout?: number): void {
-	fit(expectation, async (done) => {
-		try {
-			await assertion(done);
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
-	}, timeout);
+	if (assertion) {
+		fit(expectation, async (done) => {
+			try {
+				await assertion(done);
+				done();
+			} catch (err) {
+				done.fail(err);
+			}
+		}, timeout);
+	} else {
+		fit(expectation);
+	}
 }
 
 export function beforeAllAsync(action: () => Promise<void>, timeout?: number) {

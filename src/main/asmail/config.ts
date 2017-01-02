@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2016 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -201,7 +201,9 @@ class IntroKeys {
 		} else {
 			let signer = await this.getSigner();
 			this.keyring.updateIntroKey(signer);
-			await this.putCertsOnServer(this.keyring.getIntroKeyCerts());
+			let certs = this.keyring.getIntroKeyCerts();
+			if (!certs) { throw new Error(`Expectation fail: intro key certs must be present after an update`); }
+			await this.putCertsOnServer(certs);
 		}
 	}
 }
@@ -211,33 +213,27 @@ class IntroKeys {
  */
 export class ConfigOfASMailServer {
 	
-	private serviceConf: MailConfigurator = null;
-	private anonInvites: Invites;
-	private introKeys: IntroKeys;
+	private serviceConf: MailConfigurator;
+	private anonInvites: Invites = (undefined as any);
+	private introKeys: IntroKeys = (undefined as any);
+	private fs: FS = (undefined as any);
 	
 	constructor(address: string,
-			publishedKeys: PublishedKeys,
-			private fs: FS,
 			private getSigner: IGetSigner) {
-		if (!this.fs) { throw new Error("No file system given."); }
-		this.serviceConf = new MailConfigurator(
-			address, this.getSigner);
-		this.anonInvites = new Invites(this.fs, ANON_SENDER_INVITES_FNAME,
-			api.p.anonSenderInvites.URL_END, this.serviceConf);
-		this.introKeys = new IntroKeys(this.fs, publishedKeys, this.getSigner,
-			this.serviceConf);
+		this.serviceConf = new MailConfigurator(address, this.getSigner);
 		Object.seal(this);
 	}
 	
-	async init(): Promise<void> {
+	async init(fs: FS, publishedKeys: PublishedKeys): Promise<void> {
 		try {
-			try {
-				let serviceURL = await getASMailServiceFor(this.serviceConf.userId);
-				await this.serviceConf.setConfigUrl(serviceURL);
-			} catch (exc) {
-				if ((<ConnectException> exc).type !== ConnectExceptionType) {
-					throw exc; }
-			}
+			this.fs = fs;
+			this.anonInvites = new Invites(this.fs, ANON_SENDER_INVITES_FNAME,
+				api.p.anonSenderInvites.URL_END, this.serviceConf);
+			this.introKeys = new IntroKeys(this.fs, publishedKeys, this.getSigner,
+				this.serviceConf);
+			this.serviceConf.setConfigUrl(() => {
+				return getASMailServiceFor(this.serviceConf.userId);
+			});
 			await Promise.all([
 				this.anonInvites.loadFromFileAndSyncServiceSetting(),
 				this.introKeys.checkOrSetPublishedKeyCerts(),
@@ -247,8 +243,10 @@ export class ConfigOfASMailServer {
 		}
 	}
 	
-	getAnonSenderInviteFor(address: string): string {
-		return this.anonInvites.getFor(address);
+	anonSenderInviteGetter(): (address: string) => string {
+		return (address: string) => {
+			return this.anonInvites.getFor(address);
+		}
 	}
 	
 }

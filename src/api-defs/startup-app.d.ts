@@ -17,6 +17,6 @@
 /// <reference path="./startup.d.ts" />
 
 declare var w3n: {
-	signUp: Web3N.Startup.SignUpService;
-	signIn: Web3N.Startup.SignInService;
+	signUp: web3n.startup.SignUpService;
+	signIn: web3n.startup.SignInService;
 }

@@ -19,9 +19,10 @@ import { commToRenderer } from '../lib-common/ipc/electron-ipc';
 import { channels } from '../renderer/common';
 import { SignUp } from './signup';
 import { makeManager, IdManager } from './id-manager';
-import { Storage } from './storage/index';
+import { Storages } from './storage/index';
 import { SignIn } from './sign-in';
 import { ASMail } from './asmail/index';
+import { Device } from './device';
 import { IGetSigner, IGenerateCrypt } from '../renderer/common';
 import { bind } from '../lib-common/binding';
 import { assert } from '../lib-common/assert';
@@ -37,10 +38,11 @@ export class Core {
 	
 	private idManager: IdManager;
 	private cryptor = makeCryptor();
-	private storage: Storage = null;
-	private asmail: ASMail = null;
-	private signUp: SignUp = null;
-	private signIn: SignIn = null;
+	private storages: Storages = (undefined as any);
+	private asmail: ASMail = (undefined as any);
+	private device: Device = (undefined as any);
+	private signUp: SignUp = (undefined as any);
+	private signIn: SignIn = (undefined as any);
 	private isInitialized = false;
 	private isClosed = false;
 	
@@ -53,9 +55,11 @@ export class Core {
 	
 	initServicesWith(w: Electron.BrowserWindow) {
 		
-		this.storage = new Storage();
+		this.storages = new Storages();
 		
 		this.asmail = new ASMail();
+
+		this.device = new Device();
 		
 		this.signUp = new SignUp(this.signUpUrl,
 			commToRenderer(w, channels.signup),
@@ -76,12 +80,17 @@ export class Core {
 	
 	attachServicesToClientApp(w: ClientWin) {
 		
-		this.storage.attachTo(
+		let proxiedObjs = this.storages.attachTo(
 			commToRenderer(w.win, channels.storage),
 			w.getStoragePolicy());
 		
 		this.asmail.attachTo(
-			commToRenderer(w.win, channels.asmail));
+			commToRenderer(w.win, channels.asmail),
+			proxiedObjs);
+		
+		this.device.attachTo(
+			commToRenderer(w.win, channels.device),
+			proxiedObjs);
 		
 	}
 	
@@ -89,50 +98,52 @@ export class Core {
 		if (this.isClosed) { return; }
 		if (this.isInitialized) {
 			this.asmail.close();
-			await this.storage.close();
-			this.asmail = null;
-			this.storage = null;
+			await this.storages.close();
+			this.asmail = (undefined as any);
+			this.storages = (undefined as any);
 		}
 		this.cryptor.close();
-		this.cryptor = null;
+		this.cryptor = (undefined as any);
 		this.isClosed = true;
 	}
 	
 	private async initExistingStorage(user: string,
 			genMasterCrypt: IGenerateCrypt): Promise<boolean> {
-		return this.storage.initExisting(
+		return this.storages.initExisting(
 			user, this.idManager.getSigner, genMasterCrypt);
 	}
 	
 	private async initStorageFromRemote(genMasterCrypt: IGenerateCrypt):
 			Promise<boolean> {
-		return this.storage.initFromRemote(
+		return this.storages.initFromRemote(
 			this.idManager.getId(), this.idManager.getSigner, genMasterCrypt);
 	}
 	
 	private async initCore(user?: string): Promise<void> {
 		try {
-			let inboxFS = await this.storage.makeAppFS(ASMAIL_APP_NAME);
-			let mailerIdFS = await this.storage.makeAppFS(MAILERID_APP_NAME);
+			let inboxFS = await this.storages.makeSyncedFSForApp(ASMAIL_APP_NAME);
+			let mailerIdFS = await this.storages.makeSyncedFSForApp(MAILERID_APP_NAME);
 			let getSigner = this.idManager.getSigner;
 			if (this.idManager.getId()) {
 				user = this.idManager.getId();
 				let tasks: Promise<void>[] = [];
-				tasks.push(this.asmail.init(user, getSigner, inboxFS));
+				tasks.push(this.asmail.init(user, getSigner, inboxFS,
+					this.storages.storageGetterForASMail()));
 				tasks.push(this.idManager.setStorage(mailerIdFS));
 				await Promise.all(tasks);
 			} else {
-				assert(!!user);
+				if (!user) { throw new Error(`Expectation fail: user is not given`); }
 				this.idManager.setAddress(user);
 				await this.idManager.setStorage(mailerIdFS);
-				await this.asmail.init(user, getSigner, inboxFS);
+				await this.asmail.init(user, getSigner, inboxFS,
+					this.storages.storageGetterForASMail());
 			}
 			this.isInitialized = true;
 			setTimeout(() => {
 				this.signIn.close();
-				this.signIn = null;
+				this.signIn = (undefined as any);
 				this.signUp.close();
-				this.signUp = null;
+				this.signUp = (undefined as any);
 				this.switchAppsAfterInit(); 
 			}, 100);
 		} catch (err) {

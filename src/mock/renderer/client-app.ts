@@ -23,6 +23,7 @@ import { openFileDialog, saveFileDialog } from './device';
  */
 export function make3NWebObject(userInd: number, mailConf: ASMailMockConfig,
 		storeConf: StorageMockConfig) {
+	if (!mailConf.existingUsers) { throw new Error(`Configuration object ${JSON.stringify(mailConf)} doesn't have array with existing users.`); }
 	let userConf = mailConf.existingUsers[userInd];
 	if (!userConf) { throw new Error(`User index ${userInd} is not pointing to user id in array of ${mailConf.existingUsers.length} existing users.`) }
 	let userId = userConf.address;

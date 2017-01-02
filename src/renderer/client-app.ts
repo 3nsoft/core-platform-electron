@@ -18,14 +18,22 @@ import { commToMain } from '../lib-common/ipc/electron-ipc';
 import { makeASMailOnUISide } from './asmail';
 import { makeStorageOnUISide } from './storage';
 import { channels } from './common';
+import { makeDeviceOnUISide } from './device';
 
 /**
  * @return a 3NWeb api object for a client app.
  */
 export function make3NWebObject() {
+	let { storage, proxies } = makeStorageOnUISide(
+		commToMain(channels.storage));
+	let mail = makeASMailOnUISide(
+		commToMain(channels.asmail), proxies);
+	let device = makeDeviceOnUISide(
+		commToMain(channels.device), proxies);
 	let exposeServices = {
-		mail: makeASMailOnUISide(commToMain(channels.asmail)),
-		storage: makeStorageOnUISide(commToMain(channels.storage)),
+		mail,
+		storage,
+		device
 	};
 	Object.freeze(exposeServices);
 	return exposeServices;

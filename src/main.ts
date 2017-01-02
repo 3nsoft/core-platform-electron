@@ -25,7 +25,7 @@ import { Core } from './main/core';
 
 const DEFAULT_SIGNUP_URL = 'https://3nweb.net/signup/';
 
-let signupUrl: string;
+let signupUrl: string = (undefined as any);
 for (let arg of process.argv) {
 	if (arg.startsWith('--signup-url=')) {
 		signupUrl = `https://${arg.substring(13)}`;

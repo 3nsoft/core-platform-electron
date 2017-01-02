@@ -18,75 +18,56 @@ import { ObjSource } from '../../lib-common/obj-streaming/common';
 import { ByteSource } from '../../lib-common/byte-streaming/common';
 import { syncWrapObjSource } from '../../lib-common/obj-streaming/concurrent';
 import { MailRecipient } from '../../lib-client/asmail/recipient';
-import { InboxCache, PartialObjInfo as MsgPartialObjInfo,
-	MSG_STATUS as MSG_CACHE_STATUS, ObjSize }
+import { InboxCache, PartialObjInfo as MsgPartialObjInfo, ObjSize }
 	from './inbox-cache';
 import { missingRegionsIn, splitBigRegions, Region }
 	from '../../lib-client/local-files/regions';
+import { Downloader } from './downloader';
 
-let DEFAULT_MAX_GETTING_CHUNK = 512*1024;
-
-// XXX 
 class CachedByteSource implements ByteSource {
 	
 	private segsPointer = 0;
+	private segsSize: number;
 	
 	constructor(
-			private msgReceiver: MailRecipient,
 			private cache: InboxCache,
-			public msgId: string,
-			public objId: string,
-			private objSize: ObjSize,
-			private partialSize: MsgPartialObjInfo) { 
+			private downloader: Downloader,
+			private msgId: string,
+			private objId: string,
+			objSize: ObjSize,
+			private allBytesInCache: boolean) {
+		this.segsSize = objSize.segments;
 		Object.seal(this);
 	}
 	
-	private async getFromServerAndCacheChunks(chunks: Region[]): Promise<void> {
-		splitBigRegions(chunks, DEFAULT_MAX_GETTING_CHUNK);
-		for (let chunk of chunks) {
-			let bytes = await this.msgReceiver.getObjSegs(this.msgId, this.objId,
-				{ ofs: chunk.start, len: (chunk.end - chunk.start) });
-			this.partialSize = await this.cache.saveMsgObjSegs(
-				this.msgId, this.objId, chunk.start, bytes);
-		}
-	}
-	
-	async read(len: number): Promise<Uint8Array> {
-		if (this.segsPointer >= this.objSize.segments) { return null; }
+	async read(len: number): Promise<Uint8Array|undefined> {
 		let start = this.segsPointer;
-		let end = ((typeof len === 'number') ?
-			(start + len) : this.objSize.segments);
-		// XXX need a smarter behaviour for network here, as reads are usually
-		//		called in 4K chunks, we should ask for more bytes. Say, 64K.
-		//		At the moment, we replace chunked downloads with get a whole thing
-		//		approach, by forcing complete regions, if at least any region needs
-		//		to be downloaded.
-		//		Or, it has to play with downloader, and prepareBytes heads-up
-		//		method
-		let regionsToGet = missingRegionsIn(start, end, this.partialSize.segs);
-		if (regionsToGet.length > 0) {
-			// await this.getFromServerAndCacheChunks(regionsToGet);
-			await this.getFromServerAndCacheChunks([
-				{ start: 0, end: this.objSize.segments }]);
+		let end = ((typeof len === 'number') ? (start + len) : this.segsSize);
+		if (!this.allBytesInCache) {
+			this.allBytesInCache = await this.downloader.ensureSegsAreOnDisk(
+				this.msgId, this.objId, start, end);
 		}
 		let chunk = await this.cache.getMsgObjSegments(
 			this.msgId, this.objId, start, end);
+		if (!chunk) { return undefined; }
 		this.segsPointer += chunk.length;
 		return chunk;
 	}
 	
 	async getSize(): Promise<number> {
-		return this.objSize.segments;
+		return this.segsSize;
 	}
 	
 	async seek(offset: number): Promise<void> {
-		this.segsPointer = offset;
+		if ((typeof offset !== 'number') || (offset < 0)) { throw new Error(
+			`Illegal offset is given to seek: ${offset}`); }
+		this.segsPointer = Math.min(offset, this.segsSize);
 	}
 
 	async getPosition(): Promise<number> {
 		return this.segsPointer;
 	}
-	// XXX recipient for sendMsg as 1st arg, removing it from outgoing msg object
+
 }
 Object.freeze(CachedByteSource.prototype);
 Object.freeze(CachedByteSource);
@@ -98,28 +79,27 @@ class CachedObjSource implements ObjSource {
 	segSrc: ByteSource;
 	
 	constructor(
-			private msgReceiver: MailRecipient,
 			private cache: InboxCache,
-			public msgId: string,
-			public objId: string,
-			private objSize: ObjSize,
-			private partialSize: MsgPartialObjInfo) {
+			private downloader: Downloader,
+			private msgId: string,
+			private objId: string,
+			objSize: ObjSize,
+			private allBytesInCache: boolean) {
 		this.segSrc = new CachedByteSource(
-			msgReceiver, cache, msgId, objId, objSize,partialSize);
+			cache, downloader, msgId, objId, objSize, allBytesInCache);
 		Object.seal(this);
 	}
 	
-	getObjVersion(): number {
-		return null;
+	getObjVersion(): undefined {
+		return;
 	}
 	
 	async readHeader(): Promise<Uint8Array> {
-		if (this.partialSize.headerDone) {
-			return this.cache.getMsgObjHeader(this.msgId, this.objId);
+		if (!this.allBytesInCache) {
+			this.allBytesInCache = await this.downloader.ensureHeaderIsOnDisk(
+				this.msgId, this.objId);
 		}
-		let header = await this.msgReceiver.getObjHead(this.msgId, this.objId);
-		this.partialSize = await this.cache.saveMsgObjHeader(
-			this.msgId, this.objId, new Uint8Array(header));
+		let header = await this.cache.getMsgObjHeader(this.msgId, this.objId);
 		return header;
 	}
 	
@@ -127,35 +107,19 @@ class CachedObjSource implements ObjSource {
 Object.freeze(CachedObjSource.prototype);
 Object.freeze(CachedObjSource);
 
-export async function makeCachedObjSource(msgReceiver: MailRecipient,
-		cache: InboxCache, msgId: string, objId: string): Promise<ObjSource> {
-	let msgStatus = await cache.getMsgStatus(msgId);
-	if (msgStatus.status === MSG_CACHE_STATUS.complete) {
-		return cache.getMsgObj(msgId, objId);
-	} else if ((msgStatus.status === MSG_CACHE_STATUS.partial) ||
-			(msgStatus.status === MSG_CACHE_STATUS.justMeta)) {
-		if (msgStatus.completeObjs && msgStatus.completeObjs[objId]) {
-			return cache.getMsgObj(msgId, objId);
-		} else {
-			let objSize = msgStatus.incompleteObjs[objId];
-			if (!objSize) { throw new Error(
-				'Object '+objId+' is unknown in message '+msgId); }
-			let partialSize: MsgPartialObjInfo;
-			if (msgStatus.partialObjInfos) {
-				partialSize = msgStatus.partialObjInfos[objId];
-			}
-			if (!partialSize) {
-				partialSize = {
-					segs: []
-				};
-			}
-			return Object.freeze(syncWrapObjSource(new CachedObjSource(
-				msgReceiver, cache, msgId, objId, objSize, partialSize)));
-		}
-	} else {
-		throw new Error('Message obj "'+this.objId+
-			'" has an unexpected state: '+msgStatus.status);
-	}
+/**
+ * @param cache
+ * @param downloader
+ * @param msgId
+ * @param objId
+ * @return a promise, resolvable to ObjSource of a given message object.
+ */
+export async function makeCachedObjSource(cache: InboxCache,
+		downloader: Downloader, msgId: string, objId: string):
+		Promise<ObjSource> {
+	let { onDisk, size } = await downloader.statusOf(msgId, objId);
+	let src = new CachedObjSource(cache, downloader, msgId, objId, size, onDisk);
+	return Object.freeze(syncWrapObjSource(src));
 }
 
 Object.freeze(exports);

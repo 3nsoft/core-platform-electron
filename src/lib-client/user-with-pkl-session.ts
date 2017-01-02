@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -49,7 +49,7 @@ export interface PKLoginException extends HTTPException {
 export abstract class ServiceUser {
 	
 	userId: string;
-	sessionId: string = null;
+	sessionId: string = (undefined as any);
 	
 	private uri: string;
 	get serviceURI(): string {
@@ -72,14 +72,19 @@ export abstract class ServiceUser {
 	
 	private loginUrlPart: string;
 	private logoutUrlEnd: string;
-	private redirectedFrom: string = null;
+	private redirectedFrom: string = (undefined as any);
 	private canBeRedirected: boolean;
 
-	encryptor: SessionEncryptor = null;
-	private encChallenge: Uint8Array = null;
-	private serverPubKey: Uint8Array = null;
-	private serverVerificationBytes: Uint8Array = null;
-	private keyDerivationParams: any = null;
+	encryptor: SessionEncryptor = (undefined as any);
+	private encChallenge: Uint8Array = (undefined as any);
+	private serverPubKey: Uint8Array = (undefined as any);
+	private serverVerificationBytes: Uint8Array = (undefined as any);
+	
+	/**
+	 * This field will contain key derivation parameters from server for a
+	 * default key. For non-default keys this field stays undefined.
+	 */
+	private keyDerivationParams: any = undefined;
 	
 	constructor(userId: string, opts: {
 			login: string; logout: string; canBeRedirected?: boolean; }) {
@@ -93,10 +98,13 @@ export abstract class ServiceUser {
 		this.canBeRedirected = !!opts.canBeRedirected;
 	}
 	
-	private async startSession(): Promise<void> {
+	private async startSession(keyId: string|undefined): Promise<void> {
 		let reqData: loginApi.start.Request = {
-			userId: this.userId
+			userId: this.userId,
 		};
+		if (keyId !== undefined) {
+			reqData.kid = keyId;
+		}
 		let rep = await doJsonRequest<loginApi.start.Reply>({
 			url: this.serviceURI + this.loginUrlPart + loginApi.start.URL_END,
 			method: 'POST',
@@ -110,8 +118,7 @@ export abstract class ServiceUser {
 			this.sessionId = rep.data.sessionId;
 			// set server public key
 			if (typeof rep.data.serverPubKey !== 'string') {
-				throw makeException(rep,
-					'Malformed reply: serverPubKey string is missing.');
+				throw makeException(rep, 'Malformed reply: serverPubKey string is missing.');
 			}
 			try {
 				this.serverPubKey = base64.open(rep.data.serverPubKey);
@@ -120,33 +127,28 @@ export abstract class ServiceUser {
 						'Malformed reply: server\'s key has a wrong size.');
 				}
 			} catch (err) {
-				throw makeException(rep,
-						'Malformed reply: bad serverPubKey string. Error: '+
-						(('string' === typeof err)? err : err.message));
+				throw makeException(rep, `Malformed reply: bad serverPubKey string. Error: ${('string' === typeof err)? err : err.message}`);
 			}
 			// get encrypted session key from json body
-			if ('string' !== typeof rep.data.sessionKey) {
-				throw makeException(rep,
-						'Malformed reply: sessionKey string is missing.');
+			if (typeof rep.data.sessionKey !== 'string') {
+				throw makeException(rep, 'Malformed reply: sessionKey string is missing.');
 			}
 			try {
 				this.encChallenge = base64.open(rep.data.sessionKey);
 				if (this.encChallenge.length !==
 						(sbox.NONCE_LENGTH + sbox.KEY_LENGTH)) {
-					throw makeException(rep, 'Malformed reply: '+
-						'byte chunk with session key has a wrong size.');
+					throw makeException(rep, `Malformed reply: byte chunk with session key has a wrong size.`);
 				}
 			} catch (err) {
-				throw makeException(rep, 'Malformed reply: '+
-					"bad sessionKey string. Error: "+
-					(('string' === typeof err)? err : err.message));
+				throw makeException(rep, `Malformed reply: bad sessionKey string. Error: ${(typeof err === 'string') ? err : err.message}`);
 			}
-			// get key derivation parameters
-			if ('object' !== typeof rep.data.keyDerivParams) {
-				throw makeException(rep, 'Malformed reply: '+
-					"keyDerivParams string is missing.");
+			// get key derivation parameters for a default key
+			if (!keyId) {
+				if (typeof rep.data.keyDerivParams !== 'object') {
+					throw makeException(rep, `Malformed reply: keyDerivParams string is missing.`);
+				}
+				this.keyDerivationParams = rep.data.keyDerivParams;
 			}
-			this.keyDerivationParams = rep.data.keyDerivParams;
 		} else if (this.canBeRedirected &&
 				(rep.status === loginApi.start.SC.redirect)) {
 			let rd: loginApi.start.RedirectReply = <any> rep.data;
@@ -165,7 +167,7 @@ export abstract class ServiceUser {
 			this.redirectedFrom = this.serviceURI;
 			this.serviceURI = rd.redirect;
 			// start redirect call
-			return this.startSession();
+			return this.startSession(keyId);
 		} else if (rep.status === loginApi.start.SC.unknownUser) {
 			let exc = <PKLoginException> makeException(rep);
 			exc.unknownUser = true;
@@ -213,12 +215,12 @@ export abstract class ServiceUser {
 			sessionId: this.sessionId,
 			responseType: 'arraybuffer'
 		}, this.encChallenge);
-		this.encChallenge = null;
+		this.encChallenge = (undefined as any);
 		if (rep.status === loginApi.complete.SC.ok) {
 			// compare bytes to check, if server can be trusted
 			if (compareVectors(
 					rep.data, this.serverVerificationBytes)) {
-				this.serverVerificationBytes = null;
+				this.serverVerificationBytes = (undefined as any);
 			} else {
 				let exc = <PKLoginException> makeException(rep);
 				exc.serverNotTrusted = true;
@@ -238,11 +240,13 @@ export abstract class ServiceUser {
 	 * In particular, it does a first call, that does not need keys, producing
 	 * a function, that will take shared key calculator, and will complete
 	 * second phase of the login.
-	 * @return a promise, resolvable to an object with function, that performs
-	 * second and last phase of the login. 
+	 * This method returns a promise, resolvable to an object with a function,
+	 * that performs second and last phase of the login. 
+	 * @param keyId is a key id of a key that should be used in the login.
+	 * Undefined value means that a default key should be used.
 	 */
-	async login(): Promise<LoginCompletion> {
-		await this.startSession();
+	async login(keyId: string|undefined): Promise<LoginCompletion> {
+		await this.startSession(keyId);
 		let thisPKL = this;
 		async function complete(dhsharedKeyCalc: ICalcDHSharedKey) {
 			thisPKL.openSessionKey(dhsharedKeyCalc)
@@ -268,9 +272,9 @@ export abstract class ServiceUser {
 		if (rep.status !== 200) {
 			throw makeException(rep, 'Unexpected status');
 		}
-		this.sessionId = null;
+		this.sessionId = (undefined as any);
 		this.encryptor.destroy();
-		this.encryptor = null;
+		this.encryptor = (undefined as any);
 	}
 	
 }

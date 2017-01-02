@@ -18,8 +18,8 @@ import { itAsync } from '../../libs-for-tests/async-jasmine';
 import { minimalSetup } from '../../libs-for-tests/setups';
 
 declare var w3n: {
-	signUp: Web3N.Startup.SignUpService;
-	signIn: Web3N.Startup.SignInService;
+	signUp: web3n.startup.SignUpService;
+	signIn: web3n.startup.SignInService;
 }
 
 describe('3NWeb app initial window', () => {

@@ -16,30 +16,31 @@
 
 import { RuntimeException } from './runtime';
 
-export const ExceptionType = 'file';
+export const fileExceptionType = 'file';
 
-export const Code: Web3N.Files.exceptionCode = {
+export const Code: web3n.files.exceptionCode = {
 	notFound: 'ENOENT',
 	alreadyExists: 'EEXIST',
 	notDirectory: 'ENOTDIR',
 	notFile: 'ENOTFILE',
+	notLink: 'not-link',
 	isDirectory: 'EISDIR',
 	notEmpty: 'ENOTEMPTY',
 	endOfFile: 'EEOF'
 };
 Object.freeze(Code);
 
-export type FileException = Web3N.Files.FileException;
+export type FileException = web3n.files.FileException;
 
-export function makeFileException(code: string, msg?: string): FileException {
+export function makeFileException(code: string, path: string, cause?: any):
+		FileException {
 	let err: FileException = {
 		runtimeException: true,
-		type: ExceptionType,
-		code: code
+		type: fileExceptionType,
+		code,
+		path,
+		cause
 	};
-	if (msg) {
-		err.message = msg;
-	}
 	if (code === Code.alreadyExists) {
 		err.alreadyExists = true;
 	} else if (code === Code.notFound) {
@@ -50,6 +51,8 @@ export function makeFileException(code: string, msg?: string): FileException {
 		err.notDirectory = true;
 	} else if (code === Code.notFile) {
 		err.notFile = true;
+	} else if (code === Code.notLink) {
+		err.notLink = true;
 	} else if (code === Code.endOfFile) {
 		err.endOfFile = true;
 	} else if (code === Code.notEmpty) {
@@ -58,17 +61,13 @@ export function makeFileException(code: string, msg?: string): FileException {
 	return err;
 }
 
-export function makeFileExceptionFromNodes(nodeExc: NodeJS.ErrnoException):
-		FileException {
-	return makeFileException(nodeExc.code, `${nodeExc.code}: ${nodeExc.path}`);
-}
-
 export function maskPathInExc(pathPrefixMaskLen: number, exc: any):
 		FileException {
 	if (exc.runtimeException || !exc.code) { return exc; }
 	if (typeof exc.path === 'string') {
 		exc.path = exc.path.substring(pathPrefixMaskLen);
 	}
+	return exc;
 }
 
 Object.freeze(exports);

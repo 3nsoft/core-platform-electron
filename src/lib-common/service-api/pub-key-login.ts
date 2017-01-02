@@ -30,6 +30,7 @@ export namespace start {
 
 	export interface Request {
 		userId: string;
+		kid?: string;
 	}
 
 	export interface Reply {

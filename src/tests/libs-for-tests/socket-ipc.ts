@@ -102,9 +102,9 @@ class Parser {
 	}
 
 	private cleanup(): void {
-		this.sock = null;
-		this.writeQueue = null;
-		this.buf = null;
+		this.sock = (undefined as any);
+		this.writeQueue = (undefined as any);
+		this.buf = (undefined as any);
 	}
 
 	close(): void {
@@ -128,7 +128,7 @@ Object.freeze(Parser);
 
 export function commToServer(port: number):
 		Duplex {
-	let parser: Parser;
+	let parser: Parser|undefined;
 	let commPoint: CommunicationPoint = {
 		addListener(listener: (r: any) => void): () => void {
 			if (parser) { throw new Error(
@@ -137,23 +137,23 @@ export function commToServer(port: number):
 			return () => {
 				if (!parser) { return; }
 				parser.close();
-				parser = null;
+				parser = undefined;
 			};
 		},
 		postMessage(env: any): void {
-			parser.write(env);
+			parser!.write(env);
 		}
 	};
-	return new Duplex(null, commPoint);
+	return new Duplex(undefined, commPoint);
 }
 
 export function commToClient(port: number): Duplex {
-	let parser: Parser;
+	let parser: Parser|undefined;
 	let server: Server;
 	function cleanup() {
 		if (!parser) { return; }
 		parser.close();
-		parser = null;
+		parser = undefined;
 		server.close();
 	}
 	let commPoint: CommunicationPoint = {
@@ -176,10 +176,10 @@ export function commToClient(port: number): Duplex {
 			return () => { cleanup(); };
 		},
 		postMessage(env: any): void {
-			parser.write(env);
+			parser!.write(env);
 		}
 	};
-	return new Duplex(null, commPoint);
+	return new Duplex(undefined, commPoint);
 }
 
 Object.freeze(exports);

@@ -30,4 +30,3 @@ Code is provided here under GNU General Public License, version 3.
 
 All API's, available to apps that run in 3NWeb platform, are free for anyone to use, to implement, to do anything with them.
 We specifically *do not* subscribe to USA's court's concept that API is copyrightable.
-

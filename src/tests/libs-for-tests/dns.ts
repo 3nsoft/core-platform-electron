@@ -80,9 +80,9 @@ export class DNSMock {
 		let d = domainOfAddress(domain);
 		let txt = this.domains.get(d);
 		if (txt) {
-			callback(null, txt);
+			callback(null as any, txt);
 		} else {
-			callback(makeDnsError(DNS_ERR_CODE.NOTFOUND, d), null);
+			callback(makeDnsError(DNS_ERR_CODE.NOTFOUND, d), null as any);
 		}
 	}
 

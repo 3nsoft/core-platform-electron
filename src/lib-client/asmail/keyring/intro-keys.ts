@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2016 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,7 +18,7 @@
  * This file contains functionality, used inside keyring.
  */
 
-import { JWKeyPair, KEY_ROLE, generateKeyPair } from './common';
+import { JWKeyPair, generateKeyPair, MsgKeyRole } from './common';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
 import { user as mid } from '../../../lib-common/mid-sigs-NaCl-Ed';
 import { Ring } from './ring';
@@ -26,9 +26,9 @@ import { Ring } from './ring';
 const INTRO_KEY_VALIDITY = 31*24*60*60;
 
 interface IntroKeysJSON {
-	publishedKey: JWKeyPair;
-	publishedKeyCerts: confApi.p.initPubKey.Certs;
-	retiredPublishedKey: JWKeyPair;
+	publishedKey: JWKeyPair|null;
+	publishedKeyCerts: confApi.p.initPubKey.Certs|null;
+	retiredPublishedKey: JWKeyPair|null;
 	otherIntroKeys: {
 		[kid: string]: JWKeyPair;
 	};
@@ -41,7 +41,7 @@ interface IntroKeysJSON {
 export class IntroKeysContainer {
 	
 	private keys: IntroKeysJSON;
-	get publishedKeyCerts(): confApi.p.initPubKey.Certs {
+	get publishedKeyCerts(): confApi.p.initPubKey.Certs|null {
 		return this.keys.publishedKeyCerts;
 	}
 	
@@ -51,7 +51,7 @@ export class IntroKeysContainer {
 	 */
 	constructor(
 			private keyring: Ring,
-			serialForm: string = null) {
+			serialForm: string|null = null) {
 		if (serialForm) {
 			let data = JSON.parse(serialForm);
 			// TODO checks of deserialized json data
@@ -100,18 +100,18 @@ export class IntroKeysContainer {
 	 *         (a) pair is JWK key pair;
 	 *         (b) role with a value from KEY_ROLE;
 	 *         (c) replacedAt field comes for KEY_ROLE.PREVIOUSLY_PUBLISHED_INTRO
-	 *             keys, telling, in milliseconds, when this key was superseded in
-	 *             use by a newer one;
+	 *             keys, telling, in milliseconds, when this key was superseded
+	 *             in use by a newer one;
 	 *         Undefined is returned, when a key is not found.
 	 */
-	findKey(kid: string):
-			{ role: string; pair: JWKeyPair; replacedAt?: number; } {
-		
+	findKey(kid: string): undefined |
+			{ role: MsgKeyRole; pair: JWKeyPair; replacedAt?: number; } {
+
 		// check published key
 		let key = this.keys.publishedKey;
 		if (key && (key.skey.kid === kid)) {
 			return {
-				role: KEY_ROLE.PUBLISHED_INTRO,
+				role: 'published_intro',
 				pair: key
 			};
 		}
@@ -120,7 +120,7 @@ export class IntroKeysContainer {
 		key = this.keys.retiredPublishedKey;
 		if (key && (key.skey.kid === kid)) {
 			return {
-				role: KEY_ROLE.PREVIOUSLY_PUBLISHED_INTRO,
+				role: 'prev_published_intro',
 				pair: key,
 				replacedAt: key.retiredAt
 			};
@@ -130,7 +130,7 @@ export class IntroKeysContainer {
 		key = this.keys.otherIntroKeys[kid];
 		if (key) {
 			return {
-				role: KEY_ROLE.INTRODUCTORY,
+				role: 'introductory',
 				pair: key
 			};
 		}

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2016 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,7 +18,7 @@
  * This defines interfaces for signup to 3NWeb.com's services.
  */
 
-import * as jwk from '../jwkeys';
+import { JsonKey } from '../jwkeys';
 
 export const ERR_SC = {
 	duplicate: 475,
@@ -59,19 +59,26 @@ export namespace availableAddressesForName {
 }
 Object.freeze(availableAddressesForName);
 
+export interface UserMidParams {
+	defaultPKey: {
+		pkey: JsonKey;
+		params: any;
+	};
+	otherPKeys: JsonKey[];
+}
+
+export interface UserStorageParams {
+	params: any;
+}
+
 export namespace addUser {
 	
 	export const URL_END = 'add';
 	
 	export interface Request {
 		userId: string;
-		mailerId: {
-			pkey: jwk.JsonKey;
-			params: any;
-		};
-		storage: {
-			params: any;
-		};
+		mailerId: UserMidParams;
+		storage: UserStorageParams;
 	}
 	
 	export const SC = isAvailable.SC;

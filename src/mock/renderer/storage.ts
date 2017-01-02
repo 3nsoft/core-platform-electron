@@ -47,10 +47,23 @@ export interface StorageMockConfig {
 	apps: string[];
 }
 
-export class StorageMock implements Web3N.Storage.Service {
+const LOCAL_STORAGE_DIR = 'local';
+const SYNCED_STORAGE_DIR = 'synced';
+
+export class StorageMock implements web3n.storage.Service {
 	
-	private userId: string = null;
-	private fs: FS = null;
+	private userId: string = (undefined as any);
+
+	/**
+	 * This folder is for a mock of a synced storage.
+	 */
+	private syncedFS: FS = (undefined as any);
+
+	/**
+	 * This folder is for a mock of a local storage.
+	 */
+	private localFS: FS = (undefined as any);
+
 	private apps = new Set<string>();
 	private initializing = defer<void>();
 	
@@ -70,22 +83,26 @@ export class StorageMock implements Web3N.Storage.Service {
 			} else {
 				throw new Error('No app names given in a config for mock storage.');
 			}
-			this.fs = await makeStorageFS(this.userId);
+			let storageFS = await makeStorageFS(this.userId);
+			this.syncedFS = await storageFS.writableSubRoot(SYNCED_STORAGE_DIR);
+			this.localFS = await storageFS.writableSubRoot(LOCAL_STORAGE_DIR);
 			for (let sysFolderField of Object.keys(sysFolders)) {
-				await this.fs.makeFolder(sysFolders[sysFolderField]);
+				await this.syncedFS.makeFolder(sysFolders[sysFolderField]);
+				await this.localFS.makeFolder(sysFolders[sysFolderField]);
 			}
 			this.initializing.resolve();
-			this.initializing = null;
+			this.initializing = (undefined as any);
 		} catch (err) {
 			this.initializing.reject(err);
 			throw err;
 		}
 	}
 	
-	async getAppFS(appDomain: string): Promise<Web3N.Storage.FS> {
+	private async getAppFSIn(mockFS: FS, appDomain: string):
+			Promise<web3n.storage.FS> {
 		if (this.initializing) { await this.initializing.promise; }
 		if (this.apps.has(appDomain)) {
-			let appFS = await this.fs.makeSubRoot(
+			let appFS = await mockFS.writableSubRoot(
 				sysFolders.appData+'/'+appDomain);
 			return toStorageFS(appFS);
 		} else {
@@ -97,10 +114,19 @@ export class StorageMock implements Web3N.Storage.Service {
 			throw makeNotAllowedToOpenFSExc(appDomain);
 		}
 	}
+
+	getAppSyncedFS(appDomain: string): Promise<web3n.storage.FS> {
+		return this.getAppFSIn(this.syncedFS, appDomain);
+	}
+
+	getAppLocalFS(appDomain: string): Promise<web3n.storage.FS> {
+		return this.getAppFSIn(this.localFS, appDomain);
+	}
 	
-	wrap(): Web3N.Storage.Service {
-		let w: Web3N.Storage.Service = {
-			getAppFS: bind(this, this.getAppFS)
+	wrap(): web3n.storage.Service {
+		let w: web3n.storage.Service = {
+			getAppSyncedFS: bind(this, this.getAppSyncedFS),
+			getAppLocalFS: bind(this, this.getAppLocalFS)
 		};
 		Object.freeze(w);
 		return w;
@@ -108,15 +134,28 @@ export class StorageMock implements Web3N.Storage.Service {
 
 }
 
-export function toStorageFS(deviceFS: Web3N.Files.FS): Web3N.Storage.FS {
-	let fs: Web3N.Storage.FS = {
+function notImplementedExc(method: string): () => never {
+	return () => {
+		throw new Error(`FS.${method} method is not implemented in mock.`)
+	};
+}
+
+export function toStorageFS(deviceFS: web3n.files.FS): web3n.storage.FS {
+	let fs: web3n.storage.FS = {
+		versioned: deviceFS.versioned,
+		writable: deviceFS.writable,
+		name: deviceFS.name,
 		async close() {},
 		deleteFile: deviceFS.deleteFile,
 		deleteFolder: deviceFS.deleteFolder,
 		listFolder: deviceFS.listFolder,
 		makeFolder: deviceFS.makeFolder,
-		async makeSubRoot(folder: string) {
-			let subRoot = await deviceFS.makeSubRoot(folder);
+		async readonlySubRoot(folder: string, folderName?: string) {
+			let subRoot = await deviceFS.readonlySubRoot(folder, folderName);
+			return toStorageFS(subRoot);
+		},
+		async writableSubRoot(folder: string, folderName?: string) {
+			let subRoot = await deviceFS.writableSubRoot(folder, folderName);
 			return toStorageFS(subRoot);
 		},
 		move: deviceFS.move,
@@ -132,7 +171,23 @@ export function toStorageFS(deviceFS: Web3N.Files.FS): Web3N.Storage.FS {
 		writeBytes: deviceFS.writeBytes,
 		statFile: deviceFS.statFile,
 		readonlyFile: deviceFS.readonlyFile,
-		writableFile: deviceFS.writableFile
+		writableFile: deviceFS.writableFile,
+		copyFile: deviceFS.copyFile,
+		copyFolder: deviceFS.copyFolder,
+		saveFile: deviceFS.saveFile,
+		saveFolder: deviceFS.saveFolder,
+		link: notImplementedExc('link'),
+		readLink: notImplementedExc('readLink'),
+		deleteLink: notImplementedExc('deleteLink'),
+		versionedGetByteSink: notImplementedExc('versionedGetByteSink'),
+		versionedGetByteSource: notImplementedExc('versionedGetByteSource'),
+		versionedListFolder: notImplementedExc('versionedListFolder'),
+		versionedReadBytes: notImplementedExc('versionedReadBytes'),
+		versionedReadJSONFile: notImplementedExc('versionedReadJSONFile'),
+		versionedReadTxtFile: notImplementedExc('versionedReadTxtFile'),
+		versionedWriteBytes: notImplementedExc('versionedWriteBytes'),
+		versionedWriteJSONFile: notImplementedExc('versionedWriteJSONFile'),
+		versionedWriteTxtFile: notImplementedExc('versionedWriteTxtFile'),
 	};
 	Object.freeze(fs);
 	return fs;

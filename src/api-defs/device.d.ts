@@ -20,7 +20,7 @@
  * Web3N.Device namespace for things related to a device, like files on a
  * device, etc.
  */
-declare namespace Web3N.Device.Files {
+declare namespace web3n.device.files {
 	
 	interface FileTypeFilter {
 		name: string;
@@ -38,10 +38,11 @@ declare namespace Web3N.Device.Files {
 	 * type.
 	 * @return a promise, resolvable to file object, which should be used to
 	 * write file's content.
+	 * Undefined is returned, when user chose nothing.
 	 */
 	function saveFileDialog(title: string, btnLabel: string,
 		defaultPath: string, filters?: FileTypeFilter[]):
-		Promise<Web3N.Files.File>;
+		Promise<web3n.files.File | undefined>;
 	
 	/**
 	 * This opens native user dialog for selecting existing file(s) or folder(s).
@@ -55,9 +56,10 @@ declare namespace Web3N.Device.Files {
 	 * to a specific type.
 	 * @return a promise, resolvable when user closes dialog, returning
 	 * file objects, for files selected by user.
+	 * Undefined is returned, when user chose nothing.
 	 */
 	function openFileDialog(title: string, btnLabel: string,
 		multiSelections: boolean, filters?: FileTypeFilter[]):
-		Promise<Web3N.Files.File[]>;
+		Promise<web3n.files.File[] | undefined>;
 	
 }

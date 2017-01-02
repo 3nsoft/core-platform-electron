@@ -15,11 +15,14 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { BytesFIFOBuffer, ByteSink, ByteSource, wrapByteSinkImplementation, wrapByteSourceImplementation } from '../byte-streaming/common';
-import { ObjSink, ObjSource } from './common';
+import { ObjSink, ObjSource, wrapObjSourceImplementation } from './common';
 import { SinkBackedObjSource } from './pipe';
 import { secret_box as sbox } from 'ecma-nacl';
 import { SegmentsWriter, SegmentsReader, LocationInSegment } from 'xsp-files';
 import { bind } from '../binding';
+import { errWithCause } from '../exceptions/error';
+
+type EncryptionException = web3n.EncryptionException;
 
 /**
  * @param bytes is an array of byte arrays with content, and it can be
@@ -33,7 +36,7 @@ import { bind } from '../binding';
  * @return an object byte source
  */
 export function makeObjByteSourceFromArrays(arrs: Uint8Array|Uint8Array[],
-		segWriter: SegmentsWriter, objVersion: number = null):
+		segWriter: SegmentsWriter, objVersion?: number):
 		ObjSource {
 	let buf = new BytesFIFOBuffer();
 	if (Array.isArray(arrs)) {
@@ -55,12 +58,102 @@ export function makeObjByteSourceFromArrays(arrs: Uint8Array|Uint8Array[],
 		// all segments will have the same length, except the last one, therefore,
 		let segContentLen = segWriter.segmentSize(0) - sbox.POLY_LENGTH;
 		for (let i=0; i<numOfSegments; i+=1) {
-			let enc = segWriter.packSeg(buf.getBytes(segContentLen, true), i);
+			let content = buf.getBytes(segContentLen, true);
+			if (!content) { throw new Error(`Assertion fails. All surrounding code should assure that there are bytes here.`); }
+			let enc = segWriter.packSeg(content, i);
 			sinkForSegs.write(enc.seg);
 		}
 	}
 	sinkForSegs.write(null);
 	return pipe.getSource();
+}
+
+class EncryptingObjSource implements ObjSource, ByteSource {
+
+	private segsSize: number|undefined = undefined;
+	private readyBytesBuffer = new BytesFIFOBuffer();
+	private segIndex = 0;
+	
+	segSrc = wrapByteSourceImplementation(this);
+
+	constructor(
+			private byteSrc: ByteSource,
+			private segWriter: SegmentsWriter,
+			private objVersion?: number) {
+		Object.seal(this);
+	}
+
+	getObjVersion(): number|undefined {
+		return this.objVersion;
+	}
+	
+	async readHeader(): Promise<Uint8Array> {
+		// set sizes, as a side effect of calling getSize()
+		await this.getSize();
+		// get header for a known size, or for an undefined length
+		let h = this.segWriter.packHeader();
+		return h;
+	}
+
+	async getSize(): Promise<number|undefined> {
+		if (typeof this.segsSize === 'number') { return this.segsSize; }
+		let contentLen = await this.byteSrc.getSize();
+		if (typeof contentLen !== 'number') { return; }
+		this.segWriter.setContentLength(contentLen);
+		this.segsSize = this.segWriter.segmentsLength();
+		return this.segsSize;
+	}
+
+	private async nextSegmentContent(): Promise<Uint8Array|undefined> {
+		if (!this.segWriter.isEndlessFile() &&
+				(this.segIndex >= this.segWriter.numberOfSegments())) { return; }
+		let segContentLen = this.segWriter.segmentSize(this.segIndex) -
+			sbox.POLY_LENGTH;
+		let content = await this.byteSrc.read(segContentLen);
+		if (!content) {
+			if (this.segWriter.isEndlessFile()) { return; }
+			else { throw new Error('Unexpected end of byte source'); }
+		}
+		let { seg } = this.segWriter.packSeg(content, this.segIndex);
+		this.segIndex += 1;
+		return seg;
+	}
+
+	async read(len: number|undefined): Promise<Uint8Array|undefined> {
+		// set sizes, as a side effect of calling getSize()
+		await this.getSize();
+		// do read
+		if (typeof len === 'number') {
+			if (this.readyBytesBuffer.length >= len) {
+				return this.readyBytesBuffer.getBytes(len);
+			}
+			let chunk = await this.nextSegmentContent();
+			while (chunk) {
+				this.readyBytesBuffer.push(chunk);
+				if (this.readyBytesBuffer.length >= len) {
+					return this.readyBytesBuffer.getBytes(len);
+				}
+				chunk = await this.nextSegmentContent();
+			}
+			return this.readyBytesBuffer.getBytes(undefined);
+		} else {
+			let chunk = await this.nextSegmentContent();
+			while (chunk) {
+				this.readyBytesBuffer.push(chunk);
+				chunk = await this.nextSegmentContent();
+			}
+			return this.readyBytesBuffer.getBytes(undefined);
+		}
+	}
+
+}
+Object.freeze(EncryptingObjSource.prototype);
+Object.freeze(EncryptingObjSource);
+
+export function makeObjByteSourceFromByteSource(bytes: ByteSource,
+		segWriter: SegmentsWriter, objVersion?: number): ObjSource {
+	return wrapObjSourceImplementation(
+		new EncryptingObjSource(bytes, segWriter, objVersion));
 }
 
 /**
@@ -69,11 +162,34 @@ export function makeObjByteSourceFromArrays(arrs: Uint8Array|Uint8Array[],
  */
 class EncryptingByteSink implements ByteSink {
 
-	private totalSize: number = null;
-	private isTotalSizeSet = false;
+	/**
+	 * This is a total size of this sink, directed by segments' writer.
+	 * If segments' writer content size is not set, then this is undefined.
+	 */
+	private totalSize: number|undefined;
+
+	/**
+	 * Identifies if total size has been set to value, which is the same 
+	 * as segments' writer content size value.
+	 */
+	private isTotalSizeSet: boolean;
+
+	/**
+	 * Indicates if header was already written to object sink.
+	 */
+	private wasHeaderWritten = false;
+
+	/**
+	 * Number of collected via write method bytes.
+	 */
 	private collectedBytes = 0;
+
+	/**
+	 * Identifies if this sink is complete, and no more bytes can be accepted.
+	 * Note that completion may occur due to error.
+	 */
 	private isCompleted = false;
-	
+
 	/**
 	 * Content buffer is used to collect bytes before encrypting a segment.
 	 */
@@ -94,107 +210,156 @@ class EncryptingByteSink implements ByteSink {
 	};
 	
 	constructor(
+			/**
+			 * This is a sink for encrypted bytes.
+			 */
 			private objSink: ObjSink,
+			/**
+			 * This is a segment writer, used for encryption.
+			 */
 			private segsWriter: SegmentsWriter) {
-		this.seg = <any> {};
-		this.setSegInfo(0);
+		this.seg = { ind: -1, len: 0 };
+		this.advanceSeg();
+		let totalSize = this.segsWriter.contentLength();
+		if (typeof totalSize === 'number') {
+			this.totalSize = totalSize;
+			this.isTotalSizeSet = true;
+		} else {
+			this.totalSize = undefined;
+			this.isTotalSizeSet = false;
+		}
 		Object.seal(this);
 	}
 
-	private setSegInfo(segInd: number = null): void {
-		if (segInd === null) {
-			segInd = this.seg.ind + 1;
+	/**
+	 * This advances seg field.
+	 * If there are no more segments, it will set this sink as completed, but
+	 * it won't to a finalizing write(s).
+	 * @return true, when there is next segment, and false, otherwise.
+	 */
+	private advanceSeg(): boolean {
+		this.seg.ind += 1;
+		if (this.segsWriter.isEndlessFile()) {
+			if (this.seg.ind === 0) {
+				this.seg.len = this.segsWriter.segmentSize(this.seg.ind) - sbox.POLY_LENGTH;
+			}
+			return true;
 		}
-		this.seg.len = this.segsWriter.segmentSize(segInd) - sbox.POLY_LENGTH;
-		this.seg.ind = segInd;
+		if (this.seg.ind < this.segsWriter.numberOfSegments()) {
+			this.seg.len = this.segsWriter.segmentSize(this.seg.ind) - sbox.POLY_LENGTH;
+			return true;
+		} else {
+			return false;
+		}
 	}
 	
-	private async doLastWrite(err: any): Promise<void> {
+	async write(bytes: Uint8Array|null, err?: any): Promise<void> {
 		if (err) {
-			this.completeOnErr(err);
+			if (this.isCompleted) { return; }
+			await this.finalizeWrite(err);
 			return;
 		}
-		if (this.totalSize === null) {
-			this.setSize(this.collectedBytes);
-		} else if (this.totalSize < this.collectedBytes) {
-			throw new Error(`Stopping bytes at ${this.collectedBytes}, which is sooner than declared total size ${this.totalSize}.`);
-		}
-		try {
-			let segContent = this.contentBuf.getBytes(this.seg.len, true);
-			if (segContent) {
-				let pack = this.segsWriter.packSeg(segContent, this.seg.ind);
-				if (pack.dataLen !== segContent.length) { throw new Error('Not all bytes are encrypted into last segment.') }
-				await this.objSink.segSink.write(pack.seg);
-			}
-			this.setCompleted();
-			await this.objSink.segSink.write(null);
-		} catch (err) {
-			this.completeOnErr(err);
-		}
-	}
-
-	async write(bytes: Uint8Array, err?: any): Promise<void> {
 		if (this.isCompleted) {
 			if (bytes === null) { return; }
 			throw new Error("Completed sink cannot except any more bytes.");
 		}
-		if (bytes === null) {
-			return this.doLastWrite(err);
-		}
-		if (bytes.length === 0) { return; }
-		if (this.totalSize !== null) {
-			let maxBytesExpectation = this.totalSize - this.collectedBytes;
-			if (bytes.length >= maxBytesExpectation) {
-				this.isCompleted = true;
-				if (bytes.length > maxBytesExpectation) {
+		try {
+			if (bytes) {
+				if (bytes.length === 0) { return; }
+				if ((this.isTotalSizeSet) &&
+						(bytes.length > (this.totalSize - this.collectedBytes))) {
 					throw new Error("More bytes given than sink was set to accept.");
 				}
+				this.contentBuf.push(bytes);
+				this.collectedBytes += bytes.length;
+			} else {
+				if ((this.isTotalSizeSet) &&
+						(this.totalSize > this.collectedBytes)) {
+					throw new Error(`Not all bytes were written before closing sink.`);
+				}
 			}
-		}
-		this.contentBuf.push(bytes);
-		this.collectedBytes += bytes.length;
-		try {
-			let segContent = this.contentBuf.getBytes(this.seg.len);
-			if (!segContent) { return; }
-			let pack = this.segsWriter.packSeg(segContent, this.seg.ind);
-			if (pack.dataLen !== segContent.length) { throw new Error('Not all bytes are encrypted into the segment.') }
-			await this.objSink.segSink.write(pack.seg);
-			this.setSegInfo();
+			await this.encryptExactLengthSegments();
+			if (!bytes) {
+				await this.encryptLastSegment();
+			}
 		} catch (err) {
-			this.completeOnErr(err);
+			this.finalizeWrite(err);
+			throw err;
 		}
-	}
-	
-	private setCompleted(): void {
-		this.isCompleted = true;
-		this.segsWriter.destroy();
-		this.segsWriter = null;
-	}
-	
-	private completeOnErr(err: any): void {
-		this.objSink.segSink.write(null, err);
-		if (this.totalSize === null) {
-			this.objSink.writeHeader(null, err);
-		}
-		this.setCompleted();
-	}
-	
-	async setSize(size: number): Promise<void> {
-		if (this.isTotalSizeSet) {
-			throw new Error("Total size has already been set");
-		} else if ((size !== null) && (size < this.collectedBytes)) {
-			throw new Error("Given size is less than number of "+
-				"already collected bytes.");
-		}
-		this.isTotalSizeSet = true;
-		if ('number' === typeof size) {
-			this.totalSize = size;
-			this.segsWriter.setContentLength(size);
-		}
-		this.objSink.writeHeader(this.segsWriter.packHeader());
 	}
 
-	async getSize(): Promise<number> {
+	private async encryptExactLengthSegments(): Promise<void> {
+		if (this.isCompleted) { return; }
+		let segContent = this.contentBuf.getBytes(this.seg.len);
+		while (segContent) {
+			let {dataLen, seg } = this.segsWriter.packSeg(
+				segContent, this.seg.ind);
+			if (dataLen !== segContent.length) { throw new Error(`Not all bytes are encrypted into the segment.`); }
+			await this.objSink.segSink.write(seg);
+			if (!this.advanceSeg()) {
+				await this.finalizeWrite();
+				break;
+			}
+			segContent = this.contentBuf.getBytes(this.seg.len);
+		}
+	}
+
+	private async encryptLastSegment(): Promise<void> {
+		if (this.isCompleted) { return; }
+		let segContent = this.contentBuf.getBytes(undefined);
+		if (segContent) {
+			let {dataLen, seg } = this.segsWriter.packSeg(
+				segContent, this.seg.ind);
+			if (dataLen !== segContent.length) { throw new Error(`Not all bytes are encrypted into the last segment.`); }
+			await this.objSink.segSink.write(seg);
+		}
+		await this.finalizeWrite();
+	}
+
+	private async finalizeWrite(err?: any): Promise<void> {
+		if (this.isCompleted) { return; }
+		if (err) {
+			await this.objSink.segSink.write(null, err);
+			if (!this.wasHeaderWritten) {
+				await this.objSink.writeHeader(null, err);
+			}
+		} else {
+			await this.objSink.segSink.write(null);
+			if (!this.wasHeaderWritten) {
+				if (!this.isTotalSizeSet) {
+					this.segsWriter.setContentLength(this.collectedBytes);
+				}
+				await this.objSink.writeHeader(this.segsWriter.packHeader());
+			}
+		}
+		this.isCompleted = true;
+		this.segsWriter.destroy();
+		this.segsWriter = (undefined as any);
+	}
+	
+	async setSize(size: number|undefined): Promise<void> {
+		if (this.isTotalSizeSet) {
+			throw new Error("Total size has already been set");
+		} else if ((typeof size === 'number') && (size < this.collectedBytes)) {
+			throw new Error(`Given size is less than number of already collected bytes.`);
+		}
+		this.isTotalSizeSet = true;
+		if (typeof size === 'number') {
+			this.totalSize = size;
+			this.segsWriter.setContentLength(size);
+			let numOfSegs = this.segsWriter.numberOfSegments();
+			if (this.seg.ind < numOfSegs) {
+				this.seg.len = this.segsWriter.segmentSize(this.seg.ind) - sbox.POLY_LENGTH;
+			} else {
+				await this.finalizeWrite();
+				return;
+			}
+		}
+		await this.objSink.writeHeader(this.segsWriter.packHeader());
+		this.wasHeaderWritten = true;
+	}
+
+	async getSize(): Promise<number|undefined> {
 		if (this.isTotalSizeSet) {
 			return this.totalSize;
 		} else {
@@ -220,12 +385,12 @@ export function makeEncryptingByteSink(objSink: ObjSink,
 class DecryptingByteSource implements ByteSource {
 	
 	protected segs: ObjSource;
-	protected segsReader: SegmentsReader = null;
+	protected segsReader: SegmentsReader = (undefined as any);
 	/**
-	 * When segment position is null, end of encrypted source has been reached.
-	 * Initial value is set at initialization.
+	 * When segment position is undefined, end of encrypted source has been
+	 * reached. Initial value is set at initialization.
 	 */
-	protected segPos: LocationInSegment = null;
+	protected segPos: LocationInSegment = (undefined as any);
 	/**
 	 * Content position refers to an absolute position in unencrypted content.
 	 */
@@ -245,61 +410,80 @@ class DecryptingByteSource implements ByteSource {
 	async init(segReaderGen:
 			(header: Uint8Array) => SegmentsReader): Promise<void> {
 		let header = await this.segs.readHeader()
-		this.segsReader = segReaderGen(header);
-		if (this.segsReader.isEndlessFile() ||
-				(this.segsReader.contentLength() > 0)) {
-			this.segPos = this.segsReader.locationInSegments(this.contentPos);
+		.catch((err) => {
+			throw errWithCause(err, `Cannot get header from a byte source.`);
+		});
+		try {
+			this.segsReader = segReaderGen(header);
+			if (this.segsReader.isEndlessFile() ||
+					(this.segsReader.contentLength() > 0)) {
+				this.segPos = this.segsReader.locationInSegments(this.contentPos);
+			}
+		} catch (err) {
+			if ((err as EncryptionException).failedCipherVerification) {
+				err = errWithCause(err, `Cannot open object's header.`);
+				(err as EncryptionException).failedCipherVerification = true;
+			}
+			throw err;
 		}
 	}
 	
-	async read(len: number): Promise<Uint8Array> {
+	async read(len: number): Promise<Uint8Array|undefined> {
 		let segSrc = this.segs.segSrc;
 		while (this.segPos &&
 				((typeof len !== 'number') || (this.contentBuf.length < len))) {
 			let segBytes = await segSrc.read(this.segPos.seg.len);
 			if (segBytes) {
-				if (segBytes.length < this.segPos.seg.len) {
+				if ((segBytes.length < this.segPos.seg.len) &&
+						!this.segsReader.isEndlessFile()) {
 					throw new Error("Unexpected end of byte source: got "+
 						segBytes.length+', while expected segment length is '+
 						this.segPos.seg.len);
 				}
 			} else {
 				if (this.segsReader.isEndlessFile()) {
-					this.segPos = null;
+					this.segPos = (undefined as any);
 					break;
 				} else {
-					throw new Error("Unexpected end of byte source: end of file is"+ 
-						"reached while a segment is expected with length "+
-						this.segPos.seg.len);
+					throw new Error(`Unexpected end of byte source: end of file is reached while a segment is expected with length ${this.segPos.seg.len}`);
 				}
 			}
-			let opened = this.segsReader.openSeg(segBytes, this.segPos.seg.ind);
-			if (this.segPos.pos === 0) {
-				this.contentBuf.push(opened.data);
-			} else {
-				this.contentBuf.push(opened.data.subarray(this.segPos.pos));
-			}
-			if (opened.last) {
-				this.segPos = null;
-			} else {
-				this.segPos = {
-					pos: 0,
-					seg: {
-						ind: this.segPos.seg.ind + 1,
-						start: this.segPos.seg.start + this.segPos.seg.len,
-						len: this.segsReader.segmentSize(this.segPos.seg.ind + 1)
-					}
-				};
+			try {
+				let opened = this.segsReader.openSeg(segBytes, this.segPos.seg.ind);
+				if (this.segPos.pos === 0) {
+					this.contentBuf.push(opened.data);
+				} else {
+					this.contentBuf.push(opened.data.subarray(this.segPos.pos));
+				}
+				if (opened.last) {
+					this.segPos = (undefined as any);
+				} else {
+					this.segPos = {
+						pos: 0,
+						seg: {
+							ind: this.segPos.seg.ind + 1,
+							start: this.segPos.seg.start + this.segPos.seg.len,
+							len: this.segsReader.segmentSize(this.segPos.seg.ind + 1)
+						}
+					};
+				}
+			} catch (err) {
+				if ((err as EncryptionException).failedCipherVerification) {
+					err = errWithCause(err, `Cannot open segment ${this.segPos.seg.ind}`);
+					(err as EncryptionException).failedCipherVerification = true;
+				}
+				throw err;
 			}
 		}
 		let chunk = this.contentBuf.getBytes(len, !this.segPos);
-		if (!chunk) { return null; }
-		this.contentPos += chunk.length;
+		if (chunk) { 
+			this.contentPos += chunk.length;
+		}
 		return chunk;
 	}
 	
-	async getSize(): Promise<number> {
-		return (this.segsReader ? this.segsReader.contentLength() : null);
+	async getSize(): Promise<number|undefined> {
+		return (this.segsReader ? this.segsReader.contentLength() : undefined);
 	}
 	
 }
@@ -308,6 +492,7 @@ class SeekableDecryptingByteSource extends DecryptingByteSource {
 
 	constructor(objSrc: ObjSource) {
 		super(objSrc);
+		if (!objSrc.segSrc.seek) { throw new TypeError(`Given a non-seek-able object source.`); }
 	}
 	
 	async seek(offset: number): Promise<void> {
@@ -326,7 +511,7 @@ class SeekableDecryptingByteSource extends DecryptingByteSource {
 		this.contentBuf.clear();
 		this.contentPos = offset;
 		this.segPos = this.segsReader.locationInSegments(this.contentPos);
-		await this.segs.segSrc.seek(this.segPos.seg.start);
+		await this.segs.segSrc.seek!(this.segPos.seg.start);
 	}
 
 	async getPosition(): Promise<number> {

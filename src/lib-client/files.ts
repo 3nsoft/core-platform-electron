@@ -16,9 +16,10 @@
 
 import { bind } from '../lib-common/binding';
 import { basename } from 'path';
-import { makeFileException, Code as excCode, maskPathInExc }
+import { makeFileException, Code as excCode }
 	from '../lib-common/exceptions/file';
-import { toBuffer, utf8 } from '../lib-common/buffer-utils';
+import { pipe } from '../lib-common/byte-streaming/pipe';
+import { utf8 } from '../lib-common/buffer-utils';
 
 export function splitPathIntoParts(path: string, canBeEmpty = false): string[] {
 	let pathParts = (path ? path.split('/') : []);
@@ -76,29 +77,63 @@ export function pathStaysWithinItsRoot(path: string): boolean {
 	return true;
 }
 
-export type FileStats = Web3N.Files.FileStats;
-export type FS = Web3N.Files.FS;
-export type ListingEntry = Web3N.Files.ListingEntry;
-export type ByteSink = Web3N.ByteSink;
-export type ByteSource = Web3N.ByteSource;
+export type FileStats = web3n.files.FileStats;
+export type FS = web3n.files.FS;
+export type File = web3n.files.File;
+export type ListingEntry = web3n.files.ListingEntry;
+export type ByteSink = web3n.ByteSink;
+export type ByteSource = web3n.ByteSource;
 
-export abstract class AbstractFS implements FS {
+export type StorageType = 'device' | 'synced' | 'local' |
+	'share' | 'asmail-msg';
+
+export interface LinkParameters<T> {
+	storageType: StorageType;
+	readonly?: boolean;
+	isFolder?: boolean;
+	isFile?: boolean;
+	params: T;
+}
+
+/**
+ * This interface is applicable to core-side FS and File objects.
+ */
+export interface Linkable {
+	getLinkParams(): Promise<LinkParameters<any>>;
+}
+
+export abstract class AbstractFS implements Linkable {
 	
-	abstract makeSubRoot(folder: string): Promise<FS>;
-	
-	abstract statFile(path: string): Promise<FileStats>;
-	
-	abstract readBytes(path: string, start?: number, end?: number):
-		Promise<Uint8Array>;
-	
+	constructor(
+		public name: string,
+		public writable: boolean,
+		public versioned: boolean) {}
+
+	abstract getLinkParams(): Promise<LinkParameters<any>>;
+
 	abstract getByteSink(path: string, create?: boolean, exclusive?: boolean):
 		Promise<ByteSink>;
 	
-	abstract getByteSource(path: string): Promise<ByteSource>;
+	abstract getByteSource(path: string):
+		Promise<ByteSource>;
 	
+	abstract deleteFile(path: string): Promise<void>;
+	
+	abstract makeFolder(path: string, exclusive?: boolean): Promise<void>;
+	
+	abstract checkFilePresence(path: string, throwIfMissing?: boolean):
+			Promise<boolean>;
+	
+	abstract listFolder(folder: string): Promise<ListingEntry[]>;
+	
+	abstract move(initPath: string, newPath: string): Promise<void>;
+
 	abstract writeBytes(path: string, bytes: Uint8Array, create?: boolean,
 			exclusive?: boolean): Promise<void>;
-	
+
+	abstract readBytes(path: string, start?: number, end?: number):
+			Promise<Uint8Array|undefined>;
+
 	writeTxtFile(path: string, txt: string, create = true, exclusive = false):
 			Promise<void> {
 		let bytes = utf8.pack(txt);
@@ -107,164 +142,178 @@ export abstract class AbstractFS implements FS {
 	
 	async readTxtFile(path: string): Promise<string> {
 		let bytes = await this.readBytes(path);
-		return utf8.open(bytes);
+		let txt = (bytes ? utf8.open(bytes) : '');
+		return txt;
 	}
 	
 	writeJSONFile(path: string, json: any, create = true, exclusive = false):
 			Promise<void> {
-		let bytes = Buffer.from(JSON.stringify(json), 'utf8');
-		return this.writeBytes(path, bytes, create, exclusive);
+		let txt = JSON.stringify(json);
+		return this.writeTxtFile(path, txt, create, exclusive);
 	}
 
 	async readJSONFile<T>(path: string): Promise<T> {
-		let bytes = await this.readBytes(path);
-		return JSON.parse(utf8.open(bytes));
-	}
-	
-	abstract deleteFile(path: string): Promise<void>;
-	
-	abstract makeFolder(path: string, exclusive?: boolean): Promise<void>;
-	
-	abstract checkFolderPresence(path: string, throwIfMissing?: boolean):
-			Promise<boolean>;
-	
-	abstract checkFilePresence(path: string, throwIfMissing?: boolean):
-			Promise<boolean>;
-	
-	abstract deleteFolder(path: string, removeContent?: boolean): Promise<void>;
-	
-	abstract listFolder(folder: string): Promise<ListingEntry[]>;
-	
-	abstract move(initPath: string, newPath: string): Promise<void>;
-
-	async readonlyFile(path: string): Promise<Web3N.Files.File> {
-		let exists = await this.checkFilePresence(path);
-		let f = new FileObject(this, path, exists);
-		return f.wrap(false);
+		let txt = await this.readTxtFile(path);
+		let json = JSON.parse(txt);
+		return json;
 	}
 
-	async writableFile(path: string, create?: boolean, exclusive?: boolean):
-			Promise<Web3N.Files.File> {
+	async copyFile(src: string, dst: string, overwrite = false): Promise<void> {
+		let srcBytes = await this.getByteSource(src);
+		let sink = await this.getByteSink(dst, true, !overwrite);
+		await pipe(srcBytes, sink);
+	}
+
+	async copyFolder(src: string, dst: string, mergeAndOverwrite = false):
+			Promise<void> {
+		let list = await this.listFolder(src);
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (let f of list) {
+			if (f.isFile) {
+				await this.copyFile(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isFolder) {
+				await this.copyFolder(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				throw new Error('This implementation cannot copy links');
+			}
+		}
+	}
+
+	async readonlyFile(path: string): Promise<File> {
+		await this.checkFilePresence(path, true);
+		return this.makeFileObject(path, true, false);
+	}
+
+	async writableFile(path: string, create = true, exclusive = false):
+			Promise<File> {
 		let exists = await this.checkFilePresence(path);
 		if (exists && create && exclusive) { throw makeFileException(
-			excCode.alreadyExists, `Path ${path} already exists.`); }
-		let f = new FileObject(this, path, exists);
-		return f.wrap(true);
+			excCode.alreadyExists, path); }
+		if (!exists && !create) { throw makeFileException(
+			excCode.notFound, path); }
+		return this.makeFileObject(path, exists, true);
 	}
+
+	async saveFile(file: File, dst: string, overwrite = false): Promise<void> {
+		let src = await file.getByteSource();
+		let sink = await this.getByteSink(dst, true, !overwrite);
+		await pipe(src, sink);
+	}
+
+	async saveFolder(folder: FS, dst: string, mergeAndOverwrite = false):
+			Promise<void> {
+		let lst = await folder.listFolder('/');
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (let f of lst) {
+			if (f.isFile) {
+				let src = await folder.getByteSource(f.name);
+				let sink = await this.getByteSink(
+					`${dst}/${f.name}`, true, !mergeAndOverwrite);
+				await pipe(src, sink);
+			} else if (f.isFolder) {
+				let subFolder = await folder.readonlySubRoot(f.name);
+				await this.saveFolder(subFolder, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				throw new Error('This implementation cannot copy links');
+			}
+		}
+	}
+
+	protected abstract makeFileObject(path: string,
+		exists: boolean, writable: boolean): Promise<File>;
+
+	async close(): Promise<void> {}
 
 }
 
-export class FileObject implements Web3N.Files.File {
-
-	public name: string;
-
-	public isNew: boolean;
-
-	private pathPrefixMaskLen: number;
-
-	constructor(private fs: FS,
-			private path: string,
-			private exists: boolean) {
-		this.name = basename(this.path);
-		this.isNew = !exists;
-		this.pathPrefixMaskLen = this.path.length - this.name.length;
-		Object.seal(this);
-	}
-
-	async writeJSON(json: any): Promise<void> {
-		try {
-			await this.fs.writeJSONFile(this.path, json);
-			this.exists = true;
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-
-	async writeTxt(txt: string): Promise<void> {
-		try {
-			await this.fs.writeTxtFile(this.path, txt);
-			this.exists = true;
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-
-	async readTxt(): Promise<string> {
-		try {
-			return await this.fs.readTxtFile(this.path);
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-
-	async readJSON(): Promise<any> {
-		try {
-			return await this.fs.readJSONFile(this.path);
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-
-	async getByteSink(): Promise<ByteSink> {
-		try {
-			return await this.fs.getByteSink(
-				this.path, !this.exists, !this.exists);
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-	
-	async getByteSource(): Promise<ByteSource> {
-		try {
-			return await this.fs.getByteSource(this.path);
-		} catch (e) {
-			throw maskPathInExc(this.pathPrefixMaskLen, e);
-		}
-	}
-
-	wrap(writable: boolean): Web3N.Files.File {
-		let w: Web3N.Files.File = {
-			isNew: this.isNew,
-			name: this.name,
-			getByteSource: bind(this, this.getByteSource),
-			readJSON: bind(this, this.readJSON),
-			readTxt: bind(this, this.readTxt)
-		};
-		if (writable) {
-			w.getByteSink = bind(this, this.getByteSink);
-			w.writeJSON = bind(this, this.writeJSON);
-			w.writeTxt = bind(this, this.writeTxt);
-		}
-		return Object.freeze(w);
-	}
-
+export function throwFileReadonlyExc(): never {
+	throw new Error(`File is readonly, and writing methods are not available`);
 }
-Object.freeze(FileObject.prototype);
-Object.freeze(FileObject);
+
+export function wrapFileImplementation(fImpl: File): File {
+	let w: File = {
+		versioned: fImpl.versioned,
+		writable: fImpl.writable,
+		isNew: fImpl.isNew,
+		name: fImpl.name,
+		getByteSource: bind(fImpl, fImpl.getByteSource),
+		readJSON: bind(fImpl, fImpl.readJSON),
+		readTxt: bind(fImpl, fImpl.readTxt),
+		readBytes: bind(fImpl, fImpl.readBytes),
+		stat: bind(fImpl, fImpl.stat),
+		getByteSink: ((fImpl.writable) ?
+			bind(fImpl, fImpl.getByteSink) : throwFileReadonlyExc),
+		writeJSON: ((fImpl.writable) ?
+			bind(fImpl, fImpl.writeJSON) : throwFileReadonlyExc),
+		writeTxt: ((fImpl.writable) ?
+			bind(fImpl, fImpl.writeTxt) : throwFileReadonlyExc),
+		writeBytes: ((fImpl.writable) ?
+			bind(fImpl, fImpl.writeBytes) : throwFileReadonlyExc),
+		copy: ((fImpl.writable) ?
+			bind(fImpl, fImpl.copy) : throwFileReadonlyExc)
+	};
+	(<Linkable> <any> w).getLinkParams =
+		bind(fImpl, (<Linkable> <any> fImpl).getLinkParams);
+	return w;
+}
+
+export function throwFSReadonlyExc(): never {
+	throw new Error(`File system is readonly, and writing methods are not available`);
+}
 
 export function wrapFSImplementation(fsImpl: FS): FS {
-	let wrap: FS = {
-		getByteSink: bind(fsImpl, fsImpl.getByteSink),
+	let w: FS = {
+		versioned: fsImpl.versioned,
+		writable: fsImpl.writable,
+		name: fsImpl.name,
 		getByteSource: bind(fsImpl, fsImpl.getByteSource),
-		writeBytes: bind(fsImpl, fsImpl.writeBytes),
 		readBytes: bind(fsImpl, fsImpl.readBytes),
-		writeTxtFile: bind(fsImpl, fsImpl.writeTxtFile),
 		readTxtFile: bind(fsImpl, fsImpl.readTxtFile),
-		writeJSONFile: bind(fsImpl, fsImpl.writeJSONFile),
 		readJSONFile: bind(fsImpl, fsImpl.readJSONFile),
 		listFolder: bind(fsImpl, fsImpl.listFolder),
-		makeSubRoot: bind(fsImpl, fsImpl.makeSubRoot),
-		makeFolder: bind(fsImpl, fsImpl.makeFolder),
-		deleteFile: bind(fsImpl, fsImpl.deleteFile),
-		deleteFolder: bind(fsImpl, fsImpl.deleteFolder),
 		checkFolderPresence: bind(fsImpl, fsImpl.checkFolderPresence),
 		checkFilePresence: bind(fsImpl, fsImpl.checkFilePresence),
-		move: bind(fsImpl, fsImpl.move),
 		statFile: bind(fsImpl, fsImpl.statFile),
 		readonlyFile: bind(fsImpl, fsImpl.readonlyFile),
-		writableFile: bind(fsImpl, fsImpl.writableFile)
+		readonlySubRoot: bind(fsImpl, fsImpl.readonlySubRoot),
+		close: bind(fsImpl, fsImpl.close),
+		getByteSink: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.getByteSink!) : throwFSReadonlyExc),
+		writeBytes: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.writeBytes!) : throwFSReadonlyExc),
+		writeTxtFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.writeTxtFile!) : throwFSReadonlyExc),
+		writeJSONFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.writeJSONFile!) : throwFSReadonlyExc),
+		makeFolder: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.makeFolder!) : throwFSReadonlyExc),
+		deleteFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.deleteFile!) : throwFSReadonlyExc),
+		deleteFolder: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.deleteFolder!) : throwFSReadonlyExc),
+		move: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.move!) : throwFSReadonlyExc),
+		copyFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.copyFile!) : throwFSReadonlyExc),
+		copyFolder: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.copyFolder!) : throwFSReadonlyExc),
+		writableFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.writableFile!) : throwFSReadonlyExc),
+		writableSubRoot: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.writableSubRoot!) : throwFSReadonlyExc),
+		saveFile: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.saveFile!) : throwFSReadonlyExc),
+		saveFolder: ((fsImpl.writable) ?
+			bind(fsImpl, fsImpl.saveFolder!) : throwFSReadonlyExc)
 	};
-	return wrap;
+	if ((<Linkable> <any> fsImpl).getLinkParams) {
+		(<Linkable> <any> w).getLinkParams =
+			bind(fsImpl, (<Linkable> <any> fsImpl).getLinkParams);
+	}
+	return w;
 }
 	
 Object.freeze(exports);

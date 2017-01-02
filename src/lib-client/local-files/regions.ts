@@ -31,48 +31,65 @@ function invertRegions(regs: Region[],
 	}
 	if (start < end) {
 		inverted.push({ start: start, end: end });
+	} else if (inverted.length > 0) {
+		let lastReg = inverted[inverted.length-1];
+		if (lastReg.end > end) {
+			lastReg.end = end;
+		} 
 	}
 	return inverted;
 }
 
 export function missingRegionsIn(
 		start: number, end: number, cached: Region[]): Region[] {
-	let startInd: number = null;
-	let endInd: number = null;
+	let startInd: number|undefined = undefined;
+	let endInd: number|undefined = undefined;
 	for (let i=0; i<cached.length; i+=1) {
 		let reg = cached[i];
-		if ((startInd === null) && (start <= reg.start)) {
+		if ((startInd === undefined) &&
+				((start <= reg.start) || (start < reg.end))) {
+			if (end <= reg.start) { break; }
 			startInd = i;
 		}
-		if (startInd !== null) {
+		if (startInd !== undefined) {
 			endInd = i;
 		}
 		if (end <= reg.end) {
 			break;
 		}
 	}
-	if (startInd === null) {
+	if (startInd === undefined) {
 		return [{ start, end }];
 	} else {
-		let cachedRegions = cached.slice(startInd, endInd);
-		return invertRegions(cachedRegions, start, end);
+		let cachedRegions = cached.slice(startInd, endInd+1);
+		let inverted = invertRegions(cachedRegions, start, end);
+		return inverted;
 	}
 }
 
+/**
+ * This function splits big regions to fit given size.
+ * @param regs array of regions -- objects with start and end non-negative
+ * integer fields
+ * @param size is a maximal length allowed each individual region
+ */
 export function splitBigRegions(regs: Region[],
 		size: number): void {
 	for (let i=0; i<regs.length; i+=1) {
 		let reg = regs[i];
-		if ((reg.end - reg.start) <= 1.5*size) { continue; }
-		let newRegs: { start: number; end: number; }[] = [];
-		while ((reg.end - reg.start) > 1.5*size) {
-			newRegs.push({
+		let regLen = reg.end - reg.start;
+		if (regLen <= size) { continue; }
+		while (regLen > size) {
+			let newRegLen = (regLen > 1.5*size) ? size : Math.round(regLen / 2);
+			let newReg = {
 				start: reg.start,
-				end: reg.start + size
-			});
-			reg.start += size;
+				end: reg.start + newRegLen
+			};
+			regs.splice(i, 0, newReg);
+			i += 1;
+			reg.start += newRegLen;
+			regLen = reg.end - reg.start;
 		}
-		regs.splice.apply(regs, (<any[]> [i, 0]).concat(newRegs));
 	}
 }
 
@@ -80,8 +97,12 @@ export function splitBigRegions(regs: Region[],
  * Merges new region boundary info object into an existing non-empty array.
  * @param regs should be a non-empty array of region boundary infos
  * @param newReg is a new region, that should be merged into array
+ * @param warnOnOverlap is a flag, which default true value turns on warning
+ * on overlaps, with false value, suppressing them. Default value is for
+ * production, while false value is useful for tests.
  */
-export function mergeRegions(regs: Region[], newReg: Region): void {
+export function mergeRegions(regs: Region[], newReg: Region,
+		warnOnOverlap = true): void {
 	if (regs.length === 0) {
 		regs.push(newReg);
 		return;
@@ -113,7 +134,8 @@ export function mergeRegions(regs: Region[], newReg: Region): void {
 			}
 		} else {
 			// overlap situations
-			console.warn('There is an overlap in cache saving');
+			if (warnOnOverlap) { console.warn(
+				`There is an overlap in cache saving: original regions are ${JSON.stringify(regs)}, new region is ${JSON.stringify(newReg)}`); }
 			if (i+1 < regs.length) {
 				regs.splice(i, 1);
 				i -= 1;

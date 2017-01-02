@@ -18,7 +18,7 @@
  * This module defines json form of keys and signed objects.
  */
 
-import { base64, utf8 } from '../lib-common/buffer-utils';
+import { utf8, base64 } from "./buffer-utils";
 
 export interface JsonKeyShort {
 	/**
@@ -70,11 +70,11 @@ export interface Key {
 	/**
 	 * This is key's bytes.
 	 */
-	use: string;
+	k: Uint8Array;
 	/**
 	 * This is key's id.
 	 */
-	k: Uint8Array;
+	kid: string;
 	/**
 	 * This field is indicates application's use of this key, for example,
 	 * "private-mail-key". Notice that it has noting to do with crypto 
@@ -83,7 +83,7 @@ export interface Key {
 	 *  miss-use of key material. Such strictness makes key reuse (bad security
 	 *  design) difficult. 
 	 */
-	alg: string;
+	use: string;
 	/**
 	 * This field indicates which crypto-box high level function should be used
 	 * with this key, for example, "NaCl-xsp-box". Notice that, unlike initial
@@ -98,7 +98,7 @@ export interface Key {
 	 * incomplete libs with mere crypto primitives, which hurt, when assembled
 	 * incorrectly.
 	 */
-	kid: string;
+	alg: string;
 }
 
 export interface SignedLoad {

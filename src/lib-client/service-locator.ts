@@ -121,13 +121,13 @@ export async function storageInfoAt(url: string): Promise<StorageRoutes> {
 	let rep = await readJSONLocatedAt(url);
 	let json = rep.data;
 	let transform = <StorageRoutes> {};
-	if ('string' === typeof json.owner) {
+	if (typeof json.owner === 'string') {
 		transform.owner = transformPathToCompleteUri(url, json.owner);
 	}
-	if ('string' === typeof json.shared) {
+	if (typeof json.shared === 'string') {
 		transform.shared = transformPathToCompleteUri(url, json.shared);
 	}
-	if ('string' === typeof json.config) {
+	if (typeof json.config === 'string') {
 		transform.config = transformPathToCompleteUri(url, json.config);
 	}
 	return transform;
@@ -155,8 +155,8 @@ function checkAndPrepareURL(value: string): string {
 
 const EXCEPTION_TYPE = 'service-locating';
 
-function domainNotFoundExc(address?: string): Web3N.ASMail.ServLocException {
-	let exc = <Web3N.ASMail.ServLocException> makeRuntimeException(
+function domainNotFoundExc(address?: string): web3n.asmail.ServLocException {
+	let exc = <web3n.asmail.ServLocException> makeRuntimeException(
 		'domainNotFound', EXCEPTION_TYPE);
 	if (address) {
 		exc.address = address;
@@ -164,8 +164,8 @@ function domainNotFoundExc(address?: string): Web3N.ASMail.ServLocException {
 	return exc;
 }
 
-function noServiceRecordExc(address?: string): Web3N.ASMail.ServLocException {
-	let exc = <Web3N.ASMail.ServLocException> makeRuntimeException(
+function noServiceRecordExc(address?: string): web3n.asmail.ServLocException {
+	let exc = <web3n.asmail.ServLocException> makeRuntimeException(
 		'noServiceRecord', EXCEPTION_TYPE);
 	if (address) {
 		exc.address = address;
@@ -181,9 +181,11 @@ function noServiceRecordExc(address?: string): Web3N.ASMail.ServLocException {
  * @param txtRecords are TXT records from dns.
  * @param serviceLabel is a label of service, for which we want to get string
  * value from TXT record.
- * @return string value for a given service among given dns TXT records.  
+ * @return string value for a given service among given dns TXT records, or
+ * undefined, when service record is not found.
  */
-function extractPair(txtRecords: string[][], serviceLabel: string): string {
+function extractPair(txtRecords: string[][], serviceLabel: string):
+		string|undefined {
 	for (let txtRecord of txtRecords) {
 		let txt = txtRecord.join(' ');
 		let eqPos = txt.indexOf('=');

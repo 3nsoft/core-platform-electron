@@ -95,7 +95,7 @@ export class NamedProcs {
 	 * @return a promise of a process' completion, or undefined, if process with
 	 * given id is unknown.
 	 */
-	getP<T>(id: string): Promise<T> {
+	getP<T>(id: string): Promise<T> | undefined {
 		return this.promises.get(id);
 	}
 	
@@ -165,7 +165,7 @@ Object.freeze(NamedProcs);
  */
 export class SingleProc<T> {
 	
-	private promise: Promise<T> = null;
+	private promise: Promise<T>|undefined = undefined;
 	
 	constructor() {
 		Object.seal(this);
@@ -174,14 +174,14 @@ export class SingleProc<T> {
 	private insertPromise(promise: Promise<T>): Promise<T> {
 		promise = finalize(promise, () => {
 			if (this.promise === promise) {
-				this.promise = null;
+				this.promise = undefined;
 			}
 		});
 		this.promise = promise;
 		return promise;
 	}
 	
-	getP(): Promise<T> {
+	getP(): Promise<T>|undefined {
 		return this.promise;
 	}
 	
@@ -234,6 +234,7 @@ export function makeLock(): () => Promise<() => void> {
 			isLocked = false;
 		} else {
 			let next = queue.shift();
+			if (!next) { return; }
 			next(oneTimeCaller(unlock));
 		}
 	}
@@ -314,13 +315,14 @@ export function makeReadWriteLock(): ReadWriteLock {
 			return;
 		}
 		let next = queue.shift();
+		if (!next) { return; }
 		if (next.isWrite) {
-			next.write(oneTimeCaller(unlockAfterWrite));
+			next.write!(oneTimeCaller(unlockAfterWrite));
 		} else {
 			isLockedForWrite = false;
 			isLockedForRead = true;
-			readsInProgress = next.reads.length;
-			for (let read of next.reads) {
+			readsInProgress = next.reads!.length;
+			for (let read of next.reads!) {
 				read(oneTimeCaller(unlockAfterRead));
 			}
 		}
@@ -354,7 +356,7 @@ export function makeReadWriteLock(): ReadWriteLock {
 			});
 		} else {
 			return await new Promise<() => void>((resolve) => {
-				last.reads.push(resolve);
+				last.reads!.push(resolve);
 			});
 		}
 	}
@@ -367,10 +369,11 @@ export function makeReadWriteLock(): ReadWriteLock {
 			return;
 		}
 		let next = queue.shift();
+		if (!next) { return; }
 		if (next.isWrite) {
 			isLockedForWrite = true;
 			isLockedForRead = false;
-			next.write(oneTimeCaller(unlockAfterWrite));
+			next.write!(oneTimeCaller(unlockAfterWrite));
 		} else {
 			throw new Error('Read locking is incorrectly queued');
 		}

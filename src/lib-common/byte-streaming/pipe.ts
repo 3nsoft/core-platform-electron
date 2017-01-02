@@ -25,7 +25,7 @@ interface Deferred {
 
 export class SinkBackedByteSource implements ByteSource, ByteSink {
 	
-	private totalSize: number = null;
+	private totalSize: number|undefined = undefined;
 	private isTotalSizeSet = false;
 	private collectedBytes = 0;
 	private isComplete = false;
@@ -33,8 +33,8 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 	private deferredRead: {
 		deferred: Deferred;
 		len: number;
-	} = null;
-	private swalledErr: any = null;
+	}|undefined = undefined;
+	private swalledErr: any = undefined;
 	
 	getSource(): ByteSource {
 		return wrapByteSourceImplementation(this);
@@ -44,28 +44,26 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 		return wrapByteSinkImplementation(this);
 	}
 	
-	async getSize(): Promise<number> {
+	async getSize(): Promise<number|undefined> {
 		return this.totalSize;
 	}
 	
-	async setSize(size: number): Promise<void> {
+	async setSize(size: number|undefined): Promise<void> {
 		if (this.isTotalSizeSet) {
 			throw new Error("Total size has already been set");
-		} else if ((size !== null) && (size < this.collectedBytes)) {
+		} else if ((typeof size === 'number') && (size < this.collectedBytes)) {
 			throw new Error("Given size is less than number of "+
 				"already collected bytes.");
 		}
 		this.isTotalSizeSet = true;
-		if ('number' === typeof size) {
-			this.totalSize = size;
-		}
+		this.totalSize = ((typeof size === 'number') ? size : undefined);
 	}
 	
-	read(len: number): Promise<Uint8Array> {
+	read(len: number): Promise<Uint8Array|undefined> {
 		if (this.deferredRead) {
 			throw new Error("There is already pending read");
 		}
-		return new Promise<Uint8Array>((resolve, reject) => {
+		return new Promise<Uint8Array|undefined>((resolve, reject) => {
 			if (this.swalledErr) {
 				reject(this.swalledErr);
 				return;
@@ -91,13 +89,13 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 	private completeOnErr(err: any): void {
 		if (this.deferredRead) {
 			this.deferredRead.deferred.reject(err);
-			this.deferredRead = null; 
+			this.deferredRead = undefined; 
 		} else {
 			this.swalledErr = err;
 		}
 	}
 	
-	async write(bytes: Uint8Array, err?: any): Promise<void> {
+	async write(bytes: Uint8Array|null, err?: any): Promise<void> {
 		if (this.isComplete) {
 			if (bytes === null) {
 				return;
@@ -105,14 +103,14 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 				throw new Error("Complete sink cannot except any more bytes.");
 			}
 		}
-		let boundsErr: Error = null;
+		let boundsErr: Error|undefined;
 		if (bytes === null) {
 			if (err) {
 				this.completeOnErr(err);
 				return;
 			}
 			this.isComplete = true;
-			if (this.totalSize === null) {
+			if (this.totalSize === undefined) {
 				this.totalSize = this.collectedBytes;
 			} else if (this.totalSize < this.collectedBytes) {
 				boundsErr = new Error("Stopping bytes at "+this.collectedBytes+
@@ -121,7 +119,7 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 			}
 		} else {
 			if (bytes.length === 0) { return; }
-			if (this.totalSize !== null) {
+			if (this.totalSize !== undefined) {
 				let maxBytesExpectation = this.totalSize - this.collectedBytes;
 				if (bytes.length >= maxBytesExpectation) {
 					this.isComplete = true;
@@ -140,12 +138,12 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 		if (this.isComplete) {
 			this.deferredRead.deferred.resolve(
 				this.buf.getBytes(this.deferredRead.len, true));
-			this.deferredRead = null;
+			this.deferredRead = undefined;
 		} else {
 			let bufferedBytes = this.buf.getBytes(this.deferredRead.len);
 			if (bufferedBytes) {
 				this.deferredRead.deferred.resolve(bufferedBytes);
-				this.deferredRead = null;
+				this.deferredRead = undefined;
 			}
 		}
 		if (boundsErr) { throw boundsErr; }

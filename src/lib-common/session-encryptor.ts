@@ -43,9 +43,9 @@ export function makeSessionEncryptor(key: Uint8Array, nextNonce: Uint8Array):
 		destroy: (): void => {
 			if (!encr) { return; }
 			encr.destroy();
-			encr = null;
+			encr = (undefined as any);
 			decr.destroy();
-			decr = null;
+			decr = (undefined as any);
 		}
 	};
 }

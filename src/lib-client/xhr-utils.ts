@@ -35,14 +35,15 @@ export interface Reply<T> {
 
 export interface RequestOpts {
 	method: string;
-	url: string;
+	url?: string;
+	path?: string;
 	responseType?: 'json' | 'arraybuffer';
 	sessionId?: string;
 	responseHeaders?: string[];
 }
 
 export interface Headers {
-	get(name: string): string;
+	get(name: string): string|undefined;
 }
 
 let logHttp = (process.argv.indexOf('--console-log-http') > 0);
@@ -57,17 +58,17 @@ function makeHeadersInstanceFrom(xhr: XMLHttpRequest, selectHeaders: string[]):
 		m.set(h.toLowerCase(), value);
 	}
 	return {
-		get(name: string): string {
+		get(name: string): string|undefined {
 			return m.get(name.toLowerCase());
 		}
 	};
 }
 
-export function request<T>(contentType: string, opts: RequestOpts):
+export function request<T>(contentType: string|undefined, opts: RequestOpts):
 		{ xhr: XMLHttpRequest; promise: Promise<Reply<T>>; } {
 	let xhr: XMLHttpRequest = new xhr2();
 	let promise = new Promise<Reply<T>>((resolve, reject) => {
-		xhr.open(opts.method, opts.url);
+		xhr.open(opts.method, opts.url!);
 // DEBUG
 if (logHttp) { console.log(` - ${opts.method} @ ${opts.url} ...\n`); }
 		xhr.onload = () => {
@@ -79,7 +80,7 @@ if (logHttp) { console.log(` > ${xhr.status} reply to ${opts.method} @ ${opts.ur
 				data = new Uint8Array(data);
 			}
 			let rep: Reply<T> = {
-				url: opts.url,
+				url: opts.url!,
 				method: opts.method,
 				status: xhr.status,
 				data: data
@@ -155,7 +156,7 @@ export function doTextRequest<T>(opts: RequestOpts, txt: string):
  * @return a promise, resolvable to reply object
  */
 export function doBodylessRequest<T>(opts: RequestOpts): Promise<Reply<T>> {
-	let req = request<T>(null, opts);
+	let req = request<T>(undefined, opts);
 	req.xhr.send();
 	return req.promise;
 }

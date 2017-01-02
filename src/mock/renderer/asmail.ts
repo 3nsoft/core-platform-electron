@@ -14,19 +14,20 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { stringOfB64UrlSafeChars } from '../../lib-client/random-node';
+import { stringOfB64UrlSafeChars, uint48 } from '../../lib-client/random-node';
 import { sleep } from '../../lib-common/processes';
 import { bind } from '../../lib-common/binding';
-import { makeInboxFS } from './mock-files';
+import { makeInboxFS, makeStorageFS } from './mock-files';
 import { FS } from '../../lib-client/local-files/device-fs';
 import { makeRuntimeException } from '../../lib-common/exceptions/runtime';
 import { errWithCause } from '../../lib-common/exceptions/error';
 import { FileException } from '../../lib-common/exceptions/file';
 import { toCanonicalAddress } from '../../lib-common/canonical-address';
 import { utf8 } from '../../lib-common/buffer-utils';
-import { defer } from '../../lib-common/processes';
+import { defer, Deferred } from '../../lib-common/processes';
 import { pipe } from '../../lib-common/byte-streaming/pipe';
 import { toStorageFS } from './storage';
+import { Container } from '../../lib-client/asmail/attachments/container';
 
 export interface ASMailUserConfig {
 	address: string;
@@ -38,14 +39,21 @@ export interface ASMailMockConfig {
 	existingUsers?: ASMailUserConfig[];
 	knownDomains?: string[];
 	misconfiguredDomains?: string[];
-	msgSendDelayMillis?: number;
+	network: {
+		latencyMillis?: number;
+		downSpeedKBs?: number;
+		upSpeedKBs?: number;
+	};
 }
 
 const EXCEPTION_TYPE = 'service-locating';
 
-function makeDomainException(flag: string, address: string):
-		Web3N.ASMail.ServLocException {
-	let exc = <Web3N.ASMail.ServLocException> makeRuntimeException(
+type ServLocException = web3n.asmail.ServLocException;
+type ASMailSendException = web3n.asmail.ASMailSendException;
+type InboxException = web3n.asmail.InboxException;
+
+function makeDomainException(flag: string, address?: string): ServLocException {
+	let exc = <ServLocException> makeRuntimeException(
 		flag, EXCEPTION_TYPE);
 	if (address) {
 		exc.address = address;
@@ -53,82 +61,86 @@ function makeDomainException(flag: string, address: string):
 	return exc;
 }
 
-function domainNotFoundExc(address?: string): Web3N.ASMail.ServLocException {
+function domainNotFoundExc(address?: string): ServLocException {
 	return makeDomainException('domainNotFound', address);
 }
 
-function noServiceRecordExc(address?: string): Web3N.ASMail.ServLocException {
+function noServiceRecordExc(address?: string): ServLocException {
 	return makeDomainException('noServiceRecord', address);
 }
 
 function makeDeliveryException(flag: string, recipient: string):
-		Web3N.ASMail.ASMailSendException {
-	let exc = <Web3N.ASMail.ASMailSendException> makeRuntimeException(
+		ASMailSendException {
+	let exc = <ASMailSendException> makeRuntimeException(
 		flag, 'asmail-delivery');
 	exc.address = recipient;
 	return exc;
 }
 
-function badRedirectExc(recipient: string): Web3N.ASMail.ASMailSendException {
+function badRedirectExc(recipient: string): ASMailSendException {
 	return makeDeliveryException('badRedirect', recipient);
 }
 
-function unknownRecipientExc(recipient: string):
-		Web3N.ASMail.ASMailSendException {
+function unknownRecipientExc(recipient: string): ASMailSendException {
 	return makeDeliveryException('unknownRecipient', recipient);
 }
 
 function msgTooBigExc(recipient: string, allowedSize: number):
-		Web3N.ASMail.ASMailSendException {
+		ASMailSendException {
 	let exc = makeDeliveryException('msgTooBig', recipient);
 	exc.allowedSize = allowedSize;
 	return exc;
 }
 
-function senderNotAllowedExc(recipient: string):
-		Web3N.ASMail.ASMailSendException {
+function senderNotAllowedExc(recipient: string): ASMailSendException {
 	return makeDeliveryException('senderNotAllowed', recipient);
 }
 
-function inboxIsFullExc(recipient: string): Web3N.ASMail.ASMailSendException {
+function inboxIsFullExc(recipient: string): ASMailSendException {
 	return makeDeliveryException('inboxIsFull', recipient);
 }
 
-function authFailedOnDeliveryExc(recipient: string):
-		Web3N.ASMail.ASMailSendException {
+function authFailedOnDeliveryExc(recipient: string): ASMailSendException {
 	return makeDeliveryException('authFailedOnDelivery', recipient);
 }
 
-function makeInboxException(flag: string, msgId: string):
-		Web3N.ASMail.InboxException {
-	let exc = <Web3N.ASMail.InboxException> makeRuntimeException(
+function makeInboxException(flag: string, msgId: string): InboxException {
+	let exc = <InboxException> makeRuntimeException(
 		flag, 'inbox');
 	exc.msgId = msgId;
 	return exc;
 }
 
-function makeMsgNotFoundException(msgId: string): Web3N.ASMail.InboxException {
+function makeMsgNotFoundException(msgId: string): InboxException {
 	return makeInboxException('msgNotFound', msgId);
 }
 
 function makeObjNotFoundException(msgId: string, objId: string):
-		Web3N.ASMail.InboxException {
+		InboxException {
 	let exc = makeInboxException('objNotFound', msgId);
 	exc.objId = objId;
 	return exc;
 }
 
-function makeMsgIsBrokenException(msgId: string): Web3N.ASMail.InboxException {
+function makeMsgIsBrokenException(msgId: string): InboxException {
 	return makeInboxException('msgIsBroken', msgId);
 }
 
 const MSGS_FOLDER = 'msgs';
 const MAIN_MSG_OBJ = 'main.json';
 const ATTACHMENTS_FOLDER = 'attachments';
-const FILE_PIPE_BUFFER_SIZE = 1024*1024;
 
-const DEFAULT_MSG_SIZE = 100*1024*1024;
+const DEFAULT_MSG_SIZE = 500*1024*1024;
 const MSG_ID_LEN = 24;
+
+type OutgoingMessage = web3n.asmail.OutgoingMessage;
+type IncomingMessage = web3n.asmail.IncomingMessage;
+type MsgInfo = web3n.asmail.MsgInfo;
+type DeliveryProgress = web3n.asmail.DeliveryProgress;
+type DeliveryService = web3n.asmail.DeliveryService;
+type ASMailService = web3n.asmail.Service;
+type AttachmentsContainer = web3n.asmail.AttachmentsContainer;
+type InboxService = web3n.asmail.InboxService;
 
 function domainOfCanonicalAddr(cAddr: string): string {
 	let d = cAddr.substring(cAddr.indexOf('@')+1);
@@ -136,14 +148,29 @@ function domainOfCanonicalAddr(cAddr: string): string {
 	return d;
 }
 
-async function getMsgSize(msg: Web3N.ASMail.OutgoingMessage): Promise<number> {
+async function getFolderContentSize(fs: FS, folderPath: string):
+		Promise<number> {
+	let size = 0;
+	let lst = await fs.listFolder(folderPath);
+	for (let f of lst) {
+		if (f.isFile) {
+			let stats = await fs.statFile(f.name);
+			size += stats.size;
+		} else if (f.isFolder) {
+			size += await getFolderContentSize(fs, `${folderPath}/${f.name}`);
+		}
+	}
+	return size;
+}
+
+async function getMsgSize(msg: OutgoingMessage): Promise<number> {
 	let main = JSON.stringify(msg, (k, v) => {
 		if (k === 'attachments') { return undefined; }
 		else { return v; }
 	});
 	let msgSize = utf8.pack(main).length;
 	if (msg.attachments) {
-		let attachments = msg.attachments.getAll();
+		let attachments = msg.attachments.getAllFiles();
 		if (attachments.size > 0) {
 			msgSize += 80*attachments.size;
 			for (let f of attachments.values()) {
@@ -155,33 +182,69 @@ async function getMsgSize(msg: Web3N.ASMail.OutgoingMessage): Promise<number> {
 			}
 		}
 	} else if (msg.attachmentsFS) {
-		let list = await msg.attachmentsFS.listFolder('');
-		for (let f of list) {
+		let lst = await msg.attachmentsFS.listFolder('');
+		for (let f of lst) {
 			if (f.isFile) {
 				let stats = await msg.attachmentsFS.statFile(f.name);
 				msgSize += stats.size;
 			} else if (f.isFolder) {
-				// XXX implement finding out complete size of all objects in folder
-				throw new Error(
-					'Calculation of directory size is not implemented, yet.');
+				msgSize += await getFolderContentSize(msg.attachmentsFS, f.name);
 			}
 		}
 	}
 	return msgSize;
 }
 
-export class ASMailMock implements Web3N.ASMail.Service {
+abstract class ServiceWithInitPhase {
+
+	protected initializing = defer<void>();
+
+	protected async delayRequest(millis?: number): Promise<void> {
+		if (this.initializing) { await this.initializing.promise; }
+		if (typeof millis === 'number') {
+			await sleep(millis);
+		} else {
+			await sleep(0);
+		}
+	}
+
+}
+Object.freeze(ServiceWithInitPhase.prototype);
+Object.freeze(ServiceWithInitPhase);
+
+const ASMAIL_CORE_APP = 'computer.3nweb.core.asmail';
+
+interface ProgressCB {
+	(p: DeliveryProgress): void;
+}
+
+interface MsgAndInfo {
+	msg: OutgoingMessage;
+	info: DeliveryProgress;
+}
+
+const SMALL_MSG_SIZE = 1024*1024;
+const MAX_SENDING_CHUNK = 512*1024;
+
+class DeliveryMock extends ServiceWithInitPhase implements DeliveryService {
 	
-	private userId: string = null;
-	private fs: FS = null;
-	private msgs: FS = null;
+	private userId: string = (undefined as any);
 	private existingUsers = new Map<string, ASMailUserConfig>();
 	private knownDomains = new Set<string>();
 	private misconfiguredDomains = new Set<string>();
-	private msgSendDelayMillis = 10;
-	private initializing = defer<void>();
+	private latencyMillis = 100;
+	private downSpeedKBs = 500;
+	private upSpeedKBs = 50;
+	private fs: FS = (undefined as any);
+	private msgs = new Map<string, MsgAndInfo>();
+	private deliveryQueue: string[] = [];
+	private sendingNow = new Set<string>();
+	private callbacks = new Map<number, ProgressCB>();
+	private progressCBs = new Map<string, number[]>();
+	private deferreds = new Map<string, Deferred<DeliveryProgress>[]>();
 	
 	constructor() {
+		super();
 		Object.seal(this);
 	}
 	
@@ -189,8 +252,17 @@ export class ASMailMock implements Web3N.ASMail.Service {
 			Promise<void> {
 		try {
 			this.userId = userId;
-			if (config.msgSendDelayMillis) {
-				this.msgSendDelayMillis = config.msgSendDelayMillis;
+			if (config.network.latencyMillis) {
+				this.latencyMillis = config.network.latencyMillis;
+			}
+			if (config.network.downSpeedKBs) {
+				this.downSpeedKBs = config.network.downSpeedKBs;
+			}
+			if (config.network.upSpeedKBs) {
+				this.upSpeedKBs = config.network.upSpeedKBs;
+			}
+			if (config.network.latencyMillis) {
+				this.latencyMillis = config.network.latencyMillis;
 			}
 			if (Array.isArray(config.knownDomains)) {
 				for (let d of config.knownDomains) {
@@ -209,21 +281,15 @@ export class ASMailMock implements Web3N.ASMail.Service {
 					this.knownDomains.add(domainOfCanonicalAddr(settings.address));
 				}
 			}
-			this.fs = await makeInboxFS(this.userId);
-			this.msgs = await this.fs.makeSubRoot(MSGS_FOLDER);
+			let appFS = await makeStorageFS(this.userId);
+			this.fs = await appFS.writableSubRoot(`Apps Data/${ASMAIL_CORE_APP}/delivery`);
 			this.initializing.resolve();
-			this.initializing = null;
+			this.initializing = (undefined as any);
 		} catch (e) {
-			e = errWithCause(e, 'Mock of ASMail service failed to initialize');
+			e = errWithCause(e, 'Mock of ASMail delivery failed to initialize');
 			this.initializing.reject(e);
 			throw e;
 		}
-	}
-	
-	async getUserId(): Promise<string> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(0);
-		return this.userId;
 	}
 	
 	private firstStageOfMsgSending(toAddress: string): number {
@@ -247,36 +313,22 @@ export class ASMailMock implements Web3N.ASMail.Service {
 	}
 	
 	async preFlight(toAddress: string): Promise<number> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(Math.floor(this.msgSendDelayMillis/2));
+		await this.delayRequest();
+		await sleep(Math.floor(this.latencyMillis/2));
 		return this.firstStageOfMsgSending(toAddress);
 	}
 	
-	async sendMsg(recipient: string, msg: Web3N.ASMail.OutgoingMessage):
-			Promise<string> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(Math.floor(this.msgSendDelayMillis/2));
-		let allowedSize = this.firstStageOfMsgSending(recipient);
-		let msgSize = await getMsgSize(msg);
-		if (msgSize > allowedSize) {
-			throw msgTooBigExc(recipient, allowedSize);
-		}
-		await sleep(Math.floor(this.msgSendDelayMillis/2));
-		let msgId = await this.saveMsgToRecipientData(recipient, msg);
-		return msgId;
-	}
-	
 	private async saveMsgToRecipientData(recipient: string,
-			msg: Web3N.ASMail.OutgoingMessage): Promise <string> {
+			msg: OutgoingMessage): Promise <string> {
 		let inMsg = this.toIncomingMsg(msg);
 		let recipientInbox = await makeInboxFS(recipient);
-		let recipientMsgs = await recipientInbox.makeSubRoot(MSGS_FOLDER);
-		async function makeMsgFS(): Promise<Web3N.Files.FS> {
+		let recipientMsgs = await recipientInbox.writableSubRoot(MSGS_FOLDER);
+		async function makeMsgFS(): Promise<web3n.files.FS> {
 			try {
 				await recipientMsgs.makeFolder(inMsg.msgId, true);
-				return recipientMsgs.makeSubRoot(inMsg.msgId);
+				return recipientMsgs.writableSubRoot(inMsg.msgId);
 			} catch(e) {
-				if (!(<Web3N.Files.FileException> e).alreadyExists) { throw e; }
+				if (!(<web3n.files.FileException> e).alreadyExists) { throw e; }
 				inMsg.msgId = stringOfB64UrlSafeChars(MSG_ID_LEN);
 				return makeMsgFS();
 			}
@@ -284,40 +336,27 @@ export class ASMailMock implements Web3N.ASMail.Service {
 		let msgFS = await makeMsgFS();
 		await msgFS.writeJSONFile(MAIN_MSG_OBJ, inMsg);
 		if (msg.attachments) {
-			let attachments = msg.attachments.getAll();
-			if (attachments.size > 0) {
-				for (let nameAndFile of attachments.entries()) {
-					let name = nameAndFile[0];
-					let f = nameAndFile[1];
-					let src = await f.getByteSource();
-					let sink = await msgFS.getByteSink(
-						`${ATTACHMENTS_FOLDER}/${name}`, true, true);
-					await pipe(src, sink, true, FILE_PIPE_BUFFER_SIZE);
-				}
+			for (let nameAndFile of msg.attachments.getAllFiles().entries()) {
+				let name = nameAndFile[0];
+				let f = nameAndFile[1];
+				await msgFS.saveFile(f, `${ATTACHMENTS_FOLDER}/${name}`);
+			}
+			for (let nameAndFS of msg.attachments.getAllFolders().entries()) {
+				let name = nameAndFS[0];
+				let f = nameAndFS[1];
+				await msgFS.saveFolder(f, `${ATTACHMENTS_FOLDER}/${name}`);
 			}
 		} else if (msg.attachmentsFS) {
-			let list = await msg.attachmentsFS.listFolder('');
-			if (list.length > 0) {
-				for (let f of list) {
-					if (f.isFile) {
-						let src = await msg.attachmentsFS.getByteSource(f.name);
-						let sink = await msgFS.getByteSink(
-							`${ATTACHMENTS_FOLDER}/${f.name}`, true, true);
-						await pipe(src, sink, true, FILE_PIPE_BUFFER_SIZE);
-					} else if (f.isFolder) {
-						// XXX implement folder copy
-						throw new Error(
-							'Copy of directory is not implemented, yet.');
-					}
-				}
+			let lst = await msg.attachmentsFS.listFolder('');
+			if (lst.length > 0) {
+				await msgFS.saveFolder(msg.attachmentsFS, ATTACHMENTS_FOLDER, true);
 			}
 		}
 		return inMsg.msgId;
 	}
 	
-	private toIncomingMsg(msg: Web3N.ASMail.OutgoingMessage):
-			Web3N.ASMail.IncomingMessage {
-		let inMsg = <Web3N.ASMail.IncomingMessage> {
+	private toIncomingMsg(msg: OutgoingMessage): IncomingMessage {
+		let inMsg = <IncomingMessage> {
 			msgId: stringOfB64UrlSafeChars(MSG_ID_LEN),
 			deliveryTS: Date.now(),
 			sender: this.userId
@@ -327,19 +366,335 @@ export class ASMailMock implements Web3N.ASMail.Service {
 		if (msg.chatId) { inMsg.chatId = msg.chatId; }
 		if (msg.plainTxtBody) { inMsg.plainTxtBody = msg.plainTxtBody; }
 		if (msg.htmlTxtBody) { inMsg.htmlTxtBody = msg.htmlTxtBody; }
-		if (msg.carbonCopy) { inMsg.carbonCopy = [].concat(msg.carbonCopy); }
-		if (msg.recipients) { inMsg.recipients = [].concat(msg.recipients); }
+		if (msg.carbonCopy) { inMsg.carbonCopy = Array.from(msg.carbonCopy); }
+		if (msg.recipients) { inMsg.recipients = Array.from(msg.recipients); }
 		return inMsg;
 	}
+
+	async addMsg(recipients: string[], msg: OutgoingMessage, id: string,
+			sendImmeditely = false): Promise<void> {
+		await this.delayRequest();
+		if (this.msgs.has(id)) { throw new Error(
+			`Message with id ${id} has already been added for delivery`); }
+		if (!Array.isArray(recipients) || (recipients.length === 0)) {
+			throw new Error(`Given invalid recipients: ${recipients} for message ${id}`); }
+		let info: DeliveryProgress = {
+			allDone: false,
+			msgSize: await getMsgSize(msg),
+			recipients: {}
+		};
+		for (let address of recipients) {
+			info.recipients[address] = {
+				done: false,
+				bytesSent: 0
+			};
+		}
+		this.msgs.set(id, { msg, info });
+		if (sendImmeditely ||
+				((info.msgSize * recipients.length) <= SMALL_MSG_SIZE)) {
+			this.doCompleteDelivery(id);
+		} else {
+			this.deliveryQueue.push(id);
+			this.doQueuedDelivery();
+		}
+	}
+
+	private getQueuedItem(): { id?: string; info?: DeliveryProgress;
+			msg?: OutgoingMessage; recipient?: string; } {
+		let id = this.deliveryQueue[0];
+		let dInfo = this.msgs.get(id);
+		if (!dInfo) {
+			this.deliveryQueue.shift();
+			return {};
+		}
+		let { info, msg } = dInfo;
+		if (info.allDone) {
+			this.deliveryQueue.shift();
+			return {};
+		}
+		let recipient: string = (undefined as any);
+		for (let address of Object.keys(info.recipients)) {
+			let recInfo = info.recipients[address];
+			if (!recInfo.done) {
+				recipient = address;
+				break;
+			}
+		}
+		if (!recipient) {
+			info.allDone = true;
+			this.deliveryQueue.shift();
+			this.notifyOfProgress(id, info, true);
+			return {};
+		}
+		return { id, info, msg, recipient };
+	}
+
+	private async doQueuedDelivery(): Promise<void> {
+		if (this.sendingNow.size > 0) { return; }
+		if (this.deliveryQueue.length === 0) { return; }
+		let { id, info, msg, recipient } = this.getQueuedItem();
+		if (!id || !info || !msg || !recipient) {
+			this.doQueuedDelivery();
+			return;
+		}
+		let recInfo = info.recipients[recipient];
+		this.sendingNow.add(id);
+		if (recInfo.bytesSent === 0) {
+			try {
+				await sleep(this.latencyMillis);
+				let allowedSize = this.firstStageOfMsgSending(recipient);
+				this.notifyOfProgress(id, info);
+				if (info.msgSize > allowedSize) {
+					throw msgTooBigExc(recipient, allowedSize);
+				}
+			} catch (err) {
+				this.sendingNow.delete(id);
+				recInfo.done = true;
+				recInfo.err = err;
+				this.notifyOfProgress(id, info);
+				this.doQueuedDelivery();
+				return;
+			}
+		}
+		let sendChunk = Math.min(
+			MAX_SENDING_CHUNK, info.msgSize - recInfo.bytesSent);
+		let millisOut = Math.floor(sendChunk / this.upSpeedKBs);
+		setTimeout(async (id: string, info: DeliveryProgress,
+				recipient: string, msg: OutgoingMessage, sendChunk: number) => {
+			let recInfo = info.recipients[recipient];
+			try {
+				if ((recInfo.bytesSent + sendChunk) >= info.msgSize) {
+					recInfo.idOnDelivery = await this.saveMsgToRecipientData(
+						recipient, msg);
+					recInfo.bytesSent = info.msgSize;
+					recInfo.done = true;
+				} else {
+					recInfo.bytesSent += sendChunk;
+				}
+			} catch (err) {
+				recInfo.err = err;
+				recInfo.done = true;
+			} finally {
+				this.sendingNow.delete(id);
+				this.notifyOfProgress(id, info);
+				this.doQueuedDelivery();
+			}
+		}, millisOut, id, info, recipient, msg, sendChunk);
+	}
+
+	private notifyOfProgress(id: string, info: DeliveryProgress,
+			complete = false, err?: any): void {
+		let cbIds = this.progressCBs.get(id);
+		if (cbIds) {
+			for (let cbId of cbIds) {
+				let cb = this.callbacks.get(cbId);
+				if (cb) { cb(info); }
+			}
+		}
+		if (complete) {
+			let deferreds = this.deferreds.get(id);
+			if (deferreds) {
+				for (let deferred of deferreds) {
+					if (err) { deferred.reject(err); }
+					else { deferred.resolve(info); }
+				}
+			}
+			this.deferreds.delete(id);
+			this.progressCBs.delete(id);
+		}
+	}
+
+	private async deliverWholeMsgTo(recipient: string, id: string,
+			info: DeliveryProgress, msg: OutgoingMessage): Promise<void> {
+		let recInfo = info.recipients[recipient];
+		if (!recInfo) { throw new Error(
+			`Message info doesn't contain section for recipient ${recipient}`); }
+		try {
+			await sleep(this.latencyMillis);
+			let allowedSize = this.firstStageOfMsgSending(recipient);
+			this.notifyOfProgress(id, info);
+			if (info.msgSize > allowedSize) {
+				throw msgTooBigExc(recipient, allowedSize);
+			}
+			let millisToSend = Math.floor(info.msgSize / this.upSpeedKBs);
+			let chunkFor500Millis = Math.floor(info.msgSize * 500 / millisToSend);
+			while (millisToSend > 500) {
+				await sleep(100);
+				recInfo.bytesSent += chunkFor500Millis;
+				this.notifyOfProgress(id, info);
+				millisToSend -= 500;
+			}
+			await sleep(millisToSend);
+			recInfo.idOnDelivery = await this.saveMsgToRecipientData(
+				recipient, msg);
+			recInfo.bytesSent = info.msgSize;
+		} catch (err) {
+			recInfo.err = err;
+		} finally {
+			recInfo.done = true;
+			this.notifyOfProgress(id, info);
+		}
+	}
+
+	private async doCompleteDelivery(id: string): Promise<void> {
+		this.sendingNow.add(id);
+		let dInfo = this.msgs.get(id);
+		if (!dInfo) { return; }
+		let { info, msg } = dInfo;
+		try {
+			for (let recipient of Object.keys(info.recipients)) {
+				await this.deliverWholeMsgTo(recipient, id, info, msg);
+			}
+			info.allDone = true;
+			this.notifyOfProgress(id, info, true);
+		} catch (err) {
+			this.notifyOfProgress(id, info, true, err);			
+		} finally {
+			this.sendingNow.delete(id);
+		}
+		this.doQueuedDelivery();
+	}
+
+	async listMsgs(): Promise<{ id: string; info: DeliveryProgress; }[]> {
+		await this.delayRequest();
+		let lst: { id: string; info: DeliveryProgress; }[] = [];
+		for (let entry of this.msgs.entries()) {
+			lst.push({
+				id: entry[0],
+				info: entry[1].info
+			});
+		}
+		return lst;
+	}
+
+	async completionOf(id: string): Promise<DeliveryProgress|undefined> {
+		await this.delayRequest();
+		let m = this.msgs.get(id);
+		if (!m) { return; }
+		let deferred = defer<DeliveryProgress>();
+		if (m.info.allDone) { return m.info; }
+		let deferreds = this.deferreds.get(id);
+		if (!deferreds) {
+			deferreds = [ deferred ];
+			this.deferreds.set(id, deferreds);
+		} else {
+			deferreds.push(deferred);
+		}
+		return deferred.promise;
+	}
+
+	async registerProgressCB(id: string, cb: ProgressCB):
+			Promise<number|undefined> {
+		await this.delayRequest();
+		let m = this.msgs.get(id);
+		if (!m || m.info.allDone) { return; }
+		let cbId: number;
+		do {
+			cbId = uint48();
+		} while (this.callbacks.has(cbId));
+		this.callbacks.set(cbId, cb);
+		let cbs = this.progressCBs.get(id);
+		if (cbs) {
+			cbs.push(cbId);
+		} else {
+			this.progressCBs.set(id, [ cbId ]);
+		}
+		this.notifyOfProgress(id, m.info, m.info.allDone);
+		return cbId;
+	}
+
+	async deregisterProgressCB(cbId: number): Promise<void> {
+		await this.delayRequest();
+		let cbs = this.callbacks.delete(cbId);
+	}
+
+	async currentState(id: string): Promise<DeliveryProgress|undefined> {
+		await this.delayRequest();
+		let m = this.msgs.get(id);
+		if (!m) { return; }
+		return m.info;
+	}
+
+	async rmMsg(id: string, cancelSending = false): Promise<void> {
+		await this.delayRequest();
+		let m = this.msgs.get(id);
+		if (!m) { return; }
+		if (!cancelSending && !m.info.allDone) { throw new Error(
+			`Cannot remove message ${id}, cause sending is not complete.`); }
+		if (!m.info.allDone) {
+			let ind = this.deliveryQueue.indexOf(id);
+			if (ind >= 0) {
+				this.deliveryQueue.splice(ind, 1);
+			}
+			let deferreds = this.deferreds.get(id);
+			if (deferreds) {
+				for (let deferred of deferreds) {
+					deferred.resolve(m.info);
+				}
+			}
+		}
+		this.msgs.delete(id);
+		this.sendingNow.delete(id);
+		this.deferreds.delete(id);
+		this.progressCBs.delete(id);
+	}
+
+	wrap(): DeliveryService {
+		let w: DeliveryService = {
+			addMsg: bind(this, this.addMsg),
+			currentState: bind(this, this.currentState),
+			listMsgs: bind(this, this.listMsgs),
+			preFlight: bind(this, this.preFlight),
+			rmMsg: bind(this, this.rmMsg),
+			deregisterProgressCB: bind(this, this.deregisterProgressCB),
+			registerProgressCB: bind(this, this.registerProgressCB),
+			completionOf: bind(this, this.completionOf)
+
+		};
+		Object.freeze(w);
+		return w;
+	}
 	
-	async listMsgs(fromTS?: number): Promise<Web3N.ASMail.MsgInfo[]> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(Math.floor(this.msgSendDelayMillis/3));
+}
+Object.freeze(DeliveryMock.prototype);
+Object.freeze(DeliveryMock);
+
+export class InboxMock extends ServiceWithInitPhase implements InboxService {
+	
+	private userId: string = (undefined as any);
+	private msgs: FS = (undefined as any);
+	private latencyMillis = 10;
+	
+	constructor() {
+		super();
+		Object.seal(this);
+	}
+	
+	async initFor(userId: string, config: ASMailMockConfig):
+			Promise<void> {
+		try {
+			this.userId = userId;
+			if (config.network.latencyMillis) {
+				this.latencyMillis = config.network.latencyMillis;
+			}
+			let fs = await makeInboxFS(this.userId);
+			this.msgs = await fs.writableSubRoot(MSGS_FOLDER);
+			this.initializing.resolve();
+			this.initializing = (undefined as any);
+		} catch (e) {
+			e = errWithCause(e, 'Mock of ASMail inbox failed to initialize');
+			this.initializing.reject(e);
+			throw e;
+		}
+	}
+	
+	async listMsgs(fromTS?: number): Promise<MsgInfo[]> {
+		await this.delayRequest(Math.floor(this.latencyMillis/3));
 		let msgFolders = await this.msgs.listFolder('');
-		let list: Web3N.ASMail.MsgInfo[] = [];
+		let list: MsgInfo[] = [];
 		for (let msgFolder of msgFolders) {
 			if (!msgFolder.isFolder) { throw new Error(`Have file ${msgFolder.name} in messages folder, where only folders are expected`); }
-			let msg = await this.msgs.readJSONFile<Web3N.ASMail.IncomingMessage>(
+			let msg = await this.msgs.readJSONFile<IncomingMessage>(
 				`${msgFolder.name}/${MAIN_MSG_OBJ}`);
 			if (fromTS && (msg.deliveryTS < fromTS)) { continue; }
 			list.push({
@@ -351,8 +706,7 @@ export class ASMailMock implements Web3N.ASMail.Service {
 	}
 	
 	async removeMsg(msgId: string): Promise<void> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(Math.floor(this.msgSendDelayMillis/3));
+		await this.delayRequest(Math.floor(this.latencyMillis/3));
 		try {
 			await this.msgs.deleteFolder(msgId, true);
 		} catch(e) {
@@ -361,33 +715,74 @@ export class ASMailMock implements Web3N.ASMail.Service {
 		}
 	}
 	
-	async getMsg(msgId: string): Promise<Web3N.ASMail.IncomingMessage> {
-		if (this.initializing) { await this.initializing.promise; }
-		await sleep(Math.floor(this.msgSendDelayMillis/3));
-		let msg = await this.msgs.readJSONFile<Web3N.ASMail.IncomingMessage>(
+	async getMsg(msgId: string): Promise<IncomingMessage> {
+		await this.delayRequest(Math.floor(this.latencyMillis/3));
+		let msg = await this.msgs.readJSONFile<IncomingMessage>(
 			`${msgId}/${MAIN_MSG_OBJ}`).catch((exc: FileException) => {
 				if (exc.notFound) { throw makeMsgNotFoundException(msgId); }
 				else { throw exc; }
 			});
 		if (await this.msgs.checkFolderPresence(`${msgId}/${ATTACHMENTS_FOLDER}`)) {
-			msg.attachments = toStorageFS(await this.msgs.makeSubRoot(
-				`${msgId}/${ATTACHMENTS_FOLDER}`));
+			msg.attachments = toStorageFS(await this.msgs.readonlySubRoot(
+				`${msgId}/${ATTACHMENTS_FOLDER}`, 'attachments'));
 		}
 		return msg;
 	}
-		
-	makeAttachmentsContainer(): Web3N.ASMail.AttachmentsContainer {
-		return (new Attachments()).wrap();
+	
+	wrap(): InboxService {
+		let w: InboxService = {
+			getMsg: bind(this, this.getMsg),
+			listMsgs: bind(this, this.listMsgs),
+			removeMsg: bind(this, this.removeMsg),
+		};
+		Object.freeze(w);
+		return w;
 	}
 	
-	wrap(): Web3N.ASMail.Service {
-		let w: Web3N.ASMail.Service = {
-			getMsg: bind(this, this.getMsg),
+}
+Object.freeze(InboxMock.prototype);
+Object.freeze(InboxMock);
+
+export class ASMailMock implements ASMailService {
+	
+	private userId: string = (undefined as any);
+	delivery = new DeliveryMock();
+	inbox = new InboxMock();
+	private initializing = defer<void>();
+	
+	constructor() {
+		Object.seal(this);
+	}
+	
+	async initFor(userId: string, config: ASMailMockConfig):
+			Promise<void> {
+		try {
+			this.userId = userId;
+			await this.delivery.initFor(userId, config);
+			await this.inbox.initFor(userId, config);
+			this.initializing.resolve();
+			this.initializing = (undefined as any);
+		} catch (e) {
+			this.initializing.reject(e);
+			throw e;
+		}
+	}
+	
+	async getUserId(): Promise<string> {
+		if (this.initializing) { await this.initializing.promise; }
+		await sleep(0);
+		return this.userId;
+	}
+		
+	makeAttachmentsContainer(): AttachmentsContainer {
+		return (new Container()).wrap();
+	}
+	
+	wrap(): ASMailService {
+		let w: ASMailService = {
 			getUserId: bind(this, this.getUserId),
-			listMsgs: bind(this, this.listMsgs),
-			preFlight: bind(this, this.preFlight),
-			removeMsg: bind(this, this.removeMsg),
-			sendMsg: bind(this, this.sendMsg),
+			delivery: this.delivery.wrap(),
+			inbox: this.inbox.wrap(),
 			makeAttachmentsContainer: bind(this, this.makeAttachmentsContainer)
 		};
 		Object.freeze(w);
@@ -397,45 +792,5 @@ export class ASMailMock implements Web3N.ASMail.Service {
 }
 Object.freeze(ASMailMock.prototype);
 Object.freeze(ASMailMock);
-
-// XXX can this be used in an actual implementation?
-class Attachments implements Web3N.ASMail.AttachmentsContainer {
-
-	private files = new Map<string, Web3N.Files.File>();
-
-	addFile(file: Web3N.Files.File, newName?: string): void {
-		let name = (newName ? newName : file.name);
-		if (this.files.has(name)) { throw new Error(
-			`File name ${name} is already used by another attachment`); }
-		this.files.set(name, file);
-	}
-
-	rename(initName: string, newName: string): void {
-		let f = this.files.get(initName);
-		if (f) { throw new Error(`Unkown entity with name ${initName}`); }
-		if (initName === newName) { return; }
-		if (this.files.has(newName)) { throw new Error(
-			`Name ${newName} is already used by another attachment`); }
-		this.files.set(newName, f);
-		this.files.delete(initName);
-	}
-
-	getAll(): Map<string, Web3N.Files.File> {
-		return this.files;
-	}
-
-	wrap(): Web3N.ASMail.AttachmentsContainer {
-		let w: Web3N.ASMail.AttachmentsContainer = {
-			addFile: bind(this, this.addFile),
-			rename: bind(this, this.rename),
-			getAll: bind(this, this.getAll)
-		};
-		Object.freeze(w);
-		return w;
-	}
-
-}
-Object.freeze(Attachments.prototype);
-Object.freeze(Attachments);
 
 Object.freeze(exports);

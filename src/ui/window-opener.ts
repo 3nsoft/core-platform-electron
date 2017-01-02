@@ -21,7 +21,7 @@ import { StoragePolicy } from '../main/storage/index';
 export abstract class WindowOpener {
 	
 	win: Electron.BrowserWindow;
-	protected urlRoot: string = null;
+	protected urlRoot: string = (undefined as any);
 	
 	/**
 	 * @param name is this app's name
@@ -56,7 +56,7 @@ export abstract class WindowOpener {
 		});
 		
 		this.win.webContents.on('will-navigate', (event, url) => {
-			if (this.urlRoot !== null) {
+			if (typeof this.urlRoot === 'string') {
 				if ((url.indexOf(this.urlRoot) !== 0) ||
 						!pathStaysWithinItsRoot(url.substring(this.urlRoot.length))) {
 					console.warn(`Preventing window ${this.win.id} from reloading to new url ${url} which is outside of window's allowed root.`);

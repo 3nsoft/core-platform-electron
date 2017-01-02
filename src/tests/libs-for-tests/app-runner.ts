@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,6 +21,8 @@ import { rmDirWithContent, FileException }
 import { resolve } from 'path';
 import { stringOfB64Chars } from '../../lib-client/random-node';
 import { sleep } from '../../lib-common/processes';
+import { setAwaiterJS6InClient, setRemoteJasmineInClient }
+	from './remote-js-utils';
 const Application = require('spectron').Application;
 
 const SETTINGS_PORT = 18088;
@@ -29,26 +31,25 @@ const DATA_FOLDER = 'test-data';
 
 export interface User {
 	userId: string;
-	midPass: string;
-	storePass: string;
+	pass: string;
 }
 
 declare var w3n: {
-	signUp: Web3N.Startup.SignUpService;
-	signIn: Web3N.Startup.SignInService;
+	signUp: web3n.startup.SignUpService;
+	signIn: web3n.startup.SignInService;
 }
 
 let numOfRunningApps = 0;
 
 export class AppRunner {
 
-	private spectron: any = null;
-	private appMocker: Duplex = null;
-	public user: User = null;
-	private signupUrl: string = null;
-	private tlsCert: string = null;
-	private dnsRecs: DnsTxtRecords = null;
-	private appNum: number = null;
+	private spectron: any = undefined;
+	private appMocker: Duplex = (undefined as any);
+	public user: User = (undefined as any);
+	private signupUrl: string = (undefined as any);
+	private tlsCert: string = (undefined as any);
+	private dnsRecs: DnsTxtRecords = (undefined as any);
+	private appNum: number = (undefined as any);
 
 	constructor() {
 		this.appNum = numOfRunningApps;
@@ -126,10 +127,10 @@ export class AppRunner {
 		if (this.spectron && this.spectron.isRunning()) {
 			try {
 				this.appMocker.close();
-				this.appMocker = null;
+				this.appMocker = (undefined as any);
 			} catch (err) {}
 			await this.spectron.stop();
-			this.spectron = null;
+			this.spectron = undefined;
 		}
 	}
 
@@ -164,16 +165,11 @@ export class AppRunner {
 	 */
 	async createUser(userId: string): Promise<User> {
 		if (this.user) { throw new Error('App already has associated user.'); }
-		let midPass = stringOfB64Chars(16);
-		let storePass = stringOfB64Chars(16);
-		(<any> this.c).timeouts('script', 59000);
-		await this.c.executeAsync(function(userId: string,
-				midPass: string, storePass: string, done: Function) {
-			let notifications: number[] = [];
-			w3n.signUp.createMailerIdParams(midPass, (p) => {})
-			.then(() => {
-				return w3n.signUp.createStorageParams(storePass, (p) => {});
-			})
+		let pass = stringOfB64Chars(16);
+		(this.c as any).timeouts('script', 59000);
+		let err = (await this.c.executeAsync(function(userId: string,
+				pass: string, done: Function) {
+			w3n.signUp.createUserParams(pass, (p) => {})
 			.then(() => {
 				return w3n.signUp.addUser(userId);
 			})
@@ -181,12 +177,19 @@ export class AppRunner {
 				if (isCreated) { done(); }
 				else { throw new Error(`Cannot create user ${userId}. It may already exists.`); }
 			})
-			.catch((e) => { console.error(JSON.stringify(e, null, '  ')); });
-		}, userId, midPass, storePass);
-		(<any> this.c).timeouts('script', 5000);
+			.catch(e => done(e));
+		}, userId, pass)).value;
+		if (err) {
+			console.error(`Error occured when creating user ${userId}`);
+			console.error(JSON.stringify(err, null, '  '));
+			throw err;
+		}
+		(this.c as any).timeouts('script', 5000);
 		await sleep(200);
 		await (<any> this.c).windowByIndex(0);
-		this.user = { userId, midPass, storePass };
+		await setRemoteJasmineInClient(this.c);
+		await setAwaiterJS6InClient(this.c);
+		this.user = { userId, pass };
 		return this.user;
 	}
 

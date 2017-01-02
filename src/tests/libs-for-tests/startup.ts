@@ -18,8 +18,8 @@ import { itAsync } from './async-jasmine';
 import { AppRunner } from './app-runner';
 
 declare var w3n: {
-	signUp: Web3N.Startup.SignUpService;
-	signIn: Web3N.Startup.SignInService;
+	signUp: web3n.startup.SignUpService;
+	signIn: web3n.startup.SignInService;
 }
 
 export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
@@ -31,7 +31,7 @@ export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 		expect(flag).toBeFalsy();
 		
 		// focus on a new window
-		await (<any> app().c).windowByIndex(0);
+		await (app().c as any).windowByIndex(0);
 
 		// check in the new window
 		let t: { tIn: string; tUp: string; } = (await app().c.execute(function() {
@@ -45,14 +45,22 @@ export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 	}
 }
 
-export function checkKeyDerivNotifications(notifPerc: number[]): void {
-	expect(notifPerc.length).toBeGreaterThan(0);
-	let prevP = -1;
-	for (let i=0; i < notifPerc.length; i+=1) {
-		let p = notifPerc[i];
-		expect(p).toBeGreaterThan(prevP);
-		prevP = p;
-	}
+declare var cExpect: typeof expect;
+
+export async function setKeyDerivNotifsChecker(c: WebdriverIO.Client<any>):
+		Promise<void> {
+	await c.executeAsync(async function(done) {
+		(window as any).checkKeyDerivNotifications = (notifPerc: number[]) => {
+			cExpect(notifPerc.length).toBeGreaterThan(0);
+			let prevP = -1;
+			for (let i=0; i < notifPerc.length; i+=1) {
+				let p = notifPerc[i];
+				cExpect(p).toBeGreaterThan(prevP);
+				prevP = p;
+			}
+		}
+		done();
+	});
 }
 
 Object.freeze(exports);

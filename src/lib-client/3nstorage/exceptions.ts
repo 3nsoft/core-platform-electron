@@ -21,6 +21,7 @@ export const StorageExceptionType = 'storage';
 
 export interface StorageException extends RuntimeException {
 	objId?: string;
+	version?: number;
 	objNotFound?: boolean;
 	objExists?: boolean;
 	concurrentTransaction?: boolean;
@@ -28,23 +29,24 @@ export interface StorageException extends RuntimeException {
 	wrongState?: boolean;
 }
 
-function makeException(objId: string): StorageException {
+function makeException(objId: string, version?: number): StorageException {
 	let exc: StorageException = {
 		runtimeException: true,
 		type: StorageExceptionType,
-		objId
+		objId,
+		version
 	};
 	return exc;
 }
 
-export function makeObjNotFoundExc(objId: string): StorageException {
-	let exc = makeException(objId);
+export function makeObjNotFoundExc(objId: string, version?: number): StorageException {
+	let exc = makeException(objId, version);
 	exc.objNotFound = true;
 	return exc;
 }
 
-export function makeObjExistsExc(objId: string): StorageException {
-	let exc = makeException(objId);
+export function makeObjExistsExc(objId: string, version?: number): StorageException {
+	let exc = makeException(objId, version);
 	exc.objExists = true;
 	return exc;
 }

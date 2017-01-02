@@ -19,7 +19,7 @@ import { signUp } from './common';
 
 let names = signUp.reqNames;
 
-export function makeSignUpOnUISide(core: Duplex): Web3N.Startup.SignUpService {
+export function makeSignUpOnUISide(core: Duplex): web3n.startup.SignUpService {
 	let s = {
 		
 		getAvailableAddresses(name: string): Promise<string[]> {
@@ -32,7 +32,7 @@ export function makeSignUpOnUISide(core: Duplex): Web3N.Startup.SignUpService {
 			// when setup is done, duplex can be closed
 			if (isSet) {
 				core.close();
-				core = null;
+				core = (undefined as any);
 			}
 			return isSet;
 		},
@@ -41,15 +41,9 @@ export function makeSignUpOnUISide(core: Duplex): Web3N.Startup.SignUpService {
 			return core.makeRequest<boolean>(names.isUserActive, userId);
 		},
 		
-		createMailerIdParams(pass: string,
+		createUserParams(pass: string,
 				progressCB: (progress: number) => void): Promise<void> {
-			return core.makeRequest<void>(names.createMidParams,
-				pass, progressCB);
-		},
-		
-		createStorageParams(pass: string,
-				progressCB: (progress: number) => void): Promise<void> {
-			return core.makeRequest<void>(names.createStorageParams,
+			return core.makeRequest<void>(names.createUserParams,
 				pass, progressCB);
 		},
 		

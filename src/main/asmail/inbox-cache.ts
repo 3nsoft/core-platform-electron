@@ -15,121 +15,44 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { FS } from '../../lib-client/local-files/device-fs';
-import { CacheOfFolders, makeObjSourceFromByteSources }
+import { CacheOfFolders, makeObjSourceFromByteSources,
+	Exception as CacheException, ExceptionType as CacheExceptionType }
 	from '../../lib-client/local-files/generational-cache';
 import { ObjSource }
 	from '../../lib-common/obj-streaming/common';
 import { MsgMeta, ObjSize }
 	from '../../lib-common/service-api/asmail/retrieval';
-import { bind } from '../../lib-common/binding';
 import { mergeRegions } from '../../lib-client/local-files/regions';
+import { TimeWindowCache } from '../../lib-common/time-window-cache';
+import { bind } from '../../lib-common/binding';
 
-export { ObjSize }
+export { ObjSize, MsgMeta }
 	from '../../lib-common/service-api/asmail/retrieval';
-
-export interface InboxCache {
-	
-	/**
-	 * @param msgId
-	 * @return a promise, resolvable to message meta.
-	 */
-	getMsgMeta(msgId: string): Promise<MsgMeta>;
-	
-	/**
-	 * @param msgId
-	 * @param meta
-	 * @return a promise, resolvable when message meta is recorded.
-	 */
-	startSavingMsg(msgId: string, meta: MsgMeta): Promise<void>;
-	
-	/**
-	 * @param msgId
-	 * @param objId
-	 * @return a promise, resolvable to object's header bytes.
-	 */
-	getMsgObjHeader(msgId: string, objId: string): Promise<Uint8Array>;
-	
-	/**
-	 * Use this for an object that is known to be completely in cache.
-	 * Caller must check message's status for this.
-	 * @param msgId
-	 * @param objId
-	 * @return a promise, resolvable to ObjByteSource of an object that is
-	 * completely cached.
-	 */
-	getMsgObj(msgId: string, objId: string): Promise<ObjSource>;
-	
-	/**
-	 * @param msgId
-	 * @param objId
-	 * @return a promise, resolvable to ByteSource of object's segments.
-	 */
-	getMsgObjSegments(msgId: string, objId: string, start: number,
-			end: number): Promise<Uint8Array>;
-	
-	/**
-	 * @param msgId
-	 * @return a promise, resolvable when message folder is deleted.
-	 */
-	deleteMsg(msgId: string): Promise<void>;
-	
-	/**
-	 * @param msgId
-	 * @param objId
-	 * @param bytes of object's header
-	 * @return a promise, resolvable to object info, when all header bytes are
-	 * saved to cache. When object is complete, promise resolves to null.
-	 */
-	saveMsgObjHeader(msgId: string, objId: string, bytes: Uint8Array):
-		Promise<PartialObjInfo>;
-	
-	/**
-	 * @param msgId
-	 * @param objId
-	 * @param offset in segments, at which writing should start
-	 * @param bytes
-	 * @return a promise, resolvable to object info, when all segment bytes are
-	 * saved to cache. When object is complete, promise resolves to null.
-	 */
-	saveMsgObjSegs(msgId: string, objId: string, offset: number,
-		bytes: Uint8Array): Promise<PartialObjInfo>;
-	
-	/**
-	 * @param msgId
-	 * @param objId
-	 * @param header is a complete header byte array
-	 * @param segments is a byte array with all segment
-	 * @return a promise, resolvable when saving to cache is done.
-	 */
-	saveCompleteObj(msgId: string, objId: string, header: Uint8Array,
-		segments: Uint8Array): Promise<void>;
-	
-	/**
-	 * @param msgId
-	 * @return a promise, resolvable to cache status of a message.
-	 */
-	getMsgStatus(msgId: string): Promise<MsgStatus>;
-	
-}
-
-export const MSG_STATUS = {
-	noMsgKey: 'msg key not found',
-	justMeta: 'only msg meta downloaded',
-	partial: 'partially downloaded',
-	complete: 'completely downloaded'
-};
-Object.freeze(MSG_STATUS);
 
 export interface PartialObjInfo {
 	headerDone?: boolean;
 	segs: { start: number; end: number; }[];
 }
 
+export type MsgKeyStatus = 'not-checked' | 'not-found' | 'fail' | 'ok';
+
 export interface MsgStatus {
-	status: string;
-	completeObjs?: { [objId: string]: ObjSize; };
-	partialObjInfos?: { [objId: string]: PartialObjInfo };
-	incompleteObjs?: { [objId: string]: ObjSize; };
+	msgId: string;
+	keyStatus: MsgKeyStatus;
+	onDisk: boolean;
+	mainObjId: string;
+	deliveryTS: number;
+	deliveryComplete: boolean;
+	objs: {
+		[objId: string]: {
+			size: ObjSize;
+			/**
+			 * When object is completely on the disk, this field with partial info
+			 * will not be present.
+			 */
+			partial?: PartialObjInfo;
+		}
+	};
 }
 
 const META_FNAME = 'meta.json';
@@ -139,33 +62,117 @@ const SEGMENTS_FILE_EXT = '.sxsp';
 
 const CACHE_ROTATION_HOURS = 12;
 
-function changeMsgStatusIfObjComplete(msgStatus: MsgStatus, objId: string,
-		uncondtionallyComplete = false): void {
-	let info = (msgStatus.partialObjInfos ?
-		msgStatus.partialObjInfos[objId] : null);
-	let objSize = msgStatus.incompleteObjs[objId];
-	if (uncondtionallyComplete ||
-			(info.headerDone && (info.segs.length === 1) &&
-			(info.segs[0].start === 0) &&
-			(info.segs[0].end >= objSize.segments))) {
-		if (!msgStatus.completeObjs) { msgStatus.completeObjs = {}; }
-		msgStatus.completeObjs[objId] = objSize;
-		if (msgStatus.partialObjInfos) {
-			delete msgStatus.partialObjInfos[objId];
+function changeMsgStatusIfObjComplete(msgStatus: MsgStatus, objId: string):
+		void {
+	if (msgStatus.onDisk) { return; }
+	
+	let objInfo = msgStatus.objs[objId];
+	
+	// check completness of a given object, and update status, if it is
+	let partial = objInfo.partial;
+	if (partial) {
+		if (!partial.headerDone || (partial.segs.length !== 1) ||
+				(partial.segs[0].start !== 0) ||
+				(partial.segs[0].end < objInfo.size.segments)) {
+			return;
+		} else {
+			delete objInfo.partial;
 		}
-		delete msgStatus.incompleteObjs[objId];
-		if (Object.keys(msgStatus.incompleteObjs).length === 0) {
-			msgStatus.status = MSG_STATUS.complete;
-			delete msgStatus.incompleteObjs;
-			delete msgStatus.partialObjInfos;
-		}
-		
-	}	
+	}
+
+	// check that downloads of other objects are also complete
+	for (let id of Object.keys(msgStatus.objs)) {
+		if (msgStatus.objs[id].partial) { return; } 
+	}
+
+	// set whole message as complete
+	msgStatus.onDisk = true;
 }
 
-class InboxFiles implements InboxCache {
+export interface InboxCache {
+	/**
+	 * This method returns a promise of either a cache status of a message, or an
+	 * undefined, when message is not found in the cache.
+	 * @param msgId
+	 * @param throwIfMissing is an optional flag which true value forces
+	 * throwing an error, if message is not found in the cache.
+	 * Default value is false, i.e. no throwing.
+	 */
+	findMsg(msgId: string, throwIfMissing?: boolean):
+		Promise<MsgStatus|undefined>;
+
+	/**
+	 * This method asynchronously updates key status of a message.
+	 * @param msgId
+	 * @param newStatus
+	 */
+	updateMsgKeyStatus(msgId: string, newStatus: MsgKeyStatus): Promise<void>;
 	
-	private cache: CacheOfFolders = null;
+	/**
+	 * This returns a promise of message's meta.
+	 * @param msgId
+	 */
+	getMsgMeta(msgId: string): Promise<MsgMeta>;
+
+	/**
+	 * This returns a promise of message's object's header.
+	 * @param msgId
+	 * @param objId
+	 */
+	getMsgObjHeader(msgId: string, objId: string): Promise<Uint8Array>;
+	
+	/**
+	 * This returns a promise of segments' bytes, or of an undefined, if read is
+	 * outside of segments' size.
+	 * @param msgId
+	 * @param objId
+	 */
+	getMsgObjSegments(msgId: string, objId: string, start: number, end: number):
+		Promise<Uint8Array|undefined>;
+	
+	/**
+	 * This records message meta to a newly created message folder. An exception
+	 * is thrown, if a message folder for a given id already exists.
+	 * @param msgId
+	 * @param meta
+	 */
+	startSavingMsg(msgId: string, meta: MsgMeta): Promise<void>;
+	
+	/**
+	 * This deletes message folder.
+	 * @param msgId
+	 */
+	deleteMsg(msgId: string): Promise<void>;
+	
+	/**
+	 * This asynchronously saves message's object's header, updating
+	 * message status accordingly.
+	 * @param msgId
+	 * @param objId
+	 * @param bytes of object's header
+	 */
+	saveMsgObjHeader(msgId: string, objId: string, bytes: Uint8Array):
+		Promise<void>;
+	
+	/**
+	 * This asynchronously saves message's object's segment bytes, updating
+	 * message status accordingly.
+	 * @param msgId
+	 * @param objId
+	 * @param offset in segments, at which writing should start
+	 * @param bytes
+	 */
+	saveMsgObjSegs(msgId: string, objId: string, offset: number,
+		bytes: Uint8Array): Promise<void>;
+	
+}
+
+export class InboxFiles implements InboxCache {
+	
+	private cache: CacheOfFolders = (undefined as any);
+	
+	private msgStatusCache =
+		new TimeWindowCache<string, MsgStatus>(60*1000);
 	
 	constructor(
 			private fs: FS) {
@@ -177,217 +184,186 @@ class InboxFiles implements InboxCache {
 		Object.freeze(this);
 		await this.cache.init(CACHE_ROTATION_HOURS);
 	}
-	
-	async getMsgMeta(msgId: string): Promise<MsgMeta> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			return await this.fs.readJSONFile<MsgMeta>(
-				msgFolder+'/'+META_FNAME);
-		} finally {
-			unlock();
+
+	async findMsg(msgId: string, throwIfMissing = false):
+			Promise<MsgStatus|undefined> {
+		let msgStatus = this.msgStatusCache.get(msgId);
+		if (!msgStatus) {
+			await this.cache.folderProcs.startOrChain(msgId, async () => {
+				let msgFolder = await this.cache.getFolder(msgId)
+				.catch((exc: CacheException) => {
+					if (throwIfMissing || (exc.type !== CacheExceptionType) ||
+							!exc.notFound) {
+						throw exc;
+					}
+				});
+				if (!msgFolder) { return; }
+				msgStatus = await this.fs.readJSONFile<MsgStatus>(
+					`${msgFolder}/${STATUS_FNAME}`);
+			});
+			this.msgStatusCache.set(msgId, msgStatus!);
 		}
+		return msgStatus;
+	}
+
+	async updateMsgKeyStatus(msgId: string, newStatus: MsgKeyStatus):
+			Promise<void> {
+		if (newStatus === 'not-checked') { throw new Error(`New key status cannot be ${newStatus}.`); }
+		let msgStatus = (await this.findMsg(msgId, true))!;
+		if (msgStatus.keyStatus === 'not-checked') {
+			msgStatus.keyStatus = newStatus;
+		} else {
+			throw Error(`Message has key status ${msgStatus.keyStatus}, and cannot be updated to ${newStatus}`);
+		}
+		await this.cache.folderProcs.startOrChain(msgId, async () => {
+			// make new message folder, throwing if message is already known
+			let msgFolder = await this.cache.getFolder(msgId);
+			this.updateMsgStatus(msgId, msgStatus, msgFolder);
+		});
+	}
+
+	private async updateMsgStatus(msgId: string, msgStatus: MsgStatus,
+			msgFolder: string): Promise<void> {
+		this.msgStatusCache.set(msgId, msgStatus);
+		await this.fs.writeJSONFile(`${msgFolder}/${STATUS_FNAME}`, msgStatus);
+	}
+
+	/**
+	 * @param method is cache user's method, that should be synced and bind.
+	 * Synchronization is done via chaining every execution under object id,
+	 * which must be the first parameter of each invocation.
+	 */
+	private syncAndBind<T extends Function>(method: T): T {
+		return <T> <any> ((...args: any[]) => {
+			let objId = args[0];
+			return this.cache.folderProcs.startOrChain<any>(objId, () => {
+				return method.apply(this, args);
+			});
+		});
 	}
 	
-	async getMsgObj(msgId: string, objId: string): Promise<ObjSource> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			let s = await this.fs.getByteSource(
-				msgFolder+'/'+objId+SEGMENTS_FILE_EXT);
-			return makeObjSourceFromByteSources(() => {
-				return this.getMsgObjHeader(msgId, objId);
-			}, s, 1);	// note: version === 1 for all msg objects
-		} finally {
-			unlock();
-		}
+	async getMsgMeta(msgId: string): Promise<MsgMeta> {
+		let msgFolder = await this.cache.getFolder(msgId);
+		return this.fs.readJSONFile<MsgMeta>(`${msgFolder}/${META_FNAME}`);
 	}
 	
 	async getMsgObjHeader(msgId: string, objId: string): Promise<Uint8Array> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			return await this.fs.readBytes(msgFolder+'/'+objId+HEADER_FILE_EXT);
-		} finally {
-			unlock();
-		}
+		let msgFolder = await this.cache.getFolder(msgId);
+		let h = await this.fs.readBytes(
+			msgFolder+'/'+objId+HEADER_FILE_EXT);
+		if (!h) { throw new Error(`Empty object header in file for object ${objId} in a message ${msgId}`); }
+		return h;
 	}
 	
 	async getMsgObjSegments(msgId: string, objId: string, start: number,
-			end: number): Promise<Uint8Array> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			return await this.fs.readBytes(
-				msgFolder+'/'+objId+SEGMENTS_FILE_EXT, start, end);
-		} finally {
-			unlock();
-		}
-	}
-	
-	async getMsgStatus(msgId: string): Promise<MsgStatus> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			return await this.fs.readJSONFile<MsgStatus>(
-				msgFolder+'/'+STATUS_FNAME);
-		} finally {
-			unlock();
-		}
+			end: number): Promise<Uint8Array|undefined> {
+		let msgFolder = await this.cache.getFolder(msgId);
+		return this.fs.readBytes(
+			`${msgFolder}/${objId}${SEGMENTS_FILE_EXT}`, start, end);
 	}
 	
 	async startSavingMsg(msgId: string, meta: MsgMeta): Promise<void> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.makeNewFolder(msgId);
-			await this.fs.writeJSONFile(msgFolder+'/'+META_FNAME, meta);
-			let mst: MsgStatus = {
-				status: MSG_STATUS.justMeta,
-				incompleteObjs: meta.objSizes
-			};
-			await this.fs.writeJSONFile(msgFolder+'/'+STATUS_FNAME, mst);
-		} finally {
-			unlock();
+		// make new message folder, throwing if message is already known
+		let msgFolder = await this.cache.makeNewFolder(msgId);
+		
+		// write meta to disk
+		await this.fs.writeJSONFile(`${msgFolder}/${META_FNAME}`, meta);
+		
+		// assemble status info object, and save it
+		let objs: {
+			[objId: string]: { size: ObjSize; partial?: PartialObjInfo; };
+		} = {};
+		for (let objId of meta.extMeta.objIds) {
+			let size = meta.objSizes![objId];
+			objs[objId] = { size, partial: { headerDone: false, segs: [] } };
 		}
-	}
-	
-	private updateObjStatusOnCompleteSaving(msgFolder: string,
-			objId: string, msgStatus: MsgStatus): Promise<void> {
-		changeMsgStatusIfObjComplete(msgStatus, objId, true);
-		return this.fs.writeJSONFile(msgFolder+'/'+STATUS_FNAME, msgStatus);
-	}
-	
-	async saveCompleteObj(msgId: string, objId: string, header: Uint8Array,
-			segments: Uint8Array): Promise<void> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			let msgStat = await this.checkObjStatusForUpdate(msgFolder, objId);
-			await this.fs.writeBytes(msgFolder+'/'+objId+HEADER_FILE_EXT, header);
-			await this.fs.writeBytes(
-				msgFolder+'/'+objId+SEGMENTS_FILE_EXT, segments);
-			await this.updateObjStatusOnCompleteSaving(msgFolder, objId, msgStat);
-		} finally {
-			unlock();
-		}
+		let msgStatus: MsgStatus = {
+			msgId,
+			keyStatus: 'not-checked',
+			onDisk: false,
+			mainObjId: meta.extMeta.objIds[0],
+			deliveryTS: meta.deliveryStart,
+			deliveryComplete: !!meta.deliveryCompletion,
+			objs
+		};
+		this.updateMsgStatus(msgId, msgStatus, msgFolder);
 	}
 	
 	async deleteMsg(msgId: string): Promise<void> {
-		let unlock = await this.cache.accessLock();
-		try {
-			await this.cache.removeFolder(msgId);
-		} finally {
-			unlock();
-		}
+		this.msgStatusCache.delete(msgId);
+		await this.cache.removeFolder(msgId);
 	}
 	
-	private async checkObjStatusForUpdate(msgFolder: string, objId: string):
+	private async checkObjStatusForUpdate(msgId: string, objId: string):
 			Promise<MsgStatus> {
-		let msgStat = await this.fs.readJSONFile<MsgStatus>(
-			msgFolder+'/'+STATUS_FNAME);
-		if ((msgStat.status !== MSG_STATUS.justMeta) &&
-				(msgStat.status !== MSG_STATUS.partial)) {
-			throw new Error('Cache message has incompatible status for '+
-				'object update "'+msgStat.status+'".');
-		} else if (msgStat.completeObjs && msgStat.completeObjs[objId]) {
-			throw new Error('Message object is already marked as complete.');
-		} else if (!msgStat.incompleteObjs || !msgStat.incompleteObjs[objId]) {
-			throw new Error('Object '+objId+' is not known in message '+msgFolder);
+		let msgStatus = await this.findMsg(msgId, true);
+		if (msgStatus!.onDisk || !(msgStatus!.objs[objId].partial)) {
+			throw new Error('Status indicates object is already on the disk.');
 		}
-		return msgStat;
-	}
-	
-	private async updateObjStatusOnHeaderSaving(msgFolder: string,
-			objId: string, msgStatus: MsgStatus): Promise<PartialObjInfo> {
-		if (!msgStatus.partialObjInfos) {
-			msgStatus.partialObjInfos = {};
-		}
-		let info = msgStatus.partialObjInfos[objId];
-		if (info) {
-			info.headerDone = true;
-		} else {
-			info = {
-				headerDone: true,
-				segs: []
-			};
-			msgStatus.partialObjInfos[objId] = info;
-		}
-		changeMsgStatusIfObjComplete(msgStatus, objId);
-		await this.fs.writeJSONFile(msgFolder+'/'+STATUS_FNAME, msgStatus);
-		info = msgStatus.partialObjInfos[objId];
-		return (info ? info : null);
+		return msgStatus!;
 	}
 	
 	async saveMsgObjHeader(msgId: string, objId: string, bytes: Uint8Array):
-			Promise<PartialObjInfo> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			let msgStat = await this.checkObjStatusForUpdate(msgFolder, objId);
-			await this.fs.writeBytes(msgFolder+'/'+objId+HEADER_FILE_EXT, bytes);
-			return await this.updateObjStatusOnHeaderSaving(
-				msgFolder, objId, msgStat);
-		} finally {
-			unlock();
-		}
-	}
-	
-	private async updateObjStatusOnSegSaving(msgFolder: string, objId: string,
-			msgStatus: MsgStatus, start: number, end: number):
-			Promise<PartialObjInfo> {
-		if (!msgStatus.partialObjInfos) {
-			msgStatus.partialObjInfos = {};
-		}
-		let info = msgStatus.partialObjInfos[objId];
-		if (info) {
-			mergeRegions(info.segs, { start, end });
-		} else {
-			info = {
-				headerDone: false,
-				segs: [ { start, end } ]
-			};
-			msgStatus.partialObjInfos[objId] = info;
-		}
+			Promise<void> {
+		let msgFolder = await this.cache.getFolder(msgId);
+
+		// check if update operation can be done, else throw
+		let msgStatus = await this.checkObjStatusForUpdate(msgId, objId);
+
+		// write header to disk
+		await this.fs.writeBytes(
+			`${msgFolder}/${objId}${HEADER_FILE_EXT}`, bytes);
+
+		// update message status
+		msgStatus.objs[objId].partial!.headerDone = true;
 		changeMsgStatusIfObjComplete(msgStatus, objId);
-		await this.fs.writeJSONFile(msgFolder+'/'+STATUS_FNAME, msgStatus);
-		if (!msgStatus.partialObjInfos) {return null;}
-		info = msgStatus.partialObjInfos[objId];
-		return (info ? info : null);
+		await this.updateMsgStatus(msgId, msgStatus, msgFolder);
 	}
 	
 	async saveMsgObjSegs(msgId: string, objId: string, offset: number,
-			bytes: Uint8Array): Promise<PartialObjInfo> {
-		let unlock = await this.cache.accessLock();
-		try {
-			let msgFolder = await this.cache.getFolder(msgId);
-			let msgStat = await this.checkObjStatusForUpdate(msgFolder, objId);
-			let sink = await this.fs.getByteSink(
-				msgFolder+'/'+objId+SEGMENTS_FILE_EXT);
-			sink.seek(offset);
-			let bytesLen = bytes.length;
-			await sink.write(bytes);
-			return await this.updateObjStatusOnSegSaving(
-				msgFolder, objId, msgStat, offset, offset+bytesLen);
-		} finally {
-			unlock();
+			bytes: Uint8Array): Promise<void> {
+		let msgFolder = await this.cache.getFolder(msgId);
+
+		// check if update operation can be done, else throw
+		let msgStatus = await this.checkObjStatusForUpdate(msgId, objId);
+
+		// write bytes to disk
+		let sink = await this.fs.getByteSink(
+			`${msgFolder}/${objId}${SEGMENTS_FILE_EXT}`);
+		sink.seek!(offset);
+		let bytesLen = bytes.length;
+		await sink.write(bytes);
+
+		// update message status
+		let partial = msgStatus.objs[objId].partial;
+		let start = offset;
+		let end = offset + bytesLen;
+		if (partial) {
+			mergeRegions(partial.segs, { start, end });
+		} else {
+			msgStatus.objs[objId].partial = {
+				headerDone: false,
+				segs: [ { start, end } ]
+			};
 		}
+		changeMsgStatusIfObjComplete(msgStatus, objId);
+		await this.updateMsgStatus(msgId, msgStatus, msgFolder);
 	}
-	
+
 	wrap(): InboxCache {
-		let wrap: InboxCache = {
-			deleteMsg: bind(this, this.deleteMsg),
-			getMsgMeta: bind(this, this.getMsgMeta),
-			getMsgObj: bind(this, this.getMsgObj),
-			getMsgObjSegments: bind(this, this.getMsgObjSegments),
-			getMsgObjHeader: bind(this, this.getMsgObjHeader),
-			saveMsgObjSegs: bind(this, this.saveMsgObjSegs),
-			startSavingMsg: bind(this, this.startSavingMsg),
-			saveMsgObjHeader: bind(this, this.saveMsgObjHeader),
-			getMsgStatus: bind(this, this.getMsgStatus),
-			saveCompleteObj: bind(this, this.saveCompleteObj)
+		let w: InboxCache = {
+			findMsg: bind(this, this.findMsg),
+			updateMsgKeyStatus: bind(this, this.updateMsgKeyStatus),
+			getMsgMeta: this.syncAndBind(this.getMsgMeta),
+			getMsgObjHeader: this.syncAndBind(this.getMsgObjHeader),
+			getMsgObjSegments: this.syncAndBind(this.getMsgObjSegments),
+			startSavingMsg: this.syncAndBind(this.startSavingMsg),
+			deleteMsg: this.syncAndBind(this.deleteMsg),
+			saveMsgObjHeader: this.syncAndBind(this.saveMsgObjHeader),
+			saveMsgObjSegs: this.syncAndBind(this.saveMsgObjSegs)
 		};
-		Object.freeze(wrap);
-		return wrap;
+		Object.freeze(w);
+		return w;
 	}
 	
 }

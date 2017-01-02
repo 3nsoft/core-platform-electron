@@ -31,12 +31,12 @@ export function syncWrapByteSource(src: ByteSource,
 	if (src.seek) {
 		synced.seek = (offset: number): Promise<void> => {
 			return readingProc.startOrChain(() => {
-				return src.seek(offset);
+				return src.seek!(offset);
 			});
 		};
 		synced.getPosition = (): Promise<number> => {
 			return readingProc.startOrChain(() => {
-				return src.getPosition();
+				return src.getPosition!();
 			});
 		};
 	}
@@ -65,12 +65,12 @@ export function syncWrapByteSink(sink: ByteSink,
 	if (sink.seek) {
 		synced.seek = (offset: number): Promise<void> => {
 			return writingProc.startOrChain(() => {
-				return sink.seek(offset);
+				return sink.seek!(offset);
 			});
 		};
 		synced.getPosition = (): Promise<number> => {
 			return writingProc.startOrChain(() => {
-				return sink.getPosition();
+				return sink.getPosition!();
 			});
 		};
 	}

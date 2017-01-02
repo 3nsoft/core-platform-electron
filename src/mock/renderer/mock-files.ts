@@ -24,6 +24,7 @@ import { stat, mkdir } from '../../lib-common/async-fs-node';
 import { utf8, base64urlSafe } from '../../lib-common/buffer-utils';
 import { toCanonicalAddress } from '../../lib-common/canonical-address';
 import { FileException } from '../../lib-common/exceptions/file';
+import { errWithCause } from '../../lib-common/exceptions/error';
 
 function userIdToFolderName(userId: string): string {
 	userId = toCanonicalAddress(userId);
@@ -39,16 +40,18 @@ const INBOX_DIR = 'inbox';
 const STORAGE_DIR = 'storage';
 
 async function appFS(): Promise<FS> {
-	await stat(APP_DIR).catch((e: FileException) => {
+	await stat(APP_DIR).catch(async (e: FileException) => {
 		if (!e.notFound) { throw e; }
-		return mkdir(APP_DIR).catch((exc) => { throw new Error(
-			`Cannot create app folder on the disk due to: ${exc.message}`); });
+		await mkdir(APP_DIR).catch((e: FileException) => {
+			if (e.alreadyExists) { return; }
+			throw errWithCause(e, `Cannot create app folder on the disk`);
+		});
 	});
 	return DeviceFS.make(APP_DIR);
 }
 
 export async function getInUserFS(user: string, path: string): Promise<FS> {
-	return (await appFS()).makeSubRoot(userIdToFolderName(user)+'/'+path);
+	return (await appFS()).writableSubRoot(userIdToFolderName(user)+'/'+path);
 }
 
 export function makeStorageFS(user: string): Promise<FS> {

@@ -28,11 +28,11 @@ interface Deferred {
 
 export class SinkBackedObjSource implements ObjSink, ObjSource {
 	
-	private header: Uint8Array = null;
-	private deferredHeader: Deferred = null;
-	private headerPromise: Promise<Uint8Array> = null;
-	private objVersion: number = null;
-	private err: any = null;
+	private header: Uint8Array|undefined = undefined;
+	private deferredHeader: Deferred|undefined = undefined;
+	private headerPromise: Promise<Uint8Array> | undefined = undefined;
+	private objVersion: number|undefined = undefined;
+	private err: any = undefined;
 	private segs = new SinkBackedByteSource();
 
 	get segSink(): ByteSink {
@@ -65,21 +65,21 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 			this.header = bytes;
 			if (this.deferredHeader) {
 				this.deferredHeader.resolve(this.header);
-				this.deferredHeader = null;
-				this.headerPromise = null;
+				this.deferredHeader = undefined;
+				this.headerPromise = undefined;
 			}
 		} else if (err) {
 			this.err = err;
 			if (this.deferredHeader) {
 				this.deferredHeader.reject(this.err);
-				this.deferredHeader = null;
-				this.headerPromise = null;
+				this.deferredHeader = undefined;
+				this.headerPromise = undefined;
 			}
 		}
 	}
 	
 	setObjVersion(v: number): void {
-		if (this.objVersion === null) {
+		if (this.objVersion === undefined) {
 			this.objVersion = v;
 		} else if (v !== this.objVersion) {
 			throw new Error("Expect object version "+this.objVersion+
@@ -87,7 +87,7 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 		}
 	}
 
-	getObjVersion(): number {
+	getObjVersion(): number|undefined {
 		return this.objVersion;
 	}
 	
@@ -112,11 +112,20 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 export async function pipeObj(src: ObjSource, sink: ObjSink,
 		bufSize = 64*1024): Promise<void> {
 	sink.writeHeader(await src.readHeader());
-	sink.setObjVersion(src.getObjVersion());
+	let v = src.getObjVersion();
+	if (typeof v === 'number') {
+		sink.setObjVersion(v);
+	}
 	let buf = await src.segSrc.read(bufSize);
 	while (buf) {
 		await sink.segSink.write(buf);
 		buf = await src.segSrc.read(bufSize);
+	}
+	if (typeof v !== 'number') {
+		v = src.getObjVersion();
+		if (typeof v === 'number') {
+			sink.setObjVersion(v);
+		}
 	}
 	await sink.segSink.write(null);
 }

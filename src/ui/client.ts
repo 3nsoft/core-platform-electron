@@ -1,19 +1,19 @@
 /*
  Copyright (C) 2016 3NSoft Inc.
- 
+
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
  Foundation, either version 3 of the License, or (at your option) any later
  version.
- 
+
  This program is distributed in the hope that it will be useful, but
  WITHOUT ANY WARRANTY; without even the implied warranty of
  MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
  See the GNU General Public License for more details.
- 
+
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
- 
+
 /**
  * This module is for opening startup window, to initialize the core.
  */
@@ -38,11 +38,14 @@ Object.freeze(allowedAppFS);
 export class ClientWin extends WindowOpener {
 
 	static APP_NAME = 'computer.3nweb.client';
-	
+
 	constructor(preload = APP_PRELOAD, urlArgs?: any) {
 		super(ClientWin.APP_NAME, preload, {
 			width: 1200,
-			height: 700
+			height: 700,
+			minWidth: 1024,
+			minHeight: 600,
+			maxWidth: 1440
 		});
 		this.urlRoot = APP_URL_ROOT
 		if (urlArgs) {
@@ -52,7 +55,7 @@ export class ClientWin extends WindowOpener {
 		}
 		Object.freeze(this);
 	}
-	
+
 	getStoragePolicy(): StoragePolicy {
 		let policy: StoragePolicy = {
 			canOpenAppFS(appName: string): boolean {
@@ -62,7 +65,7 @@ export class ClientWin extends WindowOpener {
 		Object.freeze(policy);
 		return policy;
 	}
-	
+
 }
 Object.freeze(ClientWin.prototype);
 Object.freeze(ClientWin);

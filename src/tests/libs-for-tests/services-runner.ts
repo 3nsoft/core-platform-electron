@@ -34,8 +34,8 @@ const SERVER_MOCK_CHANNEL = 'server-mock';
 
 export class ServicesRunner {
 
-	private proc: ChildProcess = null;
-	private comm: Duplex = null;
+	private proc: ChildProcess = (undefined as any);
+	private comm: Duplex = (undefined as any);
 	
 	constructor(private servScript = DEFAULT_SERVER_SCRIPT_PATH) {
 		Object.seal(this);
@@ -63,7 +63,7 @@ export class ServicesRunner {
 			}
 			if (this.proc) {
 				this.proc.kill('SIGKILL');
-				this.proc = null;
+				this.proc = (undefined as any);
 			}
 			throw err;
 		}
@@ -72,8 +72,8 @@ export class ServicesRunner {
 	async stop(): Promise<void> {
 		await this.comm.makeRequest<void>('stop', null);
 		this.proc.kill('SIGTERM');
-		this.proc = null;
-		this.comm = null;
+		this.proc = (undefined as any);
+		this.comm = (undefined as any);
 	}
 
 	async setDns(recs: DnsTxtRecords): Promise<void> {

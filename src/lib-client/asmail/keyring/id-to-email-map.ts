@@ -37,7 +37,7 @@ export class IdToEmailMap {
 	 * one email registered for a given id, or an array of string emails, if
 	 * more than one email registered for a given id. 
 	 */
-	getEmails(id: string): string[] {
+	getEmails(id: string): string[] | undefined {
 		let emails = this.idToEmail.get(id);
 		if (emails) { return emails; }
 		if (Array.isArray(emails)) { return emails.concat([]); }

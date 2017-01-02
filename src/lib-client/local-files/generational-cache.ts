@@ -16,7 +16,6 @@
 
 import { FS, ListingEntry } from './device-fs';
 import { RuntimeException } from '../../lib-common/exceptions/runtime';
-import { makeReadWriteLock } from '../../lib-common/processes';
 import { ByteSource } from '../../lib-common/byte-streaming/common';
 import { ObjSource } from '../../lib-common/obj-streaming/common';
 import { NamedProcs } from '../../lib-common/processes';
@@ -94,7 +93,7 @@ export function makeAlreadyExistExc(name: string): Exception {
 export function makeObjSourceFromByteSources(
 		headGetter: () => Promise<Uint8Array>,
 		segSource: ByteSource, version: number): ObjSource {
-	let headerSize: number = null;
+	let headerSize: number|undefined = undefined;
 	return {
 		
 		getObjVersion(): number {
@@ -124,19 +123,6 @@ function notFoundOrReThrow(exc: FileException): void {
 export class CacheOfFolders {
 	
 	/**
-	 * One must acquire this lock when doing anything with cached content.
-	 * It allows concurrent access, while excluding any cache maintenance
-	 * actions, like backet rotation, etc.
-	 */
-	accessLock: () => Promise<() => void>;
-	
-	/**
-	 * Acquire this lock for maintenance actions, that may mess up content
-	 * access, which is excluded by this lock.
-	 */
-	private maintenanceLock: () => Promise<() => void>;
-	
-	/**
 	 * This process chaining is used to synchronize access on per-folder basis.
 	 */
 	folderProcs = new NamedProcs();
@@ -144,65 +130,56 @@ export class CacheOfFolders {
 	constructor(
 			private fs: FS,
 			private canMove?: (folderLst: ListingEntry[]) => boolean) {
-		let lock = makeReadWriteLock();
-		this.accessLock = lock.lockForRead;
-		this.maintenanceLock = lock.lockForWrite;
 		Object.freeze(this);
 	}
 	
-	async init(rotationHours: number = null): Promise<void> {
-		let unlock = await this.maintenanceLock();
+	async init(rotationHours?: number): Promise<void> {
+		await this.fs.makeFolder(TODAY_DIR);
 		try {
-			await this.fs.makeFolder(TODAY_DIR);
-			try {
-				await this.fs.readJSONFile(CACHE_ROTATIONS_FILE_NAME);
-			} catch (err) {
-				await this.fs.writeJSONFile(
-					CACHE_ROTATIONS_FILE_NAME, makeNewInfo());
-			}
-			await this.rotate();
-		} finally {
-			unlock();
+			await this.fs.readJSONFile(CACHE_ROTATIONS_FILE_NAME);
+		} catch (err) {
+			await this.fs.writeJSONFile(
+				CACHE_ROTATIONS_FILE_NAME, makeNewInfo());
 		}
-		if (rotationHours !== null) {
+		await this.rotate();
+		if (rotationHours !== undefined) {
 			this.setNextCacheRotation(rotationHours);
 		}
 	}
 	
 	private setNextCacheRotation(hours: number): void {
 		setTimeout(async () => {
-			let unlock = await this.maintenanceLock();
-			try {
-				await this.rotate();
-				this.setNextCacheRotation(hours);
-			} finally {
-				unlock();
-			}
+			await this.rotate();
+			this.setNextCacheRotation(hours);
 		}, hours*60*60*1000);
 	}
 	
 	private async moveBacketContent(src: string, dst: string,
 			canMove?: (folderLst: ListingEntry[]) => boolean):
 			Promise<void> {
-		let thingsToMove = await this.fs.listFolder(src).catch(notFoundOrReThrow);
-		if (!thingsToMove) { return; }
-		for (let entry of thingsToMove) {
-			await this.folderProcs.start(entry.name, async () => {
-				let entryPath = `${src}/${entry.name}`;
-				if (canMove) {
-					let folderLst = await this.fs.listFolder(`${src}/${entry.name}`);
-					if (!canMove(folderLst)) { return; }
-				}
-				if (entry.isFolder) {
-					await this.fs.move(entryPath, `${dst}/${entry.name}`);
-				} else if (entry.isFile) {
-					console.warn('Removing an unexpected file in cache of folders: '+
-						entryPath);
-					await this.fs.deleteFile(entryPath);
-				} else {
-					console.warn('Unexpected entry in cache of folders: '+entryPath);
-				}
-			}).catch(() => {});
+		try {
+			let thingsToMove = await this.fs.listFolder(src);
+			for (let entry of thingsToMove) {
+				await this.folderProcs.start(entry.name, async () => {
+					let entryPath = `${src}/${entry.name}`;
+					if (canMove) {
+						let folderLst = await this.fs.listFolder(
+							`${src}/${entry.name}`);
+						if (!canMove(folderLst)) { return; }
+					}
+					if (entry.isFolder) {
+						await this.fs.move(entryPath, `${dst}/${entry.name}`);
+					} else if (entry.isFile) {
+						console.warn('Removing an unexpected file in cache of folders: '+
+							entryPath);
+						await this.fs.deleteFile(entryPath);
+					} else {
+						console.warn('Unexpected entry in cache of folders: '+entryPath);
+					}
+				}).catch(() => {});
+			}
+		} catch (exc ) {
+			notFoundOrReThrow(exc);
 		}
 	}
 	
@@ -232,19 +209,22 @@ export class CacheOfFolders {
 	async listFolders(): Promise<string[][]> {
 		let backets: string[][] = [];
 		for (let bName of ALL_BACKETS) {
-			let lst = await this.fs.listFolder(bName).catch(notFoundOrReThrow);
-			if (!lst) { continue; }
-			let paths = new Array<string>(lst.length);
-			for (let i=0; i < lst.length; i+=1) {
-				paths[i] = `${bName}/${lst[i].name}`;
+			try {
+				let lst = await this.fs.listFolder(bName);
+				let paths = new Array<string>(lst.length);
+				for (let i=0; i < lst.length; i+=1) {
+					paths[i] = `${bName}/${lst[i].name}`;
+				}
+				backets.push(paths);
+			} catch (exc) {
+				notFoundOrReThrow(exc);
 			}
-			backets.push(paths);
 		}
 		return backets;
 	}
 
 	private async findFolder(fName: string):
-			Promise<{ path: string; isRecent: boolean; }> {
+			Promise<{ path: string; isRecent: boolean; } | undefined> {
 		let isRecent = true;
 		for (let backet of ALL_BACKETS) {
 			let path = backet+'/'+fName;

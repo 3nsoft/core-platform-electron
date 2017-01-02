@@ -14,16 +14,17 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { itAsync, beforeEachAsync, afterEachAsync, beforeAllAsync,
-	afterAllAsync, fitAsync, xitAsync }
+import { itAsync, beforeAllAsync, afterAllAsync, afterEachAsync }
 	from '../libs-for-tests/async-jasmine';
 import { DeviceFS } from '../../lib-client/local-files/device-fs';
 import * as nodeFS from '../../lib-common/async-fs-node';
 import { resolve } from 'path';
 import { bytes as randomBytes } from '../../lib-client/random-node';
-import { fsSpecsForCurrentCtx } from '../shared-checks/fs/specs';
+import { fsSpecsForCurrentCtx } from '../libs-for-tests/spec-module';
 
-type FileException = Web3N.Files.FileException;
+declare var testFS: web3n.files.FS;
+
+type FileException = web3n.files.FileException;
 
 const TEST_DATA = resolve(__dirname, '../../../test-data');
 
@@ -62,7 +63,31 @@ describe('DeviceFS', () => {
 
 	});
 
-	describe('is Web3N.Files.FS',
-		fsSpecsForCurrentCtx(() => DeviceFS.make(rootPath)));
+	describe('is Web3N.Files.FS', () => {
+
+		beforeAllAsync(async function() {
+			(<any> global).testFS = await DeviceFS.make(rootPath);
+		});
+
+		afterEachAsync(async function() {
+			let items = await testFS.listFolder('');
+			let delTasks: Promise<void>[] = [];
+			for (let f of items) {
+				if (f.isFile) {
+					delTasks.push(testFS.deleteFile(f.name));
+				} else if (f.isFolder) {
+					delTasks.push(testFS.deleteFolder(f.name, true));
+				} else {
+					throw new Error(`File system item is neither file, nor folder`);
+				}
+			}
+			await Promise.all(delTasks);
+		});
+
+		fsSpecsForCurrentCtx(resolve(__dirname, '../shared-checks/fs'));
+
+		fsSpecsForCurrentCtx(resolve(__dirname, './device-fs'));
+
+	});
 
 });

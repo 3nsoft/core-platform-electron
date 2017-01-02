@@ -16,7 +16,7 @@
 
 import { bind } from '../binding';
 
-export type ByteSource = Web3N.ByteSource;
+export type ByteSource = web3n.ByteSource;
 
 export function wrapByteSourceImplementation(src: ByteSource): ByteSource {
 	let wrap: ByteSource = {
@@ -25,12 +25,12 @@ export function wrapByteSourceImplementation(src: ByteSource): ByteSource {
 	};
 	if (src.seek) {
 		wrap.seek = bind(src, src.seek);
-		wrap.getPosition = bind(src, src.getPosition);
+		wrap.getPosition = bind(src, src.getPosition!);
 	}
 	return wrap;
 }
 
-export type ByteSink = Web3N.ByteSink; 
+export type ByteSink = web3n.ByteSink; 
 
 export function wrapByteSinkImplementation(sink: ByteSink): ByteSink {
 	let wrap: ByteSink = {
@@ -40,7 +40,7 @@ export function wrapByteSinkImplementation(sink: ByteSink): ByteSink {
 	};
 	if (sink.seek) {
 		wrap.seek = bind(sink, sink.seek);
-		wrap.getPosition = bind(sink, sink.getPosition);
+		wrap.getPosition = bind(sink, sink.getPosition!);
 	}
 	return wrap;
 }
@@ -73,8 +73,8 @@ export class BytesFIFOBuffer {
 	 * or equal to current length of queue.
 	 * @return requested bytes
 	 */
-	private extractSomeBytesFrom(extractLen: number): Uint8Array {
-		if (this.queue.length === 0) { return null; }
+	private extractSomeBytesFrom(extractLen: number): Uint8Array|undefined {
+		if (this.queue.length === 0) { return undefined; }
 		let extract = new Uint8Array(extractLen);
 		let offset = 0;
 		while (offset < extractLen) {
@@ -92,18 +92,18 @@ export class BytesFIFOBuffer {
 		return extract;
 	}
 	
-	private extractAllBytesFrom(): Uint8Array {
+	private extractAllBytesFrom(): Uint8Array|undefined {
 		return this.extractSomeBytesFrom(this.queueLen);
 	}
 		
 	/**
 	 * @param len is a number of bytes to get.
-	 * If null is given, all bytes should be returned.
-	 * @return an array of bytes, or null, if there are not enough bytes.
+	 * If undefined is given, all bytes should be returned.
+	 * @return an array of bytes, or undefined, if there are not enough bytes.
 	 */
-	getBytes(len: number, canBeLess = false): Uint8Array {
-		if (this.queue.length === 0) { return null; }
-		let extract: Uint8Array;
+	getBytes(len: number|undefined, canBeLess = false): Uint8Array|undefined {
+		if (this.queue.length === 0) { return undefined; }
+		let extract: Uint8Array|undefined;
 		if (typeof len !== 'number') {
 			extract = this.extractAllBytesFrom();
 		} else {
@@ -112,7 +112,7 @@ export class BytesFIFOBuffer {
 				if (canBeLess) {
 					extract = this.extractAllBytesFrom();
 				} else {
-					return null;
+					return undefined;
 				}
 			} else {
 				extract = this.extractSomeBytesFrom(len);
@@ -137,8 +137,8 @@ export function sourceFromArray(bytes: Uint8Array): ByteSource {
 	let src: ByteSource = {
 		getPosition: async (): Promise<number> => { return pos; },
 		getSize: async (): Promise<number> => { return bytes.length; },
-		read: async (len: number): Promise<Uint8Array> => {
-			if (len === null) { return bytes.subarray(pos); }
+		read: async (len: number|undefined): Promise<Uint8Array> => {
+			if (len === undefined) { return bytes.subarray(pos); }
 			if ((typeof len !== 'number') || (len < 0)) { throw new TypeError(
 				`Illegal length parameter given: ${len}`); }
 			let chunk = bytes.subarray(pos, pos+len);

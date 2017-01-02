@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2016 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,12 +18,14 @@ import { ASMailKeyPair } from './common';
 import { secret_box as sbox } from 'ecma-nacl';
 import { JsonKey } from '../../../lib-common/jwkeys';
 import { user as mid } from '../../../lib-common/mid-sigs-NaCl-Ed';
-import { SuggestedNextKeyPair } from '../msg';
+import { SuggestedNextKeyPair, OpenedMsg } from '../msg';
 import * as delivApi from '../../../lib-common/service-api/asmail/delivery';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
-import { Ring } from './ring';
+import { Ring, MsgDecrInfo, Storage } from './ring';
+import { ObjSource } from '../../../lib-common/obj-streaming/common';
 
-export { KEY_USE, KEY_ROLE } from './common';
+export { KEY_USE, MsgKeyRole } from './common';
+export { MsgDecrInfo, Storage } from './ring';
 
 export interface KeyRing {
 	
@@ -48,7 +50,7 @@ export interface KeyRing {
 	 * @return published certificates for an introductory key,
 	 * or undefined, if the key was not set.
 	 */
-	getPublishedKeyCerts(): confApi.p.initPubKey.Certs;
+	getPublishedKeyCerts(): confApi.p.initPubKey.Certs | undefined;
 	
 	/**
 	 * @param address
@@ -93,30 +95,15 @@ export interface KeyRing {
 			};
 		};
 	
-	absorbSuggestedNextKeyPair(correspondent: string,
-		suggPair: SuggestedNextKeyPair, timestamp: number): void;
+	getInviteForSendingTo(correspondent: string): string | undefined;
 	
-	getInviteForSendingTo(correspondent: string): string;
+	decrypt(msgMeta: delivApi.msgMeta.CryptoInfo, timestamp: number,
+		getMainObjHeader: () => Promise<Uint8Array>,
+		getOpenedMsg: (mainObjFileKey: string) => Promise<OpenedMsg>,
+		checkMidKeyCerts: (certs: confApi.p.initPubKey.Certs) =>
+			Promise<{ pkey: JsonKey; address: string; }>):
+		Promise<MsgDecrInfo|undefined>;
 	
-	/**
-	 * @param pair
-	 * @return an array of DecryptorWithInfo's.
-	 * Undefined is returned when pair's id is not known. 
-	 */
-	getDecryptorFor(pair: delivApi.msgMeta.CryptoInfo): DecryptorWithInfo[];
-	
-}
-
-export interface DecryptorWithInfo {
-	correspondent?: string;
-	decryptor: sbox.Decryptor;
-	key?: JsonKey;
-	cryptoStatus: string;
-}
-
-export interface Storage {
-	load(): Promise<string>;
-	save(serialForm: string): Promise<void>;
 }
 
 /**

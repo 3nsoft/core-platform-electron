@@ -25,6 +25,13 @@ export function uint8(): number {
 	return bytes(1)[0];
 }
 
+export function uint48(): number {
+	let b = bytes(6);
+	let l = b[0] + (b[1] << 8) + (b[2] << 16) + (b[3] << 24);
+	let h = b[4] + (b[5] << 8);
+	return h*0x100000000 + l;
+}
+
 export function stringOfB64UrlSafeChars(numOfChars: number): string {
 	let numOfbytes = 3*(1 + Math.floor(numOfChars/4));
 	let byteArr = bytes(numOfbytes);

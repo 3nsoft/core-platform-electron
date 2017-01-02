@@ -21,16 +21,17 @@
 
 import { makeFileException, Code as excCode, FileException }
 	from '../../../lib-common/exceptions/file';
-import { Folder, File } from './fs-entities';
-import { ListingEntry, FS as FileSystem, wrapFSImplementation,
-	sysFolders, Storage } from './common';
-import * as random from '../../random-node';
+import { NodeInFS, NodeCrypto, SymLink } from './node-in-fs';
+import { FolderNode, FolderLinkParams, FolderJson } from './folder-node';
+import { FileNode, FileLinkParams } from './file-node';
+import { FileObject, readBytesFrom } from './file';
+import { ListingEntry, FS as StorageFS, wrapFSImplementation,
+	sysFolders, Storage, NodesContainer } from './common';
 import { arrays, secret_box as sbox } from 'ecma-nacl';
-import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { AbstractFS } from '../../files';
-
-let OBJID_LEN = 40;
-let EMPTY_BYTE_ARRAY = new Uint8Array(0);
+import { AbstractFS, File, Linkable, LinkParameters } from '../../files';
+import { basename } from 'path';
+import { pipe } from '../../../lib-common/byte-streaming/pipe';
+import { utf8 } from '../../../lib-common/buffer-utils';
 
 function splitPathIntoParts(path: string): string[] {
 	let pathParts = (path ? path.split('/') : []);
@@ -52,133 +53,135 @@ function splitPathIntoParts(path: string): string[] {
 	return pathParts;
 }
 
-function setFileExcMessage(path: string): (exc: FileException) => any {
-	return (exc: FileException) => {
-		if (exc.notFound) {
-			exc.message = `File '${path}' does not exist`;
-		} else if (exc.notFile) {
-			exc.message = `Entity '${path}' is not a file`;
+function setExcPath(path: string): (exc: FileException) => never {
+	return (exc: FileException): never => {
+		if (exc.notFound || exc.notDirectory || exc.alreadyExists || exc.notFile) {
+			exc.path = path;
 		}
 		throw exc;
 	}
 }
 
-function setFolderExcMessage(path: string): (exc: FileException) => any {
-	return (exc: FileException) => {
-		if (exc.notFound) {
-			exc.message = `Folder '${path}' does not exist`;
-		} else if (exc.notDirectory) {
-			exc.message = `Entity '${path}' is not a folder`;
-		} else if (exc.alreadyExists) {
-			exc.message = `Folder ${path} already exist`;
-		}
-		throw exc;
-	}
+function split (path: string): { folderPath: string[]; fileName: string; } {
+	let folderPath = splitPathIntoParts(path);
+	let fileName = folderPath[folderPath.length-1];
+	folderPath.splice(folderPath.length-1, 1);
+	return { folderPath, fileName };
 }
 
-export class FS extends AbstractFS implements FileSystem {
+type ByteSource = web3n.ByteSource;
+type ByteSink = web3n.ByteSink;
+type FileStats = web3n.storage.FileStats;
+
+export class FS extends AbstractFS implements StorageFS {
 	
 	arrFactory = arrays.makeFactory();
-	objs = new Map<string, File|Folder>();
-	private root: Folder = null;
-	private isSubRoot = true;
+	private root: FolderNode = (undefined as any);
+	private isSubRoot = false;
 	
-	constructor(
-			public storage: Storage) {
-		super();
+	private constructor(
+			public storage: Storage,
+			writable: boolean,
+			folderName?: string,
+			versioned = true) {
+		super(folderName!, writable, versioned);
 		Object.seal(this);
 	}
 	
-	/**
-	 * @return new objId, with null placed under this id, reserving it in
-	 * objs map.
-	 */
-	generateNewObjId(): string {
-		let id = random.stringOfB64UrlSafeChars(OBJID_LEN);
-		if (!this.objs.has(id)) {
-			this.objs.set(id, null);
-			return id;
-		} else {
-			return this.generateNewObjId();
+	private async makeSubRoot(writable: boolean, path: string,
+			folderName: string): Promise<StorageFS> {
+		let pathParts = splitPathIntoParts(path);
+		let folder = await this.root.getFolderInThisSubTree(pathParts, writable)
+		.catch(setExcPath(path));
+		if (folderName === undefined) {
+			folderName = ((pathParts.length === 0) ?
+				this.name : pathParts[pathParts.length-1]);
 		}
-	}
-	
-	private setRoot(root: Folder): void {
-		if (this.root) { throw new Error("Root is already set."); }
-		this.root = root;
-		if ('string' === typeof root.objId) {
-			this.objs.set(root.objId, root);
-		}
-	}
-	
-	async makeSubRoot(path:string): Promise<FileSystem> {
-		let folder = await this.root.getFolderInThisSubTree(
-			splitPathIntoParts(path), true)
-		.catch(setFolderExcMessage(path));
-		let fs = new FS(this.storage);
-		fs.setRoot(Folder.rootFromFolder(fs,
-			<Folder> this.objs.get(folder.objId)));
+		let fs = new FS(this.storage, writable, folderName, this.versioned);
 		fs.isSubRoot = true;
+		fs.root = folder;
 		return Object.freeze(wrapFSImplementation(fs));
 	}
 	
+	readonlySubRoot(folder: string, folderName?: string):
+			Promise<StorageFS> {
+		return this.makeSubRoot(false, folder, folderName!);
+	}
+
+	writableSubRoot(folder: string, folderName?: string):
+			Promise<StorageFS> {
+		return this.makeSubRoot(true, folder, folderName!);
+	}
+	
 	static makeNewRoot(storage: Storage,
-			masterEnc: sbox.Encryptor): FileSystem {
-		let fs = new FS(storage);
-		fs.setRoot(Folder.newRoot(fs, masterEnc));
+			masterEnc: sbox.Encryptor): StorageFS {
+		let fs = new FS(storage, true);
+		fs.root = FolderNode.newRoot(fs, masterEnc);
 		fs.root.createFolder(sysFolders.appData);
 		fs.root.createFolder(sysFolders.userFiles);
 		return Object.freeze(wrapFSImplementation(fs));
 	}
 	
 	static async makeExisting(storage: Storage, rootObjId: string,
-			masterDecr: sbox.Decryptor, rootName: string = null):
-			Promise<FileSystem> {
-		let fs = new FS(storage);
-		let objSrc = await storage.getObj(rootObjId)
-		let root = await Folder.rootFromObjBytes(
+			masterDecr: sbox.Decryptor, rootName?: string):
+			Promise<StorageFS> {
+		let fs = new FS(storage, true);
+		let objSrc = await storage.getObj(rootObjId);
+		fs.root = await FolderNode.rootFromObjBytes(
 			fs, rootName, rootObjId, objSrc, masterDecr);
-		fs.setRoot(root);
+		return Object.freeze(wrapFSImplementation(fs));
+	}
+
+	static makeRootFromJSON(storage: Storage, folderJson: FolderJson,
+			mkey: string, rootName?: string): StorageFS {
+		let fs = new FS(storage, false, rootName, false);
+		fs.root = FolderNode.rootFromJSON(storage, rootName, folderJson, mkey);
 		return Object.freeze(wrapFSImplementation(fs));
 	}
 	
+	/**
+	 * Note that this method doesn't close storage.
+	 */
 	async close(): Promise<void> {
-		// TODO add destroing of obj's (en)decryptors
-		
-		this.root = null;
-		this.storage = null;
-		this.objs.clear();
-		// this.objTasks = null;
+		this.root = (undefined as any);
+		this.storage = (undefined as any);
 	}
 	
-	private changeObjId(obj: Folder|File, newId: string): void {
+	private changeObjId(obj: NodeInFS<NodeCrypto>, newId: string): void {
 // TODO implementation (if folder, change children's parentId as well)
 		throw new Error("Not implemented, yet");
 	}
 	
-	async listFolder(path: string): Promise<ListingEntry[]> {
+	async versionedListFolder(path: string):
+			Promise<{ lst: ListingEntry[]; version: number; }> {
 		let folder = await this.root.getFolderInThisSubTree(
-			splitPathIntoParts(path), false)
-		.catch(setFolderExcMessage(path));
+			splitPathIntoParts(path), false).catch(setExcPath(path));
 		return folder.list();
+	}
+	
+	async listFolder(path: string): Promise<ListingEntry[]> {
+		let { lst } = await this.versionedListFolder(path);
+		return lst;
 	}
 	
 	async makeFolder(path: string, exclusive = false): Promise<void> {
 		let folderPath = splitPathIntoParts(path);
 		await this.root.getFolderInThisSubTree(folderPath, true, exclusive)
-		.catch(setFolderExcMessage(path));
+		.catch(setExcPath(path));
 	}
 	
 	async deleteFolder(path: string, removeContent = false): Promise<void> {
 		let folderPath = splitPathIntoParts(path);
 		let folder = await this.root.getFolderInThisSubTree(folderPath)
-		.catch(setFolderExcMessage(path));
+		.catch(setExcPath(path));
+		if (folder === this.root) {
+			throw new Error('Cannot remove root folder'); }
 		if (removeContent) {
-			let content = folder.list();
+			let { lst: content } = folder.list();
 			for (let entry of content) {
 				if (entry.isFile) {
 					let file = await folder.getFile(entry.name);
-					folder.removeChild(file);
+					folder.removeChild(file!);
 				} else if (entry.isFolder) {
 					await this.deleteFolder(`${path}/${entry.name}`, true);
 				}
@@ -188,30 +191,34 @@ export class FS extends AbstractFS implements FileSystem {
 	}
 	
 	async deleteFile(path: string): Promise<void> {
-		let folderPath = splitPathIntoParts(path);
-		let fileName = folderPath[folderPath.length-1];
-		folderPath.splice(folderPath.length-1, 1);
+		let { fileName, folderPath } = split(path);
 		let folder = await this.root.getFolderInThisSubTree(folderPath)
-		.catch(setFileExcMessage(path));
+		.catch(setExcPath(path));
 		let file = await folder.getFile(fileName)
-		.catch(setFileExcMessage(path));
-		file.remove();
+		.catch(setExcPath(path));
+		file!.remove();
 	}
 	
-	private async getOrCreateFile(path: string, create: boolean,
-			exclusive: boolean): Promise<File> {
-		let folderPath = splitPathIntoParts(path);
-		let fileName = folderPath[folderPath.length-1];
-		folderPath.splice(folderPath.length-1, 1);
+	async deleteLink(path: string): Promise<void> {
+		let { fileName, folderPath } = split(path);
+		let folder = await this.root.getFolderInThisSubTree(folderPath)
+		.catch(setExcPath(path));
+		let link = await folder.getLink(fileName)
+		.catch(setExcPath(path));
+		link!.remove();
+	}
+	
+	async getOrCreateFile(path: string, create: boolean,
+			exclusive: boolean): Promise<FileNode> {
+		let { fileName, folderPath } = split(path);
 		let folder = await this.root.getFolderInThisSubTree(folderPath, create)
-		.catch(setFileExcMessage(path));
+		.catch(setExcPath(path));
 		let nullOnMissing = create;
 		let file = await folder.getFile(fileName, nullOnMissing)
-		.catch(setFileExcMessage(path));
+		.catch(setExcPath(path));
 		if (file) {
 			if (exclusive) {
-				throw makeFileException(excCode.alreadyExists,
-					`File ${path} already exists.`);
+				throw makeFileException(excCode.alreadyExists, path);
 			}
 		} else {
 			file = folder.createFile(fileName);
@@ -219,38 +226,55 @@ export class FS extends AbstractFS implements FileSystem {
 		return file;
 	}
 
+	async versionedWriteBytes(path: string, bytes: Uint8Array, create = true,
+			exclusive = false): Promise<number> {
+		let f = await this.getOrCreateFile(path, create, exclusive);
+		return f.save(bytes);
+	}
+
 	async writeBytes(path: string, bytes: Uint8Array, create = true,
 			exclusive = false): Promise<void> {
-		let f = await this.getOrCreateFile(path, create, exclusive);
-		await f.save(bytes);
+		await this.versionedWriteBytes(path, bytes, create, exclusive);
+	}
+
+	async versionedReadBytes(path: string, start?: number, end?: number):
+			Promise<{ bytes: Uint8Array|undefined; version: number; }> {
+		let file = await this.getOrCreateFile(path, false, false);
+		let { src, version } = await file.readSrc();
+		let bytes = await readBytesFrom(src, start, end);
+		return { bytes, version };
 	}
 
 	async readBytes(path: string, start?: number, end?: number):
-			Promise<Uint8Array> {
-		if ((typeof start === 'number') && (start < 0)) { throw new Error(
-			`Parameter start has bad value: ${start}`); }
-		if ((typeof end === 'number') && (end < 0)) { throw new Error(
-			`Parameter end has bad value: ${end}`); }
-		let file = await this.getOrCreateFile(path, false, false);
-		let src = await file.readSrc();
-		let size = await src.getSize();
-		if (typeof size !== 'number') { throw new Error(
-			'File size is not known.'); }
-		if (typeof start === 'number') {
-			if (start >= size) { return EMPTY_BYTE_ARRAY; }
-			if (typeof end === 'number') {
-				end = Math.min(size, end);
-				if (end <= start) { return EMPTY_BYTE_ARRAY; }
-			} else {
-				end = size;
-			}
-			await src.seek(start);
-			let bytes = await src.read(end - start);
-			return bytes;
-		} else {
-			let bytes = await src.read(null);
-			return (bytes ? bytes : EMPTY_BYTE_ARRAY);
-		}
+			Promise<Uint8Array|undefined> {
+		let { bytes } = await this.versionedReadBytes(path, start, end);
+		return bytes;
+	}
+	
+	versionedWriteTxtFile(path: string, txt: string, create?: boolean,
+			exclusive?: boolean): Promise<number> {
+		let bytes = utf8.pack(txt);
+		return this.versionedWriteBytes(path, bytes, create, exclusive);
+	}
+		
+	async versionedReadTxtFile(path: string):
+			Promise<{ txt: string; version: number; }> {
+		let { bytes, version } = await this.versionedReadBytes(path);
+		let txt = (bytes ? utf8.open(bytes) : '');
+		return { txt, version };
+	}
+
+	versionedWriteJSONFile(path: string, json: any, create?: boolean,
+			exclusive?: boolean): Promise<number> {
+		let txt = JSON.stringify(json);
+		return this.versionedWriteTxtFile(path, txt, create, exclusive);
+	}
+		
+	async versionedReadJSONFile<T>(path: string):
+			Promise<{ json: T; version: number; }> {
+		let { txt, version } = await this.versionedReadTxtFile(path);
+		let json = JSON.parse(txt);
+		return { json, version };
 	}
 	
 	async move(initPath: string, newPath: string): Promise<void> {
@@ -272,37 +296,54 @@ export class FS extends AbstractFS implements FileSystem {
 			await srcFolder.moveChildTo(initFName, dstFolder, dstFName);
 		} catch (exc) {
 			if ((<FileException> exc).notFound) {
-				(<FileException> exc).message = `Path ${initPath} does not exist.`;
+				(<FileException> exc).path = initPath;
 			} else if ((<FileException> exc).alreadyExists) {
-				(<FileException> exc).message = `Path ${newPath} already exist.`;
+				(<FileException> exc).path = newPath;
 			} else if ((<FileException> exc).notDirectory) {
-				(<FileException> exc).message = `Cannot make new path ${newPath} cause some intermediate part is not a folder.`;
+				(<FileException> exc).path = newPath;
 			}
 			throw exc;
 		}
 	}
 
-	async getByteSink(path: string, create = true, exclusive = false):
-			Promise<Web3N.ByteSink> {
+	async versionedGetByteSink(path: string, create = true, exclusive = false):
+			Promise<{ sink: ByteSink; version: number; }> {
 		let f = await this.getOrCreateFile(path, create, exclusive);
-		return f.writeSink().sink;
+		return f.writeSink();
 	}
 
-	async getByteSource(path: string): Promise<Web3N.ByteSource> {
+	async getByteSink(path: string, create = true, exclusive = false):
+			Promise<ByteSink> {
+		let { sink } = await this.versionedGetByteSink(path, create, exclusive);
+		return sink;
+	}
+
+	async versionedGetByteSource(path: string):
+			Promise<{ src: ByteSource; version: number; }> {
 		let f = await this.getOrCreateFile(path, false, false);
 		return f.readSrc();
 	}
 
-	async statFile(path: string): Promise<Web3N.Files.FileStats> {
-		// XXX add implementation
-		throw new Error('fs method statFile is not implemented, yet.');
+	async getByteSource(path: string): Promise<ByteSource> {
+		let { src } = await this.versionedGetByteSource(path);
+		return src;
+	}
+
+	async statFile(path: string): Promise<FileStats> {
+		let f = await this.getOrCreateFile(path, false, false);
+		let { src, version } = await f.readSrc();
+		let stat: FileStats = {
+			size: await src.getSize(),
+			version
+		};
+		return stat;
 	}
 
 	async checkFolderPresence(path: string, throwIfMissing = false):
 			Promise<boolean> {
 		let folderPath = splitPathIntoParts(path);
 		let f = await this.root.getFolderInThisSubTree(folderPath, false)
-		.catch(setFolderExcMessage(path))
+		.catch(setExcPath(path))
 		.catch((exc: FileException) => {
 			if (exc.notFound && !throwIfMissing) { return; }
 			throw exc;
@@ -313,12 +354,114 @@ export class FS extends AbstractFS implements FileSystem {
 	async checkFilePresence(path: string, throwIfMissing?: boolean):
 			Promise<boolean> {
 		let f = await this.getOrCreateFile(path, false, false)
-		.catch(setFileExcMessage(path))
+		.catch(setExcPath(path))
 		.catch((exc: FileException) => {
 			if (exc.notFound && !throwIfMissing) { return; }
 			throw exc;
 		});
 		return !!f;
+	}
+
+	async copyFolder(src: string, dst: string, mergeAndOverwrite = false):
+			Promise<void> {
+		let lst = await this.listFolder(src);
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (let f of lst) {
+			if (f.isFile) {
+				await this.copyFile(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isFolder) {
+				await this.copyFolder(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				let link = await this.readLink(f.name);
+				let t = await link.target<File|StorageFS>();
+				await this.link(`${dst}/${f.name}`, t);
+			}
+		}
+	}
+
+	async saveFolder(folder: StorageFS, dst: string,
+			mergeAndOverwrite = false): Promise<void> {
+		let lst = await folder.listFolder('/');
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (let f of lst) {
+			if (f.isFile) {
+				let src = await folder.getByteSource(f.name);
+				let sink = await this.getByteSink(dst, true, !mergeAndOverwrite);
+				await pipe(src, sink);
+			} else if (f.isFolder) {
+				let subFolder = await folder.readonlySubRoot(f.name);
+				await this.saveFolder(subFolder, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				let link = await this.readLink(f.name);
+				let t = await link.target<File|StorageFS>();
+				await this.link(`${dst}/${f.name}`, t);
+			}
+		}
+	}
+
+	private ensureLinkingAllowedTo(params: LinkParameters<any>): void {
+		if (this.storage.type === 'local') {
+			return;
+		} else if (this.storage.type === 'synced') {
+			if ((params.storageType === 'share') ||
+				(params.storageType === 'synced')) { return; }
+		} else if (this.storage.type === 'share') {
+			if (params.storageType === 'share') { return; }
+		}
+		throw new Error(`Cannot create link to ${params.storageType} from ${this.storage.type} storage.`);
+	}
+
+	async link(path: string, target: File | StorageFS):
+			Promise<void> {
+		if (!target ||
+				(typeof (<Linkable> <any> target).getLinkParams !== 'function')) {
+			throw new Error('Given target is not-linkable');
+		}
+		let params = await (<Linkable> <any> target).getLinkParams();
+		this.ensureLinkingAllowedTo(params);
+		await this.root.createLink(path, params);
+	}
+
+	async readLink(path: string): Promise<SymLink> {
+		let { fileName, folderPath } = split(path);
+		let folder = await this.root.getFolderInThisSubTree(folderPath)
+		.catch(setExcPath(path));
+		let link = await folder.getLink(fileName)
+		.catch(setExcPath(path));
+		return await link!.read();
+	}
+
+	async getLinkParams(): Promise<LinkParameters<any>> {
+		let linkParams = this.root.getParamsForLink();
+		linkParams.params.folderName = this.name;
+		linkParams.readonly = !this.writable;
+		return linkParams;
+	}
+
+	static async makeFolderFromLinkParams(storage: Storage,
+			params: LinkParameters<FolderLinkParams>):
+			Promise<web3n.storage.FS> {
+		let name = params.params.folderName;
+		let writable = !params.readonly;
+		let fs = new FS(storage, writable, name);
+		fs.root = await FolderNode.makeForLinkParams(storage, params.params);
+		return Object.freeze(wrapFSImplementation(fs));
+	}
+	
+	protected async makeFileObject(path: string, exists: boolean,
+			writable: boolean): Promise<File> {
+		if (exists) {
+			let fNode = await this.getOrCreateFile(path, false, false);
+			return FileObject.makeExisting(fNode, writable);
+		} else {
+			let name = basename(path);
+			return FileObject.makeForNotExisiting(name, (): Promise<FileNode> => {
+				return this.getOrCreateFile(path, true, true);
+			});
+		}
 	}
 
 }

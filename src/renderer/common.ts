@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -22,14 +22,19 @@ export interface IGetSigner {
 	(): Promise<mid.MailerIdSigner>;
 }
 
+export interface MasterCryptors {
+	decr: sbox.Decryptor;
+	encr: sbox.Encryptor;
+}
+
 export interface IGenerateCrypt {
-	(derivParams: ScryptGenParams):
-		Promise<{ decr: sbox.Decryptor; encr: sbox.Encryptor; }>;
+	(derivParams: ScryptGenParams): Promise<MasterCryptors>;
 }
 
 export const channels = {
 	storage: 'storage',
 	asmail: 'asmail',
+	device: 'device',
 	signin: 'signin',
 	signup: 'signup'
 };
@@ -39,8 +44,7 @@ export namespace signUp {
 	
 	export const reqNames = {
 		isUserActive: 'is-user-active',
-		createMidParams: 'create-mailerid-params',
-		createStorageParams: 'create-storage-params',
+		createUserParams: 'create-user-params',
 		addUser: 'add-user',
 		getAddressesForName: 'get-addresses-for-name'
 	};
@@ -53,9 +57,9 @@ export namespace signIn {
 	
 	export const reqNames = {
 		getUsersOnDisk: 'get-users-on-disk',
-		startMidProv: 'start-mid-provisioning',
-		completeMidProv: 'complete-mid-provisioning',
-		setupStorage: 'setup-storage',
+		startLoginToRemoteStorage: 'start-login-to-remote-storage',
+		completeLoginAndLocalSetup: 'complete-login-and-local-setup',
+		useExistingStorage: 'use-existing-storage'
 	};
 	Object.freeze(reqNames);
 	
@@ -69,18 +73,22 @@ Object.freeze(signIn);
 export namespace storage {
 	
 	export const reqNames = {
-		PREFIX: 'store/',
-		openAppFS: 'store/open-app-fs',
+		openAppSyncedFS: 'store/open-app-synced-fs',
+		openAppLocalFS: 'store/open-app-local-fs',
 	};
 	Object.freeze(reqNames);
 	
 }
 Object.freeze(storage);
 
+export interface RequestToProxy {
+	id: string;
+	args: any[];
+}
+
 export namespace fsProxy {
 
 	export const reqNames = {
-		PREFIX: 'fs/',
 		writeBytes: 'fs/write-bytes',
 		readBytes: 'fs/read-bytes',
 		writeTxtFile: 'fs/write-txt',
@@ -92,33 +100,78 @@ export namespace fsProxy {
 		statFile: 'fs/stat-file',
 		deleteFolder: 'fs/delete-folder',
 		deleteFile: 'fs/delete-file',
+		deleteLink: 'fs/delete-link',
 		move: 'fs/move',
 		close: 'fs/close',
 		checkFolderPresence: 'fs/check-folder-presence',
 		checkFilePresence: 'fs/check-file-presence',
-		makeSubRoot: 'fs/make-sub-root',
 		getByteSink: 'fs/get-byte-sink',
 		getByteSource: 'fs/get-byte-source',
+		readonlySubRoot: 'fs/readonly-sub-root',
+		writableSubRoot: 'fs/writable-sub-root',
+		readonlyFile: 'fs/readonly-file',
+		writableFile: 'fs/writable-file',
+		link: 'fs/link',
+		readLink: 'fs/read-link',
+		copyFile: 'fs/copy-file',
+		copyFolder: 'fs/copy-folder',
+		saveFile: 'fs/save-file',
+		saveFolder: 'fs/save-folder',
+		versionedGetByteSink: 'fs/versioned-get-byte-sink',
+		versionedGetByteSource: 'fs/versioned-get-byte-source',
+		versionedWriteBytes: 'fs/versioned-write-bytes',
+		versionedReadBytes: 'fs/versioned-read-bytes',
+		versionedWriteTxtFile: 'fs/versioned-write-txt',
+		versionedReadTxtFile: 'fs/versioned-read-txt',
+		versionedWriteJSONFile: 'fs/versioned-write-json',
+		versionedReadJSONFile: 'fs/versioned-read-json',
+		versionedListFolder: 'fs/versioned-list-folder',
 	};
 	Object.freeze(reqNames);
 	
-	export interface RequestToFS {
+	export interface RequestToMakeLink {
 		fsId: string;
-		args: any[];
+		targetIsFolder: boolean;
+		targetId: string;
+		path: string;
 	}
-	
-	export interface SourceDetails {
-		srcId: string;
-		seekable: boolean;
-	}
-	
-	export interface SinkDetails {
-		sinkId: string;
-		seekable: boolean;
+
+	export interface LinkDetails {
+		linkId: string;
+		readonly: boolean;
+		isFolder?: boolean;
+		isFile?: boolean;
 	}
 
 }
 Object.freeze(fsProxy);
+
+export interface SourceDetails {
+	srcId: string;
+	seekable: boolean;
+	version?: number;
+}
+
+export interface SinkDetails {
+	sinkId: string;
+	seekable: boolean;
+	version?: number;
+}
+
+export interface FileDetails {
+	fileId: string;
+	versioned: boolean;
+	writable: boolean;
+	name: string;
+	isNew: boolean;
+}
+
+export interface FSDetails {
+	fsId: string;
+	versioned: boolean;
+	writable: boolean;
+	name: string;
+}
 
 export namespace sinkProxy {
 
@@ -127,14 +180,9 @@ export namespace sinkProxy {
 		setSize: 'sink/set-size',
 		getSize: 'sink/get-size',
 		seek: 'sink/seek',
-		getPosition: 'byte-sink/get-position'
+		getPosition: 'sink/get-position'
 	};
 	Object.freeze(reqNames);
-
-	export interface RequestToSink {
-		sinkId: string;
-		args: any[];
-	}
 
 }
 Object.freeze(sinkProxy);
@@ -148,34 +196,131 @@ export namespace sourceProxy {
 		getPosition: 'source/get-position'
 	};
 	Object.freeze(reqNames);
-
-	export interface RequestToSource {
-		srcId: string;
-		args: any[];
-	}
 	
 }
 Object.freeze(sourceProxy);
+
+export namespace fileProxy {
+
+	export const reqNames = {
+		stat: 'file/stat',
+		writeJSON: 'file/write-json',
+		readJSON: 'file/read-json',
+		writeTxt: 'file/write-text',
+		readTxt: 'file/read-text',
+		readBytes: 'file/read-bytes',
+		writeBytes: 'file/write-bytes',
+		getByteSink: 'file/get-byte-sink',
+		getByteSource: 'file/get-byte-source',
+		versionedWriteJSON: 'file/versioned-write-json',
+		versionedReadJSON: 'file/versioned-read-json',
+		versionedWriteTxt: 'file/versioned-write-text',
+		versionedReadTxt: 'file/versioned-read-text',
+		versionedReadBytes: 'file/versioned-read-bytes',
+		versionedWriteBytes: 'file/versioned-write-bytes',
+		versionedGetByteSink: 'file/versioned-get-byte-sink',
+		versionedGetByteSource: 'file/versioned-get-byte-source',
+		copy: 'file/copy',
+		versionedCopy: 'file/versioned-copy'
+	};
+	Object.freeze(reqNames);
+	
+}
+Object.freeze(fileProxy);
+
+export namespace linkProxy {
+
+	export const reqNames = {
+		target: 'link/target',
+	};
+	Object.freeze(reqNames);
+	
+}
+Object.freeze(linkProxy);
+
+export namespace device {
+
+	export const uiReqNames = {
+		files: {
+			openFileDialog: 'files/open-file-dialog',
+			saveFileDialog: 'files/save-file-dialog'
+		}
+	};
+	Object.freeze(uiReqNames.files);
+	Object.freeze(uiReqNames);
+
+	type FileTypeFilter = web3n.device.files.FileTypeFilter;
+
+	export interface OpenDialogRequest {
+		title: string;
+		btnLabel: string;
+		filters?: FileTypeFilter[];
+	}
+
+	export interface OpenFileDialogRequest extends OpenDialogRequest {
+		multiSelections: boolean;
+	}
+
+	export interface SaveFileDialogRequest extends OpenDialogRequest {
+		defaultPath: string;
+	}
+
+}
+Object.freeze(device);
 
 export namespace asmail {
 	
 	export const uiReqNames = {
 		getUserId: 'get-user-id',
-		sendPreFlight: 'send-pre-flight',
-		sendMsg: 'send-message',
-		listMsgs: 'list-messages',
-		removeMsg: 'remove-message',
-		getMsg: 'get-message',
+		delivery: {
+			sendPreFlight: 'delivery/send-pre-flight',
+			addMsg: 'delivery/add-message',
+			listMsgs: 'delivery/list-msgs',
+			completionOf: 'delivery/completion-of-process',
+			currentState: 'delivery/current-state',
+			rmMsg: 'delivery/remove-message'
+		},
+		inbox: {
+			listMsgs: 'inbox/list-messages',
+			removeMsg: 'inbox/remove-message',
+			getMsg: 'inbox/get-message'
+		}
 	};
+	Object.freeze(uiReqNames.delivery);
+	Object.freeze(uiReqNames.inbox);
 	Object.freeze(uiReqNames);
 
-	export interface RequestSendMsg {
-		recipient: string;
-		msg: Web3N.ASMail.OutgoingMessage;
+	export const eventChannels = {
+		deliveryProgress: 'delivery/progress'
+	};
+	Object.freeze(eventChannels);
+
+	export interface DeliveryProgressEvent {
+		id: string;
+		p: web3n.asmail.DeliveryProgress;
 	}
 
-	export function sortMsgByDeliveryTime(a: Web3N.ASMail.MsgInfo,
-			b: Web3N.ASMail.MsgInfo): number {
+	export interface AttachmentsContainer {
+		folders: { [name: string]: string; };
+		files: { [name: string]: string; }
+	}
+
+	export interface RequestAddMsgToSend {
+		sendImmediately: boolean;
+		recipients: string[];
+		id: string;
+		msg: web3n.asmail.OutgoingMessage;
+		attachments: AttachmentsContainer|undefined;
+		attachmentsFS: string|undefined;
+	}
+
+	export interface RequestRmMsgFromSending {
+		id: string;
+		cancelSending: boolean;
+	}
+
+	export function sortMsgByDeliveryTime(a: web3n.asmail.MsgInfo,
+			b: web3n.asmail.MsgInfo): number {
 		return (a.deliveryTS - b.deliveryTS);
 	}
 	

@@ -15,7 +15,6 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import * as fs from 'fs';
-import { makeFileExceptionFromNodes } from './exceptions/file';
 import { createReadStream, createWriteStream, statSync } from 'fs';
 import { Readable, Writable } from 'stream';
 import { FileException, Code as excCode, makeFileException }
@@ -24,6 +23,11 @@ import { SingleProc } from './processes';
 
 export { Stats } from 'fs';
 export { FileException } from './exceptions/file';
+
+function makeFileExceptionFromNodes(nodeExc: NodeJS.ErrnoException):
+		FileException {
+	return makeFileException(nodeExc.code!, nodeExc.path!);
+}
 
 export function readFile(filename: string,
 	options: { encoding: string; flag?: string; }): Promise<string>;
@@ -74,12 +78,17 @@ export function open(path: string, flags: string): Promise<number> {
 }
 
 function writeOrig(fd: number, buffer: Buffer, offset: number,
-		length: number, position: number): Promise<number> {
+		length: number, position?: number): Promise<number> {
 	return new Promise<number>((resolve, reject) => {
-		fs.write(fd, buffer, offset, length, position, (err, written) => {
+		let cb = (err, written) => {
 			if (err) { reject(makeFileExceptionFromNodes(err)); }
 			else { resolve(written); }
-		});
+		};
+		if (typeof position === 'number') {
+			fs.write(fd, buffer, offset, length, position, cb);
+		} else {
+			fs.write(fd, buffer, offset, length, cb);
+		}
 	});
 }
 
@@ -192,7 +201,7 @@ export async function readToBuf(fd: number, pos: number, buf: Buffer):
 	let bytesRead = 0
 	while (bytesRead < buf.length) {
 		let bNum = await readOrig(fd, buf, bytesRead, buf.length-bytesRead, pos);
-		if (bNum === 0) { throw makeFileException(excCode.endOfFile); }
+		if (bNum === 0) { throw makeFileException(excCode.endOfFile, '<file descriptor>'); }
 		bytesRead += bNum;
 		pos += bNum;
 	}
@@ -231,10 +240,10 @@ SINGLE_BYTE_BUF[0] = 0;
  * else return value is undefined and should be ignored.
  */
 export async function createEmptyFile(filePath: string, fileSize: number,
-		keepFileOpen?: boolean): Promise<number> {
+		keepFileOpen?: boolean): Promise<number|undefined> {
 	if ((typeof fileSize !== 'number') || (fileSize < 0)) { throw new Error(
 		'Illegal file size given: '+fileSize); }
-	let fileDescr: number;
+	let fileDescr: number|undefined;
 	try {
 		fileDescr = await open(filePath, 'wx');
 		if (fileSize > 0) {
@@ -244,9 +253,7 @@ export async function createEmptyFile(filePath: string, fileSize: number,
 		await close(fileDescr);
 	} catch (exc) {
 		if (fileDescr) {
-			try {
-				close(fileDescr);
-			} catch (err) {}
+			close(fileDescr).catch(() => {});
 		}
 		throw exc;
 	}
@@ -261,8 +268,7 @@ export function existsFolderSync(path: string): boolean {
 		if (statSync(path).isDirectory()) {
 			return true;
 		} else {
-			throw makeFileException(excCode.notDirectory,
-				'Given path is not a folder: '+path);
+			throw makeFileException(excCode.notDirectory, path);
 		}
 	} catch (e) {
 		if ((<NodeJS.ErrnoException> e).code === excCode.notFound) {
@@ -297,6 +303,21 @@ export async function write(fd: number, pos: number, buf: Buffer):
 			bytesWritten, buf.length-bytesWritten, pos);
 		bytesWritten += bNum;
 		pos += bNum;
+	}
+}
+
+/**
+ * @param fd is an open file descriptor in append mode.
+ * @param buf is a buffer, from which all bytes should be written into the file.
+ * @returns a promise, resolvable when all bytes were written to it.
+ */
+export async function append(fd: number, buf: Buffer):
+		Promise<void> {
+	let bytesWritten = 0;
+	while (bytesWritten < buf.length) {
+		let bNum = await writeOrig(fd, buf,
+			bytesWritten, buf.length-bytesWritten);
+		bytesWritten += bNum;
 	}
 }
 
@@ -348,7 +369,7 @@ export async function streamToExistingFile(filePath: string, pos: number,
 		let bufInd = 0;
 		let writeProc = new SingleProc<void>();
 		let bytesWritten = 0;
-		
+
 		src.on('data', (data: Buffer) => {
 			if (done) { return; }
 			bytesRead += data.length;
@@ -356,10 +377,13 @@ export async function streamToExistingFile(filePath: string, pos: number,
 				writeProc.startOrChain(async () => {
 					if (done) { return; }
 					try {
-						await writeToExistingFile(filePath,
-							pos, buf.slice(0, bufInd));
-						pos += bufInd;
-						bytesWritten += bufInd;
+						if (bufInd > 0) {
+							await writeToExistingFile(filePath,
+								pos, buf.slice(0, bufInd));
+							pos += bufInd;
+							bytesWritten += bufInd;
+							bufInd = 0;
+						}
 						if (data.length > (len - bytesWritten)) {
 							data = data.slice(0, len - bytesWritten);
 						}
@@ -376,13 +400,16 @@ export async function streamToExistingFile(filePath: string, pos: number,
 				writeProc.startOrChain(async () => {
 					if (done) { return; }
 					try {
-						await writeToExistingFile(filePath,
-							pos, buf.slice(0, bufInd));
-						pos += bufInd;
-						bytesWritten += bufInd;
+						if (bufInd > 0) {
+							await writeToExistingFile(filePath,
+								pos, buf.slice(0, bufInd));
+							pos += bufInd;
+							bytesWritten += bufInd;
+							bufInd = 0;
+						}
 						await writeToExistingFile(filePath, pos, data);
 						pos += data.length;
-						bytesWritten = data.length;
+						bytesWritten += data.length;
 					} catch (err) {
 						setDone(err);
 					}
@@ -393,9 +420,7 @@ export async function streamToExistingFile(filePath: string, pos: number,
 		src.on('end', () => {
 			if (done) { return; }
 			if (bytesRead < len) {
-				setDone(makeFileException(excCode.endOfFile,
-					'Input source gave '+bytesRead+' instead of '+len+
-					' for writting to file '+filePath));
+				setDone(makeFileException(excCode.endOfFile, '<input stream>'));
 			}
 		});
 		
@@ -424,7 +449,7 @@ export async function read(fd: number, pos: number, buf: Buffer):
 	let bytesRead = 0
 	while (bytesRead < buf.length) {
 		let bNum = await readOrig(fd, buf, bytesRead, buf.length-bytesRead, pos);
-		if (bNum === 0) { throw makeFileException(excCode.endOfFile); }
+		if (bNum === 0) { throw makeFileException(excCode.endOfFile, '<file descriptor>'); }
 		bytesRead += bNum;
 		pos += bNum;
 	}
@@ -462,7 +487,7 @@ export async function rmDirWithContent(folder: string): Promise<void> {
 		await rmdir(folder);
 		return;
 	}
-	let rmTasks = [];
+	let rmTasks: Promise<void>[] = [];
 	for (let name of files) {
 		let innerPath = folder+'/'+name
 		let task = stat(innerPath)

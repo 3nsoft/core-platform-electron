@@ -16,17 +16,17 @@
 
 import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
 import { FileException } from '../../lib-common/exceptions/file';
-import { JsonKey, keyFromJson } from '../../lib-common/jwkeys';
+import { keyFromJson } from '../../lib-common/jwkeys';
 import { SingleProc } from '../../lib-common/processes';
-import { DecryptorWithInfo } from './keyring';
+import { MsgDecrInfo, MsgKeyRole } from './keyring';
 import { asmail } from '../../renderer/common';
 import { secret_box as sbox } from 'ecma-nacl';
+import { base64 } from '../../lib-common/buffer-utils';
+import {  FileKeyHolder, makeReadOnlyHolderFor } from 'xsp-files';
 
-
-interface MsgRecord extends Web3N.ASMail.MsgInfo {
-	correspondent?: string;
-	key: JsonKey;
-	cryptoStatus: string;
+interface MsgRecord extends web3n.asmail.MsgInfo {
+	key: string;
+	keyStatus: MsgKeyRole;
 	removeAfter?: number;
 }
 
@@ -41,6 +41,9 @@ const LIMIT_RECORDS_PER_FILE = 200;
 const LATEST_INDEX = 'latest.json';
 const INDEX_EXT = '.json';
 const INDEX_FNAME_REGEXP = /^\d\.json$/;
+
+// XXX request to 'undefined.json' was spotted, and it probably comes from here.
+//		Either ensure that it doesn't happen here, or find it and fix it.
 
 function fileTSOrderComparator(a: number, b: number): number {
 	return (a - b);
@@ -114,7 +117,7 @@ class TimedObjectCache<TK, TV> {
 		});
 	}
 	
-	get(key: TK): TV {
+	get(key: TK): TV|undefined {
 		let entry = this.cache.get(key);
 		if (!entry) { return; }
 		entry.accessed = Date.now();
@@ -125,7 +128,7 @@ class TimedObjectCache<TK, TV> {
 Object.freeze(TimedObjectCache.prototype);
 Object.freeze(TimedObjectCache);
 
-function reduceToMsgInfosInPlace(records: Web3N.ASMail.MsgInfo[]): void {
+function reduceToMsgInfosInPlace(records: web3n.asmail.MsgInfo[]): void {
 	for (let i=0; i<records.length; i+=1) {
 		let orig = records[i];
 		records[i] = {
@@ -147,9 +150,9 @@ function reduceToMsgInfosInPlace(records: Web3N.ASMail.MsgInfo[]): void {
  */
 export class MsgIndex {
 	
-	private latest: MsgRecords = null;
+	private latest: MsgRecords = (undefined as any);
 	private cached = new TimedObjectCache<number, MsgRecords>();
-	private fileTSs: number[] = null;
+	private fileTSs: number[] = (undefined as any);
 	private fileProc = new SingleProc<any>();
 	
 	constructor(
@@ -164,7 +167,7 @@ export class MsgIndex {
 	 * records can also be chunked and saved as needed. 
 	 */
 	private async saveRecords(recs: MsgRecords): Promise<void> {
-		if (recs.fileTS === null) {
+		if (typeof recs.fileTS !== 'number') {
 			if (this.latest.ordered.length > 1.25*LIMIT_RECORDS_PER_FILE) {
 				let recs = extractEarlyRecords(this.latest, LIMIT_RECORDS_PER_FILE);
 				let recsFileTS = recs.ordered[recs.ordered.length-1].deliveryTS;
@@ -182,18 +185,21 @@ export class MsgIndex {
 	}
 	
 	/**
-	 * @param fileTS is index file's timestamp. Null value means latest records.
+	 * @param fileTS is index file's timestamp. Undefined value means latest
+	 * records.
 	 * @return a promise, resolvable to found records, either from a memory
 	 * cache, or from a file.
 	 */
-	private async getRecords(fileTS: number): Promise<MsgRecords> {
-		if (fileTS === null) {
-			if (this.latest) { return this.latest; }
-		} else {
+	private async getRecords(fileTS: number|undefined):
+			Promise<MsgRecords|undefined> {
+		if (typeof fileTS === 'number') {
 			let recs = this.cached.get(fileTS);
 			if (recs) { return recs; }
+		} else {
+			if (this.latest) { return this.latest; }
 		}
-		let fName = (fileTS === null) ? LATEST_INDEX : fileTS+INDEX_EXT;
+		let fName = (typeof fileTS === 'number') ?
+			`${fileTS}INDEX_EXT` : LATEST_INDEX;
 		let ordered = await this.inboxFS.readJSONFile<MsgRecord[]>(fName).catch(
 			(exc: FileException) => { if (!exc.notFound) { throw exc; } });
 		if (!Array.isArray(ordered)) { return; }
@@ -202,8 +208,8 @@ export class MsgIndex {
 		for (let rec of ordered) {
 			byId.set(rec.msgId, rec);
 		}
-		let records = { byId, ordered, fileTS };
-		if (fileTS !== null) {
+		let records = { byId, ordered, fileTS: fileTS! };
+		if (typeof fileTS === 'number') {
 			this.cached.put(fileTS, records);
 		}
 		return records;
@@ -213,10 +219,12 @@ export class MsgIndex {
 		return this.fileProc.start(async () => {
 			
 			// 1) initialize latest records index
-			this.latest = await this.getRecords(null);
-			if (!this.latest) {
+			let latest = await this.getRecords(undefined);
+			if (latest) {
+				this.latest = latest;
+			} else {
 				this.latest = {
-					fileTS: null,
+					fileTS: (undefined as any),
 					byId: new Map<string, MsgRecord>(),
 					ordered: []
 				};
@@ -240,19 +248,17 @@ export class MsgIndex {
 	
 	/**
 	 * @param msgInfo is a minimal message info object
-	 * @param decr is a message's decryptor, from which key's info is taken
+	 * @param decrInfo
 	 * @return a promise, resolvable when given message info bits are recorded. 
 	 */
-	add(msgInfo: Web3N.ASMail.MsgInfo, decr: DecryptorWithInfo): Promise<void> {
+	add(msgInfo: web3n.asmail.MsgInfo, decrInfo: MsgDecrInfo): Promise<void> {
+		if (!decrInfo.key) { throw new Error(`Given message decryption info doesn't have a key for message ${msgInfo.msgId}`); }
 		let msg: MsgRecord = {
 			msgId: msgInfo.msgId,
 			deliveryTS: msgInfo.deliveryTS,
-			key: decr.key,
-			cryptoStatus: decr.cryptoStatus
+			key: decrInfo.key,
+			keyStatus: decrInfo.keyStatus,
 		};
-		if (decr.correspondent) {
-			msg.correspondent = decr.correspondent;
-		}
 		return this.fileProc.startOrChain(async () => {
 			
 			// 1) msg should be inserted into latest part of index
@@ -273,13 +279,14 @@ export class MsgIndex {
 				}
 			}
 			let records = await this.getRecords(fileTS);
+			if (!records) { throw new Error(`Expectation fail: there should be some message records.`); }
 			insertInto(records, msg);
 			await this.saveRecords(records);
 		});
 	}
 	
-	private async findRecordsWith(msg: Web3N.ASMail.MsgInfo):
-			Promise<MsgRecords> {
+	private async findRecordsWith(msg: web3n.asmail.MsgInfo):
+			Promise<MsgRecords|undefined> {
 		// 1) msg should be in latest part of index
 		if ((this.fileTSs.length === 0) ||
 				(msg.deliveryTS >= this.fileTSs[this.fileTSs.length-1])) {
@@ -292,11 +299,11 @@ export class MsgIndex {
 		for (let i=(this.fileTSs.length-2); i<=0; i-=1) {
 			if (msg.deliveryTS >= this.fileTSs[i]) {
 				let records = await this.getRecords(fileTS);
-				if (!records.byId.has(msg.msgId)) {
+				if (!records || !records.byId.has(msg.msgId)) {
 					if (msg.deliveryTS !== this.fileTSs[i]) { return; }
 					fileTS = this.fileTSs[i];
 					records = await this.getRecords(fileTS);
-					if (!records.byId.has(msg.msgId)) { return; }
+					if (!records || !records.byId.has(msg.msgId)) { return; }
 				}
 				return records;
 			} else {
@@ -304,7 +311,7 @@ export class MsgIndex {
 			}
 		}
 		let records = await this.getRecords(this.fileTSs[0]);
-		if (!records.byId.has(msg.msgId)) { return; }
+		if (!records || !records.byId.has(msg.msgId)) { return; }
 		return records;
 	}
 	
@@ -312,7 +319,7 @@ export class MsgIndex {
 	 * @param msg is a message identifying info used to find and remove message
 	 * @return a promise, resolvable when message is removed from this index.
 	 */
-	remove(msg: Web3N.ASMail.MsgInfo): Promise<void> {
+	remove(msg: web3n.asmail.MsgInfo): Promise<void> {
 		return this.fileProc.startOrChain(async () => {
 			let records = await this.findRecordsWith(msg);
 			if (!records) { return; }
@@ -335,7 +342,7 @@ export class MsgIndex {
 			let msgFound = records.byId.has(msgId);
 			let i = this.fileTSs.length-1;
 			while (!msgFound && (i >= 0)) {
-				records = await this.getRecords(this.fileTSs[i]);
+				records = (await this.getRecords(this.fileTSs[i]))!;
 				msgFound = records.byId.has(msgId);
 			}
 			if (msgFound) {
@@ -354,13 +361,13 @@ export class MsgIndex {
 	 * @return a promise, resolvable to an ordered array of MsgInfo's that have
 	 * delivery timestamp same or later, than the given one.
 	 */
-	async listMsgs(fromTS: number): Promise<Web3N.ASMail.MsgInfo[]> {
+	async listMsgs(fromTS: number): Promise<web3n.asmail.MsgInfo[]> {
 		return this.fileProc.startOrChain(async () => {
 			// find time starting point and get all records
-			let list: Web3N.ASMail.MsgInfo[] = [];
+			let list: web3n.asmail.MsgInfo[] = [];
 			for (let i=0; i<this.fileTSs.length; i+=1) {
 				if (fromTS > this.fileTSs[i]) { continue; }
-				let recs = await this.getRecords(this.fileTSs[i]);
+				let recs = (await this.getRecords(this.fileTSs[i]))!;
 				list = list.concat(recs.ordered);
 			}
 			list = list.concat(this.latest.ordered);
@@ -377,26 +384,17 @@ export class MsgIndex {
 	}
 	
 	/**
+	 * This returns a promise of message's file key holder, when message
+	 * is found, or of an undefined, when message is not known.
 	 * @param msg is a message identifying info used to find message
-	 * @return a promise, resolvable to message's decryptor, when message is
-	 * found, and resolvable to undefined, when message is not known.
 	 */
-	getDecr(msg: Web3N.ASMail.MsgInfo): Promise<DecryptorWithInfo> {
+	fKeyFor(msg: web3n.asmail.MsgInfo): Promise<FileKeyHolder|undefined> {
 		return this.fileProc.startOrChain(async () => {
 			let records = await this.findRecordsWith(msg);
 			if (!records) { return; }
 			let rec = records.byId.get(msg.msgId);
 			if (!rec) { return; }
-			let key = keyFromJson(rec.key, rec.key.use,
-				sbox.JWK_ALG_NAME, sbox.KEY_LENGTH);
-			let decr: DecryptorWithInfo = {
-				decryptor: sbox.formatWN.makeDecryptor(key.k),
-				cryptoStatus: rec.cryptoStatus
-			};
-			if (rec.correspondent) {
-				decr.correspondent = rec.correspondent;
-			}
-			return decr;
+			return makeReadOnlyHolderFor(base64.open(rec.key));
 		});
 	}
 	

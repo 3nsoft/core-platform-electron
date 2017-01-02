@@ -24,7 +24,7 @@ import { JsonKey, JsonKeyShort } from '../../../lib-common/jwkeys';
 import * as random from '../../random-node';
 
 export const KID_LENGTH = 16;
-export const PID_LENGTH = 4;
+export const PID_LENGTH = 2;
 
 export interface JWKeyPair {
 	skey: JsonKey;
@@ -52,15 +52,8 @@ export const KEY_USE = {
 };
 Object.freeze(KEY_USE);
 
-export const KEY_ROLE = {
-		SUGGESTED: 'suggested',
-		IN_USE: 'in_use',
-		OLD: 'old',
-		PUBLISHED_INTRO: 'published_intro',
-		PREVIOUSLY_PUBLISHED_INTRO: 'prev_published_intro',
-		INTRODUCTORY: 'introductory'
-};
-Object.freeze(KEY_ROLE);
+export type MsgKeyRole = 'suggested' | 'in_use' | 'old' |
+	'published_intro' | 'prev_published_intro' | 'introductory';
 
 /**
  * @return an object with two fields: skey & pkey, holding JWK form of secret and

@@ -19,10 +19,10 @@
 /// <reference path="./device.d.ts" />
 
 declare var w3n: {
-	mail: Web3N.ASMail.Service;
-	storage: Web3N.Storage.Service;
+	mail: web3n.asmail.Service;
+	storage: web3n.storage.Service;
 	device: {
-		openFileDialog: typeof Web3N.Device.Files.openFileDialog;
-		saveFileDialog: typeof Web3N.Device.Files.saveFileDialog;
+		openFileDialog: typeof web3n.device.files.openFileDialog;
+		saveFileDialog: typeof web3n.device.files.saveFileDialog;
 	};
 }

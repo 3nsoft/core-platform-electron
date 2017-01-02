@@ -16,9 +16,9 @@
 
 export class TimeWindowCache<TKey, TVal> {
 
-	private filling = new Map<TKey, TVal>();
-	private waiting = new Map<TKey, TVal>();
-	private interval: NodeJS.Timer;
+	private filling: Map<TKey, TVal>|void = new Map<TKey, TVal>();
+	private waiting: Map<TKey, TVal>|void = new Map<TKey, TVal>();
+	private interval: NodeJS.Timer|void;
 
 	constructor(periodMillis: number) {
 		this.interval = setInterval(
@@ -34,7 +34,7 @@ export class TimeWindowCache<TKey, TVal> {
 		this.filling = b;
 	}
 
-	get(key: TKey): TVal {
+	get(key: TKey): TVal | undefined {
 		let v = this.filling.get(key);
 		if (v !== undefined) { return v; }
 		v = this.waiting.get(key);
@@ -59,11 +59,11 @@ export class TimeWindowCache<TKey, TVal> {
 	}
 
 	destroy() {
-		if (this.interval === null) { return; }
+		if (!this.interval) { return; }
 		clearInterval(this.interval);
-		this.interval = null;
-		this.filling = null;
-		this.waiting = null;
+		this.interval = undefined;
+		this.filling = undefined;
+		this.waiting = undefined;
 	}
 
 }

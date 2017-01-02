@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -45,10 +45,10 @@ export interface ProvisioningCompletion {
  */
 export class MailerIdProvisioner extends ServiceUser {
 	
-	private userCert: SignedLoad = null;
-	private provCert: SignedLoad = null;
-	private midDomain: string = null;
-	private rootCert: SignedLoad = null;
+	private userCert: SignedLoad = (undefined as any);
+	private provCert: SignedLoad = (undefined as any);
+	private midDomain: string = (undefined as any);
+	private rootCert: SignedLoad = (undefined as any);
 	private entryURI: string;
 	
 	/**
@@ -125,9 +125,9 @@ export class MailerIdProvisioner extends ServiceUser {
 				throw makeException(rep, 'Unexpected status');
 			}
 		} finally {
-			this.sessionId = null;
+			this.sessionId = (undefined as any);
 			this.encryptor.destroy();
-			this.encryptor = null;
+			this.encryptor = (undefined as any);
 		}
 	}
 	
@@ -135,28 +135,32 @@ export class MailerIdProvisioner extends ServiceUser {
 	 * This method hides super from await, till ES7 comes with native support
 	 * for await.
 	 */
-	private super_login(): Promise<LoginCompletion> {
-		return super.login();
+	private super_login(keyId: string|undefined): Promise<LoginCompletion> {
+		return super.login(keyId);
 	}
 	
 	/**
 	 * This method starts certificate provisioning process, by starting login,
 	 * producing a function that will accept shared key calculator for login,
 	 * and certification parameter(s), needed to complete certification itself.
-	 * @return a promise, resolvable to a function that will complete login
-	 * and certification process.
+	 * This metho returns a promise, resolvable to a function that will complete
+	 * login and certification process.
+	 * @param keyId is a key id of a key that should be used in the login.
+	 * Undefined value means that a default key should be used.
 	 */
-	async provisionSigner(): Promise<ProvisioningCompletion> {
+	async provisionSigner(keyId: string|undefined):
+			Promise<ProvisioningCompletion> {
 		let pair = mid.user.generateSigningKeyPair(random.bytes);
 		await this.setUrlAndDomain();
-		let login = await this.super_login();
-		let thisProv = this;
-		async function completion(dhsharedKeyCalc: ICalcDHSharedKey,
-				certDuration: number, assertDuration = DEFAULT_ASSERTION_VALIDITY) {
+		let login = await this.super_login(keyId);
+		let completion = async (
+				dhsharedKeyCalc: ICalcDHSharedKey,
+				certDuration: number,
+				assertDuration = DEFAULT_ASSERTION_VALIDITY) => {
 			await login.complete(dhsharedKeyCalc);
-			await thisProv.getCertificates(pair.pkey, certDuration);
+			await this.getCertificates(pair.pkey, certDuration);
 			return mid.user.makeMailerIdSigner(
-				pair.skey, thisProv.userCert, thisProv.provCert, assertDuration);
+				pair.skey, this.userCert, this.provCert, assertDuration);
 		};
 		return {
 			keyParams: login.keyParams,

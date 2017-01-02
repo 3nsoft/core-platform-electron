@@ -20,7 +20,7 @@ import { checkAvailableAddressesForName, addUser }
 	from '../lib-client/3nweb-signup';
 import { IdManager } from './id-manager';
 let Uri = require('jsuri');
-import * as jwk from '../lib-common/jwkeys';
+import { use as keyUse, JsonKey, keyToJson } from '../lib-common/jwkeys';
 import { base64 } from '../lib-common/buffer-utils';
 import { bind } from '../lib-common/binding';
 import { areAddressesEqual } from '../lib-common/canonical-address';
@@ -30,7 +30,7 @@ import { IGenerateCrypt, IGetSigner, signUp as common }
 import { getUsersOnDisk } from '../lib-client/local-files/app-files';
 import * as random from '../lib-client/random-node';
 import { Cryptor } from '../lib-client/cryptor/cryptor';
-import { secret_box as sbox, arrays } from 'ecma-nacl';
+import { secret_box as sbox, box, arrays } from 'ecma-nacl';
 
 export interface ScryptGenParams {
 	logN: number;
@@ -40,8 +40,11 @@ export interface ScryptGenParams {
 }
 
 export interface MidParams {
-	pkey: jwk.JsonKey;
-	params: ScryptGenParams;
+	defaultPKey: {
+		pkey: JsonKey;
+		params: ScryptGenParams;
+	};
+	otherPKeys: JsonKey[];
 }
 
 export interface StoreParams {
@@ -62,16 +65,35 @@ Object.freeze(defaultDerivParams);
 let SALT_LEN = 32;
 let KEY_ID_LEN = 10;
 
+function makeLabeledMidLoginKey(): { skey: JsonKey; pkey: JsonKey } {
+	let sk = random.bytes(sbox.KEY_LENGTH);
+	let skey = keyToJson({
+		k: sk,
+		alg: box.JWK_ALG_NAME,
+		use: keyUse.MID_PKLOGIN,
+		kid: random.stringOfB64Chars(KEY_ID_LEN)
+	});
+	let pkey = keyToJson({
+		k: box.generate_pubkey(sk),
+		alg: skey.alg,
+		use: skey.use,
+		kid: skey.kid
+	});
+	arrays.wipe(sk);
+	return { skey, pkey };
+}
+
 export class SignUp {
 	
 	private mid: {
-		skey: Uint8Array;
+		defaultSKey: Uint8Array;
+		labeledSKey: JsonKey;
 		params: MidParams;
-	} = null;
+	} = (undefined as any);
 	private store: {
 		skey: Uint8Array;
 		params: StoreParams;
-	} = null;
+	} = (undefined as any);
 	private serviceURL: string;
 	
 	constructor(serviceURL: string,
@@ -101,10 +123,8 @@ export class SignUp {
 		let uiReqNames = common.reqNames;
 		this.uiSide.addHandler(uiReqNames.getAddressesForName,
 			bind(this, this.handleGetAvailableAddresses));
-		this.uiSide.addHandler(uiReqNames.createMidParams,
-			bind(this, this.handleCreateMidParams));
-		this.uiSide.addHandler(uiReqNames.createStorageParams,
-			bind(this, this.handleCreateStorageParams));
+		this.uiSide.addHandler(uiReqNames.createUserParams,
+			bind(this, this.handleCreateUserParams));
 		this.uiSide.addHandler(uiReqNames.addUser,
 			bind(this, this.handleAddUser));
 		
@@ -117,47 +137,59 @@ export class SignUp {
 		return addresses;
 	}
 	
-	private makeKeyGenProgressCB(env: RequestEnvelope<any>) {
-		let progress = 0;
+	private makeKeyGenProgressCB(env: RequestEnvelope<any>,
+			progressStart: number, progressEnd: number) {
+		if (progressStart >= progressEnd) { throw new Error(`Invalid progress parameters: start=${progressStart}, end=${progressEnd}.`); }
+		let currentProgress = 0;
+		let totalProgress = progressStart;
+		let progressRange = progressEnd - progressStart;
 		return (p: number): void => {
-			p = Math.floor(p);
-			if (progress >= p) { return; }
-			progress = p;
-			this.uiSide.notifyOfProgressOnRequest(env, progress);
+			if (currentProgress >= p) { return; }
+			currentProgress = p;
+			let newProgress = Math.floor(p/100*progressRange + progressStart);
+			if (totalProgress >= newProgress) { return; }
+			totalProgress = newProgress;
+			this.uiSide.notifyOfProgressOnRequest(env, totalProgress);
 		};
 	}
-	
-	private async handleCreateMidParams(env: RequestEnvelope<string>):
-			Promise<void> {
+
+	private async genMidParams(env: RequestEnvelope<string>,
+			progressStart: number, progressEnd: number) {
 		let derivParams: keyDeriv.ScryptGenParams = {
 			logN: defaultDerivParams.logN,
 			r: defaultDerivParams.r,
 			p: defaultDerivParams.p,
 			salt: base64.pack(random.bytes(SALT_LEN))
 		}
-		let progressCB = this.makeKeyGenProgressCB(env);
+		let progressCB = this.makeKeyGenProgressCB(env,
+			progressStart, progressEnd);
 		let pass = env.req;
-		let kid = base64.pack(random.bytes(KEY_ID_LEN));
-		let pair = await keyDeriv.deriveMidKeyPair(this.cryptor,
-			pass, derivParams, progressCB, jwk.use.MID_PKLOGIN, kid);
+		let defaultPair = await keyDeriv.deriveMidKeyPair(this.cryptor,
+			pass, derivParams, progressCB, keyUse.MID_PKLOGIN, '_');
+		let labeledKey = makeLabeledMidLoginKey();
 		this.mid = {
-			skey: pair.skey,
+			defaultSKey: defaultPair.skey,
+			labeledSKey: labeledKey.skey,
 			params: {
-				pkey: pair.pkey,
-				params: derivParams
+				defaultPKey: {
+					pkey: defaultPair.pkey,
+					params: derivParams
+				},
+				otherPKeys: [ labeledKey.pkey ]
 			}
 		};
 	}
-	
-	private async handleCreateStorageParams(env: RequestEnvelope<string>):
-			Promise<void> {
+
+	private async genStorageParams(env: RequestEnvelope<string>,
+			progressStart: number, progressEnd: number) {
 		let derivParams: keyDeriv.ScryptGenParams = {
 			logN: defaultDerivParams.logN,
 			r: defaultDerivParams.r,
 			p: defaultDerivParams.p,
 			salt: base64.pack(random.bytes(SALT_LEN))
 		};
-		let progressCB = this.makeKeyGenProgressCB(env);
+		let progressCB = this.makeKeyGenProgressCB(env,
+			progressStart, progressEnd);
 		let pass = env.req;
 		let skey = await keyDeriv.deriveStorageSKey(this.cryptor,
 			pass, derivParams, progressCB);
@@ -169,9 +201,18 @@ export class SignUp {
 		};
 	}
 	
+	private async handleCreateUserParams(env: RequestEnvelope<string>):
+			Promise<void> {
+		await this.genMidParams(env, 0, 50);
+		await this.genStorageParams(env, 51, 100);
+	}
+	
 	private async initIdManager(address: string): Promise<void> {
-		let completion = await this.idManager.provisionNew(address)
-		await completion.complete(this.mid.skey);
+		// provision signer with a default key
+		let completion = await this.idManager.provisionNew(address);
+		await completion.complete(this.mid.defaultSKey);
+		// give id manager generated non-default key for other logins
+		this.idManager.setLoginKeys([ this.mid.labeledSKey ]);
 	}
 	
 	private initStorage(): Promise<any> {
@@ -188,8 +229,7 @@ export class SignUp {
 		return this.initStorageFromRemote(masterCrypt);
 	}
 	
-	private async handleAddUser(env: RequestEnvelope<string>):
-			Promise<boolean> {
+	private async handleAddUser(env: RequestEnvelope<string>): Promise<boolean> {
 		let address = env.req;
 		for (let user of await getUsersOnDisk()) {
 			if (areAddressesEqual(address, user)) { throw new Error(
@@ -213,9 +253,9 @@ export class SignUp {
 	 */
 	close(): void {
 		this.uiSide.close();
-		this.initCore = null;
-		this.initStorageFromRemote = null;
-		this.idManager = null;
+		this.initCore = (undefined as any);
+		this.initStorageFromRemote = (undefined as any);
+		this.idManager = (undefined as any);
 	}
 	
 }

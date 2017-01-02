@@ -14,27 +14,24 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import * as fErrMod from '../../lib-common/exceptions/file';
-import * as xspFS from '../../lib-client/3nstorage/xsp-fs/common';
-import * as keyringMod from '../../lib-client/asmail/keyring/index';
+import { FileException } from '../../lib-common/exceptions/file';
+import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
+import { Storage, KeyRing, makeKeyRing }
+	from '../../lib-client/asmail/keyring/index';
 import * as confApi from '../../lib-common/service-api/asmail/config';
-import * as midSigs from '../../lib-common/mid-sigs-NaCl-Ed';
+import { user as midUser } from '../../lib-common/mid-sigs-NaCl-Ed';
 import { utf8 } from '../../lib-common/buffer-utils';
 import { bind } from '../../lib-common/binding';
 
-export { DecryptorWithInfo, KEY_ROLE }
+export { KeyRing, MsgKeyRole, MsgDecrInfo }
 	from '../../lib-client/asmail/keyring/index';
 
 const KEYRING_FNAME = 'keyring.json';
 
-// TODO since storage became simple, and file systems are now given without
-//			ability to jump out of it, we may give Keyring its own fs, removing
-//			a need to have this storage object outside of keyring's reliance set.
-
-class KeyRingStore implements keyringMod.Storage {
+class KeyRingStore implements Storage {
 	
 	constructor(
-			private fs: xspFS.FS) {
+			private fs: FS) {
 		if (!this.fs) { throw new Error("No file system given."); }
 		Object.seal(this);
 	}
@@ -44,18 +41,16 @@ class KeyRingStore implements keyringMod.Storage {
 		return this.fs.writeTxtFile(KEYRING_FNAME, serialForm);
 	}
 	
-	async load(): Promise<string> {
+	load(): Promise<string|undefined> {
 		if (!this.fs) { throw new Error("File system is not setup"); }
-		try {
-			return await this.fs.readTxtFile(KEYRING_FNAME);
-		} catch (exc) {
-			if ((<fErrMod.FileException> exc).notFound) { return; }
-			else { throw exc; }
-		}
+		return this.fs.readTxtFile(KEYRING_FNAME).catch(
+			(exc: FileException) => {
+				if (!exc.notFound) { throw exc; }
+			});
 	}
 	
-	wrap(): keyringMod.Storage {
-		let wrap: keyringMod.Storage = {
+	wrap(): Storage {
+		let wrap: Storage = {
 			load: bind(this, this.load),
 			save: bind(this, this.save)
 		};
@@ -67,12 +62,10 @@ class KeyRingStore implements keyringMod.Storage {
 Object.freeze(KeyRingStore);
 Object.freeze(KeyRingStore.prototype);
 
-export interface KeyRing extends keyringMod.KeyRing { }
-
 export class PublishedKeys {
 	
-	getIntroKeyCerts: () => confApi.p.initPubKey.Certs;
-	updateIntroKey: (signer: midSigs.user.MailerIdSigner) => void;
+	getIntroKeyCerts: () => confApi.p.initPubKey.Certs|undefined;
+	updateIntroKey: (signer: midUser.MailerIdSigner) => void;
 	
 	constructor(keyring: KeyRing) {
 		this.getIntroKeyCerts = keyring.getPublishedKeyCerts;
@@ -84,9 +77,9 @@ export class PublishedKeys {
 Object.freeze(PublishedKeys.prototype);
 Object.freeze(PublishedKeys);
 
-export async function makeKeyring(keyringFS: xspFS.FS):
+export async function makeKeyring(keyringFS: FS):
 		Promise<KeyRing> {
-	let keyring = keyringMod.makeKeyRing();
+	let keyring = makeKeyRing();
 	let keyStore = (new KeyRingStore(keyringFS)).wrap();
 	await keyring.init(keyStore);
 	return keyring;

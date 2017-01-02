@@ -18,19 +18,13 @@ import { remote } from 'electron';
 import { basename, dirname } from 'path';
 import { stat as fsStat } from '../../lib-common/async-fs-node';
 import { DeviceFS } from '../../lib-client/local-files/device-fs';
-import { ByteSink, ByteSource } from '../../lib-common/byte-streaming/common';
-import { syncWrapByteSink, syncWrapByteSource }
-	from '../../lib-common/byte-streaming/concurrent';
-import { maskPathInExc, FileException } from '../../lib-common/exceptions/file';
-import { bind } from '../../lib-common/binding';
-
-const dialog = remote.dialog;
+import { FileException } from '../../lib-common/exceptions/file';
 
 function makeFileFor(path: string, exists: boolean, isWritable: boolean):
-		Promise<Web3N.Files.File> {
+		Promise<web3n.files.File> {
 	let fName = basename(path);
 	let folder = dirname(path);
-	let fs = new DeviceFS(folder);
+	let fs = new DeviceFS(folder, true);
 	if (isWritable) {
 		return fs.writableFile(fName, !exists, !exists);
 	} else {
@@ -39,19 +33,19 @@ function makeFileFor(path: string, exists: boolean, isWritable: boolean):
 } 
 
 export async function openFileDialog(title: string, buttonLabel: string,
-		multiSelections: boolean, filters?: Web3N.Device.Files.FileTypeFilter[]):
-		Promise<Web3N.Files.File[]> {
+		multiSelections: boolean, filters?: web3n.device.files.FileTypeFilter[]):
+		Promise<web3n.files.File[] | undefined> {
 	let properties: any[] = [ 'openFile' ];
 	if (multiSelections) {
 		properties.push('multiSelections');
 	}
 	let paths = await new Promise<string[]>((resolve) => {
-		dialog.showOpenDialog(
+		remote.dialog.showOpenDialog(
 			{ title, buttonLabel, filters, properties },
 			resolve);
 	});
 	if (!Array.isArray(paths) || (paths.length === 0)) { return; }
-	let files: Web3N.Files.File[] = [];
+	let files: web3n.files.File[] = [];
 	for (let path of paths) {
 		files.push(await makeFileFor(path, true, false));
 	}
@@ -59,10 +53,10 @@ export async function openFileDialog(title: string, buttonLabel: string,
 }
 
 export async function saveFileDialog(title: string, buttonLabel: string,
-		defaultPath: string, filters?: Web3N.Device.Files.FileTypeFilter[]):
-		Promise<Web3N.Files.File> {
+		defaultPath: string, filters?: web3n.device.files.FileTypeFilter[]):
+		Promise<web3n.files.File | undefined> {
 	let path = await new Promise<string>((resolve) => {
-		dialog.showSaveDialog(
+		remote.dialog.showSaveDialog(
 			{ title, buttonLabel, defaultPath, filters },
 			resolve);
 	});
@@ -73,3 +67,5 @@ export async function saveFileDialog(title: string, buttonLabel: string,
 	}));
 	return makeFileFor(path, exists, true);
 }
+
+Object.freeze(exports);

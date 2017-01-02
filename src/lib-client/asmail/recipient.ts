@@ -28,16 +28,16 @@ import { asmailInfoAt } from '../service-locator';
 export const EXCEPTION_TYPE = "inbox";
 
 export function makeMsgNotFoundException(msgId: string):
-		Web3N.ASMail.InboxException {
-	let exc = <Web3N.ASMail.InboxException> makeRuntimeException(
+		web3n.asmail.InboxException {
+	let exc = <web3n.asmail.InboxException> makeRuntimeException(
 		'msgNotFound', EXCEPTION_TYPE);
 	exc.msgId = msgId;
 	return exc;
 }
 
 export function makeObjNotFoundException(msgId: string, objId: string):
-		Web3N.ASMail.InboxException {
-	let exc = <Web3N.ASMail.InboxException> makeRuntimeException(
+		web3n.asmail.InboxException {
+	let exc = <web3n.asmail.InboxException> makeRuntimeException(
 		'objNotFound', EXCEPTION_TYPE);
 	exc.msgId = msgId;
 	exc.objId = objId;
@@ -45,8 +45,8 @@ export function makeObjNotFoundException(msgId: string, objId: string):
 }
 
 export function makeMsgIsBrokenException(msgId: string):
-		Web3N.ASMail.InboxException {
-	let exc = <Web3N.ASMail.InboxException> makeRuntimeException(
+		web3n.asmail.InboxException {
+	let exc = <web3n.asmail.InboxException> makeRuntimeException(
 		'msgIsBroken', EXCEPTION_TYPE);
 	exc.msgId = msgId;
 	return exc;
@@ -54,6 +54,8 @@ export function makeMsgIsBrokenException(msgId: string):
 
 export class MailRecipient extends ServiceUser {
 	
+	private serviceURIGetter: () => Promise<string> = (undefined as any);
+
 	constructor(user: string, getSigner: IGetMailerIdSigner) {
 		super(user, {
 			login: api.midLogin.MID_URL_PART,
@@ -63,16 +65,44 @@ export class MailRecipient extends ServiceUser {
 		Object.seal(this);
 	}
 
-	async setRetrievalUrl(serviceUrl: string): Promise<void> {
+	private async setServiceUrl(serviceUrl?: string): Promise<void> {
+		if (!serviceUrl) {
+			serviceUrl = await this.serviceURIGetter();
+		}
 		let info = await asmailInfoAt(serviceUrl);
+		if (!info.retrieval) { throw new Error(`Missing retrieval service url in ASMail information at ${serviceUrl}`); }
 		this.serviceURI = info.retrieval;
 	}
-	
-	isSet(): boolean {
-		return !!this.serviceURI;
+
+	async setRetrievalUrl(serviceUrl: string|(() => Promise<string>)):
+			Promise<void> {
+		if (typeof serviceUrl === 'string') {
+			await this.setServiceUrl(serviceUrl);
+		} else {
+			this.serviceURIGetter = serviceUrl;
+		}
 	}
 	
-	// XXX add setSessionParams() method with respective request to server
+	/**
+	 * This method hides super from await, till ES7 comes with native support
+	 * for await.
+	 */
+	private super_login(): Promise<void> {
+		return super.login();
+	}
+	
+	/**
+	 * This does MailerId login with a subsequent getting of session parameters
+	 * from 
+	 * @return a promise, resolvable, when mailerId login and getting parameters'
+	 * successfully completes.
+	 */
+	async login(): Promise<void> {
+		if (!this.isSet) {
+			await this.setServiceUrl();
+		}
+		await this.super_login();
+	}
 	
 	async listMsgs(fromTS: number): Promise<api.listMsgs.Reply> {
 		// if (!this.isSet())
@@ -80,7 +110,7 @@ export class MailRecipient extends ServiceUser {
 		// XXX modify request to take fromTS parameter to limit number of msgs
 		
 		let rep = await this.doBodylessSessionRequest<api.listMsgs.Reply>({
-			url: this.serviceURI + api.listMsgs.URL_END,
+			path: api.listMsgs.URL_END,
 			method: 'GET',
 			responseType: 'json'
 		});
@@ -96,7 +126,7 @@ export class MailRecipient extends ServiceUser {
 
 	async getMsgMeta(msgId: string): Promise<api.MsgMeta> {
 		let rep = await this.doBodylessSessionRequest<api.MsgMeta>({
-			url: this.serviceURI + api.msgMetadata.genUrlEnd(msgId),
+			path: api.msgMetadata.genUrlEnd(msgId),
 			method: 'GET',
 			responseType: 'json'
 		});
@@ -112,10 +142,10 @@ export class MailRecipient extends ServiceUser {
 		}
 	}
 
-	private async getBytes(url: string, msgId: string, objId: string):
+	private async getBytes(path: string, msgId: string, objId: string):
 			Promise<Uint8Array> {
 		let rep = await this.doBodylessSessionRequest<Uint8Array>(
-			{ url, method: 'GET', responseType: 'arraybuffer' });
+			{ path, method: 'GET', responseType: 'arraybuffer' });
 		if (rep.status === api.msgObjSegs.SC.ok) {
 			if (!rep.data) {
 				throw makeXhrException(rep, 'Malformed response');
@@ -129,20 +159,19 @@ export class MailRecipient extends ServiceUser {
 	}
 	
 	getObjHead(msgId: string, objId: string): Promise<Uint8Array> {
-		let url = this.serviceURI + api.msgObjHeader.genUrlEnd(msgId, objId);
-		return this.getBytes(url, msgId, objId);
+		let path = api.msgObjHeader.genUrlEnd(msgId, objId);
+		return this.getBytes(path, msgId, objId);
 	}
 
 	getObjSegs(msgId: string, objId: string, opts?: api.BlobQueryOpts):
 			Promise<Uint8Array> {
-		let url = this.serviceURI +
-			api.msgObjSegs.genUrlEnd(msgId, objId, opts);
-		return this.getBytes(url, msgId, objId);
+		let path = api.msgObjSegs.genUrlEnd(msgId, objId, opts);
+		return this.getBytes(path, msgId, objId);
 	}
 
 	async removeMsg(msgId: string): Promise<void> {
 		let rep = await this.doBodylessSessionRequest<void>({
-			url: this.serviceURI + api.rmMsg.genUrlEnd(msgId),
+			path: api.rmMsg.genUrlEnd(msgId),
 			method: 'DELETE'
 		});
 		if (rep.status === api.rmMsg.SC.ok) {

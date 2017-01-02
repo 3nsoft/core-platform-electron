@@ -14,43 +14,37 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
+import { Duplex, RequestEnvelope } from '../../lib-common/ipc/electron-ipc';
+import { FS, StorageGetter } from '../../lib-client/3nstorage/xsp-fs/common';
 import { ConnectException, ConnectExceptionType }
 	from '../../lib-common/exceptions/http';
 import { errWithCause } from '../../lib-common/exceptions/error';
 import { NamedProcs } from '../../lib-common/processes';
 import { MailRecipient, makeMsgIsBrokenException, makeMsgNotFoundException }
 	from '../../lib-client/asmail/recipient';
-import { getASMailServiceFor, getMailerIdInfoFor }
-	from '../../lib-client/service-locator';
-import { MsgOpener, HEADERS } from '../../lib-client/asmail/msg';
-import { KeyRing, DecryptorWithInfo } from './keyring';
-import { IGetSigner } from '../../renderer/common';
-import { InboxCache, MSG_STATUS as MSG_CACHE_STATUS } from './inbox-cache';
+import { getASMailServiceFor } from '../../lib-client/service-locator';
+import { OpenedMsg, openMsg, HEADERS } from '../../lib-client/asmail/msg';
+import { KeyRing, MsgDecrInfo } from './keyring';
+import { IGetSigner, asmail, FSDetails } from '../../renderer/common';
+import { InboxCache, MsgStatus } from './inbox-cache';
+import { Downloader } from './downloader';
 import { Exception as CacheException, ExceptionType as CacheExceptionType }
 	from '../../lib-client/local-files/generational-cache';
 import { MsgIndex } from './inbox-index';
 import { makeCachedObjSource } from './cached-obj-source';
+import { fsForAttachments } from './attachments/fs';
+import { bind } from '../../lib-common/binding';
+import { areAddressesEqual } from '../../lib-common/canonical-address';
+import { ObjSource } from '../../lib-common/obj-streaming/common';
+import { base64 } from '../../lib-common/buffer-utils';
+import { makeHolderFor } from 'xsp-files';
+import { checkAndExtractPKeyWithAddress } from './key-verification';
+import * as confApi from '../../lib-common/service-api/asmail/config';
+import { JsonKey } from '../../lib-common/jwkeys';
 
-function msgToUIForm(msg: MsgOpener): Web3N.ASMail.IncomingMessage {
-	let m: Web3N.ASMail.IncomingMessage = {
-		sender: msg.sender.address,
-		msgId: msg.msgId,
-		deliveryTS: msg.meta.deliveryCompletion,
-		subject: msg.getHeader(HEADERS.SUBJECT),
-		carbonCopy: msg.getHeader(HEADERS.CC),
-		recipients: msg.getHeader(HEADERS.TO)
-	};
-	let body = msg.getMainBody();
-	if (body.text) {
-		if (body.text.plain) {
-			m.plainTxtBody = body.text.plain;
-		} else if (body.text.html) {
-			m.htmlTxtBody = body.text.html;
-		}
-	}
-	return m;
-}
+type EncryptionException = web3n.EncryptionException;
+type MsgInfo = web3n.asmail.MsgInfo;
+type IncomingMessage = web3n.asmail.IncomingMessage;
 
 /**
  * Instance of this class represents inbox-on-mail-server.
@@ -61,270 +55,272 @@ function msgToUIForm(msg: MsgOpener): Web3N.ASMail.IncomingMessage {
  */
 export class InboxOnServer {
 	
-	private index: MsgIndex;
-	private msgReceiver: MailRecipient = null;
+	private index: MsgIndex = (undefined as any);
+	private msgReceiver: MailRecipient = (undefined as any);
+	private uiSide: Duplex = (undefined as any);
 	private procs = new NamedProcs();
-	private cache: InboxCache = null;
+	private cache: InboxCache = (undefined as any);
+	private downloader: Downloader = (undefined as any);
+	private fsProxyRegister: (fs: FS) => FSDetails = (undefined as any);
 	
 	constructor(
 			private address: string,
 			private getSigner: IGetSigner,
 			private keyring: KeyRing,
-			inboxFS: FS) {
-		this.index = new MsgIndex(inboxFS);
+			private storages: StorageGetter) {
 		Object.seal(this);
 	}
 	
+	attachTo(uiSide: Duplex, fsProxyRegister: (fs: FS) => FSDetails): void {
+		this.uiSide = uiSide;
+		this.fsProxyRegister = fsProxyRegister;
+		this.attachHandlersToUI();
+	}
+	
+	private attachHandlersToUI(): void {
+		let inboxNames = asmail.uiReqNames.inbox;
+		this.uiSide.addHandler(inboxNames.listMsgs,
+			bind(this, this.handleListMsgs));
+		this.uiSide.addHandler(inboxNames.removeMsg,
+			bind(this, this.handleRemoveMsg));
+		this.uiSide.addHandler(inboxNames.getMsg,
+			bind(this, this.handleGetMsg));
+	}
+
 	/**
 	 * @param cache is inbox cache, backed by device's file system
 	 * @return a promise, resolvable when initialization completes.
 	 * This object cannot be used prior to initialization completion.
 	 */
-	async init(cache: InboxCache): Promise<void> {
+	async init(cache: InboxCache, inboxFS: FS): Promise<void> {
 		try {
 			this.cache = cache;
-			await Promise.all([
-				this.index.init(),
-				this.setReceiver().catch((e: ConnectException) => {
-					if (e.type !== ConnectExceptionType) { throw e; }
-				})
-			]);
+			this.msgReceiver = new MailRecipient(this.address, this.getSigner);
+			this.msgReceiver.setRetrievalUrl(() => {
+				return getASMailServiceFor(this.address);
+			});
+			this.downloader = new Downloader(this.cache, this.msgReceiver);
+			this.index = new MsgIndex(inboxFS);
+			await this.index.init();
 		} catch (err) {
 			throw errWithCause(err, 'Failed to initialize Inbox');
 		}
 	}
 	
-	private async setReceiver(): Promise<void> {
-		let msgReceiver = new MailRecipient(this.address, this.getSigner);
-		let serviceURL = await getASMailServiceFor(this.address);
-		await msgReceiver.setRetrievalUrl(serviceURL);
-		await msgReceiver.login();
-		this.msgReceiver = msgReceiver;
-	}
-	
-	private async ensureReceiverIsSet(): Promise<void> {
-		if (!this.msgReceiver) {
-			await this.setReceiver();
-		}
-	}
-	
 	/**
 	 * Removes message from a server, and cleans respective cache.
-	 * @param msg is an info object with id and a timestamp of a message that
-	 * should be removed/deleted
+	 * @param env with an id of a message that should be removed/deleted
 	 * @return a promise, resolvable when server completes message removal.
 	 */
-	removeMsg(msg: Web3N.ASMail.MsgInfo): Promise<void> {
-		// check for an already started process
-		let procId = 'removal of '+msg.msgId;
-		let promise = this.procs.getP<void>(procId);
-		if (promise) { return promise; }
-		// start removal process
-		return this.procs.start<void>(procId, (async () => {
-			await this.ensureReceiverIsSet();
-			await Promise.all([
-				this.index.remove(msg),
-				this.cache.deleteMsg(msg.msgId),
-				this.msgReceiver.removeMsg(msg.msgId)
-			]);
-		}));
-	}
-	
-	/**
-	 * Removes message from a server, and cleans respective cache.
-	 * @param msg is an id of a message that should be removed/deleted
-	 * @return a promise, resolvable when server completes message removal.
-	 */
-	removeMsgUsingIdOnly(msgId: string): Promise<void> {
+	private async handleRemoveMsg(env: RequestEnvelope<string>): Promise<void> {
+		let msgId = env.req;
 		// check for an already started process
 		let procId = 'removal of '+msgId;
 		let promise = this.procs.getP<void>(procId);
 		if (promise) { return promise; }
 		// start removal process
 		return this.procs.start<any>(procId, (async () => {
-			await this.ensureReceiverIsSet();
 			await Promise.all([
 				this.index.removeUsingIdOnly(msgId),
-				this.cache.deleteMsg(msgId),
-				this.msgReceiver.removeMsg(msgId)
+				this.removeMsgFromServerAndCache(msgId)
 			]);
 		}));
 	}
-	
-	private async cacheMsgMetaAndAddKeyToIndex(msgId: string): Promise<void> {
-		// get meta from server
-		let meta = await this.msgReceiver.getMsgMeta(msgId);
-		
-		// check, once again, if msg is already indexed
-		let msgInfo: Web3N.ASMail.MsgInfo = {
-			msgId,
-			deliveryTS: meta.deliveryCompletion
-		};
-		let knownDecryptor = await this.index.getDecr(msgInfo);
-		if (knownDecryptor) { return; }
-		
-		// check possible key pairs (respective decryptors)
-		let msgDecr: DecryptorWithInfo = null;
-		let decryptors = this.keyring.getDecryptorFor(meta.extMeta);
-		if (!decryptors) { return this.msgReceiver.removeMsg(msgId); }
-		let mainObjId = meta.extMeta.objIds[0];
-		let header = await this.msgReceiver.getObjHead(msgId, mainObjId);
-		let msgOpener = new MsgOpener(msgId, meta);
-		try {
-			for (let decr of decryptors) {
-				try {
-					msgOpener.setCrypto(decr, header);
-					msgDecr = decr;
-				} catch (err) {
-					if (!(<any> err).failedCipherVerification) { throw err; }
-				}
-			}
-		} finally {
-			for (let decr of decryptors) {
-				decr.decryptor.destroy();
-			}
-		}
-		if (!msgDecr) { return this.msgReceiver.removeMsg(msgId); }
-		
-		// look inside main object either to get next crypto material, or to
-		// get and verify sender's identity
-		let segments = await this.msgReceiver.getObjSegs(msgId, mainObjId);
-		// TODO add discrimination and corresponding handling of malformed main
-		//		object, identity verification failure, and network error, which may
-		//		disallow identity check at this moment.  
-		if (msgOpener.sender.address) {
-			// messages, with established key pairs, have sender known from
-			//	keyring info, and we need to look for a next suggested key pair
-			await msgOpener.setMain(segments);
-			this.keyring.absorbSuggestedNextKeyPair(msgOpener.sender.address,
-				msgOpener.getNextCrypto(), msgOpener.meta.deliveryStart);
-		} else {
-			// messages, with no sender info from a keyring, need sender's key and
-			// identity verified, which is done by call below
-			await msgOpener.setMain(segments, getMailerIdInfoFor);
-			msgDecr.correspondent = msgOpener.sender.address;
-			// Note: we do not record suggested crypto here.
-			//		Reply to this message should pick up suggested next key pair,
-			//		and record it in the keyring.
-		}
-		
-		// add records to index and cache
-		await this.index.add(
-			{ msgId: msgId, deliveryTS: meta.deliveryCompletion }, msgDecr);
-		await this.cache.startSavingMsg(msgId, meta);
-		
-		// cache main object, since all of its bytes are already here
-		await this.cache.saveCompleteObj(msgId, mainObjId, header, segments);
+
+	private async removeMsgFromServerAndCache(msgId: string): Promise<void> {
+		await Promise.all([
+			this.cache.deleteMsg(msgId),
+			this.msgReceiver.removeMsg(msgId).catch((exc) => {})
+		]);
 	}
 	
-	getMsgs(fromTS: number, checkServer = true): Promise<Web3N.ASMail.MsgInfo[]> {
+	private async startCachingAndAddKeyToIndex(msgId: string): Promise<boolean> {
+		// start download to ensure that meta is in the cache
+		let msgStatus = await this.downloader.startMsgDownload(msgId);
+		if (msgStatus.keyStatus !== 'not-checked') { throw new Error(
+			`Unexpected key status ${msgStatus.keyStatus} of message ${msgId}`); }
+		let msgInfo: MsgInfo = {
+			msgId,
+			deliveryTS: msgStatus.deliveryTS
+		};
+		
+		let meta = await this.cache.getMsgMeta(msgId);
+		try {
+			
+			// setup closures, some memoized, for use by keyring
+			let mainObjSrc: ObjSource|undefined = undefined;
+			let getMainObjHeader = async (): Promise<Uint8Array> => {
+				if (!mainObjSrc) {
+					mainObjSrc = await makeCachedObjSource(
+						this.cache, this.downloader, msgId, msgStatus.mainObjId);
+				}
+				return mainObjSrc.readHeader();
+			};
+			let openedMsg: OpenedMsg|undefined = undefined;
+			let getOpenedMsg = async (mainObjFileKey: string): Promise<OpenedMsg> => {
+				if (!openedMsg) {
+					if (!mainObjSrc) {
+						mainObjSrc = await makeCachedObjSource(
+							this.cache, this.downloader, msgId, msgStatus.mainObjId);
+					}
+					let fKeyHolder = makeHolderFor(
+						base64.open(mainObjFileKey), await mainObjSrc.readHeader());
+					openedMsg = await openMsg(msgId, mainObjSrc, fKeyHolder);
+				}
+				return openedMsg;
+			};
+			let checkMidKeyCerts = (certs: confApi.p.initPubKey.Certs):
+					Promise<{ pkey: JsonKey; address: string; }> => {
+				return checkAndExtractPKeyWithAddress(
+					certs, msgStatus.deliveryTS/1000);
+			};
+
+			let decrInfo = await this.keyring.decrypt(
+				meta.extMeta, msgStatus.deliveryTS,
+				getMainObjHeader, getOpenedMsg, checkMidKeyCerts);
+			
+			if (decrInfo) {
+				// if sender authenticated to server, check that it matches address,
+				// recovered from message decryption 
+				if (meta.authSender &&
+						!areAddressesEqual(meta.authSender, decrInfo.correspondent)) {
+					throw new Error(`Sender authenticated to server as ${meta.authSender}, while decrypting key is associated with ${decrInfo.correspondent}`);
+				}
+				// add records to index and cache
+				await this.index.add(msgInfo, decrInfo);
+			} else {
+				// check, if msg has already been indexed
+				let knownDecr = await this.index.fKeyFor(msgInfo);
+				if (!knownDecr) {
+					await this.cache.updateMsgKeyStatus(msgId, 'not-found');
+					return false;
+				}
+				
+				// TODO try to open main message, just as a check
+
+			}
+			await this.cache.updateMsgKeyStatus(msgId, 'ok');
+			return true;
+		} catch (exc) {
+			await this.cache.updateMsgKeyStatus(msgId, 'fail');
+			console.error(`Problem with opening message ${msgId}`);
+			console.error(exc);
+			return false;
+		}
+	}
+	
+	
+	private async handleListMsgs(env: RequestEnvelope<number>):
+			Promise<MsgInfo[]> {
+		let fromTS = env.req;
+		let checkServer = true;	// XXX in future this will be an option from req
+		if (!checkServer) { return this.index.listMsgs(fromTS); }
+
 		// check for an already started process
 		let procId = 'listing msgs';
-		let promise = this.procs.getP<Web3N.ASMail.MsgInfo[]>(procId);
+		let promise = this.procs.getP<MsgInfo[]>(procId);
 		if (promise) { return promise; }
 		// start message listing process
 		return this.procs.start(procId, async () => {
 			// message listing info is located in index, yet, process involves
 			// getting and caching messages' metadata
-			if (checkServer) {
-				let msgIds: string[];
-				try {
-					this.ensureReceiverIsSet();
-					msgIds = await this.msgReceiver.listMsgs(fromTS);
-				} catch (exc) {
-					if ((<ConnectException> exc).type !== ConnectExceptionType) {
-						throw exc; }
-				}
-				let indexedMsgs = await this.index.listMsgs(fromTS);
-				for (let info of indexedMsgs) {
-					let ind = msgIds.indexOf(info.msgId);
-					if (ind >= 0) {
-						msgIds.splice(ind, 1);
-					}
-				}
-				if (msgIds.length === 0) { return indexedMsgs; }
-				let keying: Promise<void>[] = [];
-				for (let msgId of msgIds) {
-					keying.push(this.cacheMsgMetaAndAddKeyToIndex(msgId).catch(
-						(err) => {
-							console.error('An error occured when getting message with id '+msgId);
-							console.error(err);
-						}));
-				}
-				await Promise.all(keying);
+			let msgIds: string[];
+			try {
+				msgIds = await this.msgReceiver.listMsgs(fromTS);
+			} catch (exc) {
+				if ((<ConnectException> exc).type !== ConnectExceptionType) {
+					throw exc; }
+				return this.index.listMsgs(fromTS);
 			}
+			let indexedMsgs = await this.index.listMsgs(fromTS);
+			for (let info of indexedMsgs) {
+				let ind = msgIds.indexOf(info.msgId);
+				if (ind >= 0) {
+					msgIds.splice(ind, 1);
+				}
+			}
+			if (msgIds.length === 0) { return indexedMsgs; }
+			let keying = msgIds.map(msgId =>
+				this.startCachingAndAddKeyToIndex(msgId).catch((exc) => {
+					console.error(`Failed to start caching message ${msgId} due to following error:`);
+					console.error(exc);
+				}));
+			await Promise.all(keying);
 			return this.index.listMsgs(fromTS);
 		});
 	}
 	
-	// Note: IncomingMessage will have a file system like, readonly access to
-	//		attachments and/or other files. Therefore, all attached objects shall
-	//		be loaded via that fs-like API, while IncomingMessage only requires
-	//		loading of the 0-th object.
-	
-	getMsg(msgId: string): Promise<Web3N.ASMail.IncomingMessage> {
-		let procId = 'get msg #'+msgId;
-		let promise = this.procs.getP<Web3N.ASMail.IncomingMessage>(procId);
+	private async handleGetMsg(env: RequestEnvelope<string>):
+			Promise<IncomingMessage> {
+		let msgId = env.req;
+		let procId = `get msg #${msgId}`;
+		let promise = this.procs.getP<IncomingMessage>(procId);
 		if (promise) { return promise; }
 		return this.procs.start(procId, async () => {
 			
-			let cacheInfo = await this.cache.getMsgStatus(msgId)
-			.catch(async (exc: CacheException) => {
-				// It is possible for message to be purged from a cache, in which
-				// case we should try to get it from the server again
-				if ((exc.type !== CacheExceptionType) || !exc.notFound) {
-					throw exc;
-				}
-				await this.ensureReceiverIsSet();
-				let meta = await this.msgReceiver.getMsgMeta(msgId);
-				await this.cache.startSavingMsg(msgId, meta);
-				return this.cache.getMsgStatus(msgId);
-			});
+			let msgStatus = await this.cache.findMsg(msgId);
+			if (!msgStatus) {
+				await this.downloader.startMsgDownload(msgId);
+				msgStatus = (await this.cache.findMsg(msgId, true))!;
+			}
 			
 			let meta = await this.cache.getMsgMeta(msgId);
 			let msgInfo = {
 				msgId,
-				deliveryTS: meta.deliveryCompletion
+				deliveryTS: meta.deliveryCompletion!
 			};
 			
-			if (cacheInfo.status === MSG_CACHE_STATUS.noMsgKey) {
-				// message cannot be opened, and should've been removed
-				await Promise.all([
-					this.index.remove(msgInfo),
-					this.cache.deleteMsg(msgId),
-					this.msgReceiver.removeMsg(msgId).catch((exc) => {})
-				]);
+			if ((msgStatus.keyStatus === 'not-found') ||
+					(msgStatus.keyStatus === 'fail')) {
+				// message cannot be opened, and should be removed
+				// await Promise.all([
+				// 	this.index.remove(msgInfo),
+				// 	this.removeMsgFromServerAndCache(msgId)
+				// ]);
+				throw makeMsgNotFoundException(msgId);
+			} else if (msgStatus.keyStatus === 'not-checked') {
+				await this.startCachingAndAddKeyToIndex(msgId);
+			}
+
+			let mainObj = await makeCachedObjSource(this.cache, this.downloader,
+				msgId, meta.extMeta.objIds[0]);
+			let fKeyHolder = await this.index.fKeyFor(msgInfo);
+			if (!fKeyHolder) {
+				await this.removeMsgFromServerAndCache(msgId);
 				throw makeMsgNotFoundException(msgId);
 			}
-			
-			let mainObj = await makeCachedObjSource(this.msgReceiver, this.cache,
-				msgId, meta.extMeta.objIds[0]);
-			let decr = await this.index.getDecr(msgInfo);
-			if (!decr) {
-				await Promise.all([
-					this.cache.deleteMsg(msgId),
-					this.msgReceiver.removeMsg(msgId).catch((exc) => {})
-				]);
-				throw new Error('Missing key for a message.');
-			}
-			let msg = new MsgOpener(msgId, meta);
-			try {
-				let header = await mainObj.readHeader();
-				msg.setCrypto(decr, header);
-			} catch (err) {
-				if ((<any> err).failedCipherVerification) {
-					throw makeMsgIsBrokenException(msgId);
-				} else {
-					throw err;
-				}
-			} finally {
-				decr.decryptor.destroy();
-			}
-			let bytes = await mainObj.segSrc.read(null);
-			await msg.setMain(bytes);
-			
-			return msgToUIForm(msg);
+			let msg = await openMsg(msgId, mainObj, fKeyHolder);
+
+			return this.msgToUIForm(msg, msgStatus);
 		});
+	}
+
+	private msgToUIForm(msg: OpenedMsg, msgStatus: MsgStatus): IncomingMessage {
+		let m: IncomingMessage = {
+			sender: msg.getSender(),
+			msgId: msg.msgId,
+			deliveryTS: msgStatus.deliveryTS,
+			deliveryComplete: msgStatus.deliveryComplete,
+			subject: msg.getHeader(HEADERS.SUBJECT),
+			carbonCopy: msg.getHeader(HEADERS.CC),
+			recipients: msg.getHeader(HEADERS.TO)
+		};
+		let body = msg.getMainBody();
+		if (body.text) {
+			if (body.text.plain) {
+				m.plainTxtBody = body.text.plain;
+			} else if (body.text.html) {
+				m.htmlTxtBody = body.text.html;
+			}
+		}
+		let attachments = msg.getAttachmentsJSON();
+		if (attachments) {
+			let fs = fsForAttachments(
+				this.downloader, this.cache, m.msgId, attachments, this.storages);
+			let fsInfo = this.fsProxyRegister(fs);
+			m.attachments = (fsInfo as any);
+		}
+		return m;
 	}
 	
 }

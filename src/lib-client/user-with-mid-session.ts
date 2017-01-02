@@ -37,7 +37,7 @@ export interface IGetMailerIdSigner {
 
 export abstract class ServiceUser {
 	
-	private uri: string = null;
+	private uri: string = (undefined as any);
 	get serviceURI(): string {
 		return this.uri;
 	}
@@ -61,13 +61,13 @@ export abstract class ServiceUser {
 	
 	private loginUrlPart: string;
 	private logoutUrlEnd: string;
-	private redirectedFrom: string = null;
+	private redirectedFrom: string = (undefined as any);
 	private canBeRedirected: boolean;
 
-	private sessionId: string = null;
-	private loginProc: Promise<void> = null;
+	private sessionId: string = (undefined as any);
+	private loginProc: Promise<void> = (undefined as any);
 	
-	constructor(
+	protected constructor(
 			public userId: string,
 			opts: { login: string; logout: string; canBeRedirected?: boolean; },
 			private getSigner?: IGetMailerIdSigner) {
@@ -80,7 +80,17 @@ export abstract class ServiceUser {
 		this.canBeRedirected = !!opts.canBeRedirected;
 	}
 	
+	get isSet(): boolean {
+		return (typeof this.serviceURI === 'string');
+	}
+
+	private throwOnBadServiceURI(): void {
+		if (!this.isSet) { throw new Error(
+			`Service uri is not a string: ${this.serviceURI}`); }
+	}
+	
 	private async startSession(): Promise<string> {
+		this.throwOnBadServiceURI();
 		let reqData: api.startSession.Request = {
 			userId: this.userId
 		};
@@ -128,6 +138,7 @@ export abstract class ServiceUser {
 	
 	private async authenticateSession(sessionId: string,
 			midSigner: mid.MailerIdSigner): Promise<void> {
+		this.throwOnBadServiceURI();
 		let reqData: api.authSession.Request = {
 			assertion: midSigner.generateAssertionFor(
 				this.serviceDomain, sessionId),
@@ -170,7 +181,7 @@ export abstract class ServiceUser {
 			}
 			await this.authenticateSession(sessionId, midSigner);
 			this.sessionId = sessionId;
-			this.loginProc = null;
+			this.loginProc = (undefined as any);
 		})();
 		return this.loginProc;
 	}
@@ -180,14 +191,15 @@ export abstract class ServiceUser {
 	 * @return a promise for request completion.
 	 */
 	async logout(): Promise<void> {
-		if (this.sessionId === null) { return; }
+		if (!this.sessionId) { return; }
+		this.throwOnBadServiceURI();
 		let rep = await doBodylessRequest<void>({
 			url: this.serviceURI + this.logoutUrlEnd,
 			method: 'POST',
 			sessionId: this.sessionId
 		});
 		if (rep.status === 200) {
-			this.sessionId = null;
+			this.sessionId = (undefined as any);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
@@ -203,15 +215,26 @@ export abstract class ServiceUser {
 			let initSessionId = this.sessionId;
 			let rep = await func();
 			if (rep.status !== api.ERR_SC.needAuth) { return rep; }
-			if (this.sessionId === initSessionId) { this.sessionId = null; }
+			if (this.sessionId === initSessionId) {
+				this.sessionId = (undefined as any);
+			}
 			await this.login();
 		}
 		return func();
 	}
+
+	private prepCallOpts(opts: RequestOpts): void {
+		opts.sessionId = this.sessionId;
+		if (!opts.url) { 
+			if (!opts.path) { throw new Error(
+				`Missing path in request options.`); }
+			opts.url = this.serviceURI + opts.path;
+		}
+	}
 	
 	protected doBodylessSessionRequest<T>(opts: RequestOpts): Promise<Reply<T>> {
 		return this.callEnsuringLogin<T>(() => {
-			opts.sessionId = this.sessionId;
+			this.prepCallOpts(opts);
 			return doBodylessRequest(opts);
 		})
 	}
@@ -219,7 +242,7 @@ export abstract class ServiceUser {
 	protected doJsonSessionRequest<T>(opts: RequestOpts, json: any):
 			Promise<Reply<T>> {
 		return this.callEnsuringLogin<T>(() => {
-			opts.sessionId = this.sessionId;
+			this.prepCallOpts(opts);
 			return doJsonRequest(opts, json);
 		})
 	}
@@ -227,7 +250,7 @@ export abstract class ServiceUser {
 	protected doTextSessionRequest<T>(opts: RequestOpts, txt: string):
 			Promise<Reply<T>> {
 		return this.callEnsuringLogin<T>(() => {
-			opts.sessionId = this.sessionId;
+			this.prepCallOpts(opts);
 			return doTextRequest(opts, txt);
 		})
 	}
@@ -235,7 +258,7 @@ export abstract class ServiceUser {
 	protected doBinarySessionRequest<T>(opts: RequestOpts, bytes: Uint8Array):
 			Promise<Reply<T>> {
 		return this.callEnsuringLogin<T>(() => {
-			opts.sessionId = this.sessionId;
+			this.prepCallOpts(opts);
 			return doBinaryRequest(opts, bytes);
 		})
 	}

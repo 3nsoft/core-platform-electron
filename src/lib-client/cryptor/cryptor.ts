@@ -90,15 +90,15 @@ class Child {
 		Object.seal(this);
 	}
 	
-	async makeRequest<T>(t: Task<any>): Promise<T> {
+	makeRequest<T>(t: Task<any>): Promise<T> {
 		try {
 			this.isBusy = true;
 			let r = this.comm.makeRequest<T>(t.reqName, t.req, t.notifyCallback);
 			if (t.resolve) { t.resolve(r); }
-			else { return r; }
+			return r;
 		} catch (err) {
 			if (t.reject) { t.reject(err); }
-			else { throw err; }
+			throw err;
 		} finally {
 			this.isBusy = false;
 			this.lastActiveAt = Date.now();
@@ -118,11 +118,11 @@ class CryptService {
 	private tasks: Task<any>[] = [];
 	private isClosed = false;
 	
-	constructor(maxThreads: number) {
+	constructor(maxThreads: number|undefined) {
 		let numOfCPUs = cpus().length;
 		if (numOfCPUs <= 2) {
 			this.numOfThreads = 1;
-		} else if (maxThreads === null) {
+		} else if (maxThreads === undefined) {
 			this.numOfThreads = numOfCPUs - 2;
 		} else {
 			this.numOfThreads = Math.min(maxThreads, numOfCPUs-2);
@@ -130,7 +130,7 @@ class CryptService {
 		Object.seal(this);
 	}
 	
-	private getChildForNewTask(): Child {
+	private getChildForNewTask(): Child|undefined {
 		let child = this.idle.pop();
 		if (child) {
 			this.busy.push(child);
@@ -138,11 +138,11 @@ class CryptService {
 			child = new Child();
 			child.proc.on('disconnect', () => {
 				if (this.isClosed) { return; }
-				let i = this.idle.indexOf(child);
+				let i = this.idle.indexOf(child!);
 				if (i >= 0) {
 					this.idle.splice(i, 1);
 				}
-				i = this.busy.indexOf(child);
+				i = this.busy.indexOf(child!);
 				if (i >= 0) {
 					this.busy.splice(i, 1);
 				}
@@ -316,26 +316,26 @@ class CryptService {
 			console.warn(
 				'Closing cryptor, while there still tasks waiting execution.');
 			for (let t of this.tasks) {
-				t.reject(new Error('Cryptor is closed.'));
+				t.reject!(new Error('Cryptor is closed.'));
 			}
 		}
 		this.isClosed = true;
-		this.idle = null;
-		this.busy = null;
-		this.tasks = null;
+		this.idle = (undefined as any);
+		this.busy = (undefined as any);
+		this.tasks = (undefined as any);
 	}
 	
 }
 Object.freeze(CryptService.prototype);
 Object.freeze(CryptService);
 
-export function makeCryptor(maxThreads: number = null):
+export function makeCryptor(maxThreads?: number):
 		{ cryptor: Cryptor; close: () => void; } {
 	if (typeof maxThreads === 'number') {
 		if (maxThreads < 1) { throw new Error(
 			'Number of threads should be more than one.'); }
 	} else {
-		if (maxThreads !== null) { throw new Error(
+		if (maxThreads !== undefined) { throw new Error(
 			`Illegal parameter is given as number of htreads ${maxThreads}`); }
 	}
 	let cs = new CryptService(maxThreads);

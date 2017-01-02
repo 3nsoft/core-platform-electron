@@ -17,23 +17,24 @@
 import { ipcMain, ipcRenderer } from 'electron';
 import { Duplex } from './generic-ipc';
 
-export { Duplex, RequestEnvelope } from './generic-ipc';
+export { Duplex, RequestEnvelope, RequestHandler, EventEnvelope, EventListener }
+	from './generic-ipc';
 
 /**
  * @return a Duplex for communication with a core of a platform that runs in a
  * main process of electron.
  */
 export function commToMain(channel: string): Duplex {
-	let envListener: (r: any) => void = null;
+	let envListener: (r: any) => void;
 	let ipcListener = (event: Electron.IpcRendererEvent, r: any) => {
 		if (envListener) { envListener(r); }
 	};
 	let detach = () => {
 		if (!envListener) { return; }
-		envListener = null;
+		envListener = (undefined as any);
 		ipcRenderer.removeListener(channel, ipcListener);
 	};
-	return  new Duplex(null, {
+	return  new Duplex(undefined, {
 		postMessage(env: any): void {
 			ipcRenderer.send(channel, env);
 		},
@@ -52,7 +53,7 @@ export function commToMain(channel: string): Duplex {
  */
 export function commToRenderer(win: Electron.BrowserWindow, channel: string):
 		Duplex {
-	let envListener: (r: any) => void = null;
+	let envListener: (r: any) => void;
 	let webCont = win.webContents;
 	let ipcListener = (event: Electron.IpcMainEvent, r: any) => {
 		if (envListener && (event.sender === webCont)) {
@@ -61,12 +62,12 @@ export function commToRenderer(win: Electron.BrowserWindow, channel: string):
 	};
 	let detach = () => {
 		if (!envListener) { return; }
-		envListener = null;
+		envListener = (undefined as any);
 		ipcMain.removeListener(channel, ipcListener);
-		webCont = null;
+		webCont = (undefined as any);
 	};
 	win.on('closed', detach);
-	return new Duplex(null, {
+	return new Duplex(undefined, {
 		postMessage(env: any): void {
 			if (!webCont) {
 				console.error(

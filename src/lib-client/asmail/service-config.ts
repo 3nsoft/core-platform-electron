@@ -28,6 +28,8 @@ import { asmailInfoAt } from '../service-locator';
 
 export class MailConfigurator extends ServiceUser {
 	
+	private serviceURIGetter: () => Promise<string> = (undefined as any);
+	
 	paramsOnServer: {
 		[name: string]: any;
 	};
@@ -42,20 +44,48 @@ export class MailConfigurator extends ServiceUser {
 		Object.seal(this);
 	}
 
-	async setConfigUrl(serviceUrl: string): Promise<void> {
+	private async setServiceUrl(serviceUrl?: string): Promise<void> {
+		if (!serviceUrl) {
+			serviceUrl = await this.serviceURIGetter();
+		}
 		let info = await asmailInfoAt(serviceUrl);
+		if (!info.config) { throw new Error(`Missing configuration service url in ASMail information at ${serviceUrl}`); }
 		this.serviceURI = info.config;
 	}
+
+	async setConfigUrl(serviceUrl: string|(() => Promise<string>)):
+			Promise<void> {
+		if (typeof serviceUrl === 'string') {
+			await this.setServiceUrl(serviceUrl);
+		} else {
+			this.serviceURIGetter = serviceUrl;
+		}
+	}
 	
-	isSet(): boolean {
-		return !!this.serviceURI;
+	/**
+	 * This method hides super from await, till ES7 comes with native support
+	 * for await.
+	 */
+	private super_login(): Promise<void> {
+		return super.login();
+	}
+	
+	/**
+	 * This does MailerId login with a subsequent getting of session parameters
+	 * from 
+	 * @return a promise, resolvable, when mailerId login and getting parameters'
+	 * successfully completes.
+	 */
+	async login(): Promise<void> {
+		if (!this.isSet) {
+			await this.setServiceUrl();
+		}
+		await this.super_login();
 	}
 	
 	async getParam<T>(urlEnd: string): Promise<T> {
-		if (!this.isSet()) { throw makeConnectionException(null, null,
-			'Configurator is not set, and auto setting is not implemented.'); }
 		let rep = await this.doBodylessSessionRequest<T>({
-			url: this.serviceURI + urlEnd,
+			path: urlEnd,
 			method: 'GET',
 			responseType: 'json'
 		});
@@ -66,10 +96,8 @@ export class MailConfigurator extends ServiceUser {
 	}
 	
 	async setParam<T>(urlEnd: string, param: T): Promise<void> {
-		if (!this.isSet()) { throw makeConnectionException(null, null,
-			'Configurator is not set, and auto setting is not implemented.'); }
 		let rep = await this.doJsonSessionRequest<void>({
-			url: this.serviceURI + urlEnd,
+			path: urlEnd,
 			method: 'PUT',
 		}, param);
 		if (rep.status !== api.PARAM_SC.ok) {

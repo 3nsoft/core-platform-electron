@@ -18,11 +18,12 @@
 import * as cProcs from 'child_process';
 import { Duplex, CommunicationPoint } from './generic-ipc';
 
-export { Duplex, RequestEnvelope } from './generic-ipc';
+export { Duplex, RequestEnvelope, RequestHandler, EventEnvelope, EventListener }
+	from './generic-ipc';
 
 export function commToChild(channel: string, child: cProcs.ChildProcess):
 		Duplex {
-	let envListener: (r: any) => void = null;
+	let envListener: (r: any) => void;
 	let nodeListener = (r: any) => {
 		if (envListener) { envListener(r); }
 	};
@@ -33,7 +34,7 @@ export function commToChild(channel: string, child: cProcs.ChildProcess):
 			envListener = listener;
 			child.on('message', nodeListener);
 			return () => {
-				envListener = null;
+				envListener = (undefined as any);
 				child.removeListener('message', nodeListener);
 			};
 		},
@@ -45,7 +46,7 @@ export function commToChild(channel: string, child: cProcs.ChildProcess):
 }
 
 export function commToParent(channel: string): Duplex {
-	let envListener: (r: any) => void = null;
+	let envListener: (r: any) => void;
 	let nodeListener = (r: any) => {
 		if (envListener) { envListener(r); }
 	};
@@ -56,12 +57,12 @@ export function commToParent(channel: string): Duplex {
 			envListener = listener;
 			process.on('message', nodeListener);
 			return () => {
-				envListener = null;
+				envListener = (undefined as any);
 				process.removeListener('message', nodeListener);
 			};
 		},
 		postMessage(env: any): void {
-			process.send(env);
+			process.send!(env);
 		}
 	};
 	return new Duplex(channel, commPoint);

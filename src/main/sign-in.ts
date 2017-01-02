@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -28,9 +28,8 @@ import { Cryptor } from '../lib-client/cryptor/cryptor';
 
 export class SignIn {
 	
-	private isIdentitySet = false;
-	private midProvCompletion: CompleteProvisioning = null;
-	private address: string = null;
+	private midProvCompletion: CompleteProvisioning|undefined = undefined;
+	private address: string = (undefined as any);
 	
 	constructor(
 			private uiSide: Duplex,
@@ -47,12 +46,12 @@ export class SignIn {
 	
 	private attachHandlersToUI(): void {
 		let uiReqNames = signIn.reqNames;
-		this.uiSide.addHandler(uiReqNames.startMidProv,
-			bind(this, this.handleMidProvStart));
-		this.uiSide.addHandler(uiReqNames.completeMidProv,
-			bind(this, this.handleMidProvCompletion));
-		this.uiSide.addHandler(uiReqNames.setupStorage,
-			bind(this, this.handleSetupStorage));
+		this.uiSide.addHandler(uiReqNames.startLoginToRemoteStorage,
+			bind(this, this.handleStartLoginToRemote));
+		this.uiSide.addHandler(uiReqNames.completeLoginAndLocalSetup,
+			bind(this, this.handleLoginAndSetupCompletion));
+		this.uiSide.addHandler(uiReqNames.useExistingStorage,
+			bind(this, this.handleUseExistingStorage));
 		this.uiSide.addHandler(uiReqNames.getUsersOnDisk,
 			bind(this, this.handleGetUsersOnDisk));
 	}
@@ -62,10 +61,9 @@ export class SignIn {
 		return getUsersOnDisk();
 	}
 	
-	private async handleMidProvStart(env: RequestEnvelope<string>):
+	private async handleStartLoginToRemote(env: RequestEnvelope<string>):
 			Promise<boolean> {
 		this.address = env.req;
-		this.isIdentitySet = false;
 		let completion = await this.idManager.provisionNew(this.address);
 		if (completion) {
 			this.midProvCompletion = completion;
@@ -73,22 +71,26 @@ export class SignIn {
 		return !!completion;
 	}
 	
-	private makeKeyGenProgressCB(env: RequestEnvelope<any>):
-			(p: number) => void {
-		let progress = 0;
+	private makeKeyGenProgressCB(env: RequestEnvelope<any>,
+			progressStart: number, progressEnd: number) {
+		if (progressStart >= progressEnd) { throw new Error(`Invalid progress parameters: start=${progressStart}, end=${progressEnd}.`); }
+		let currentProgress = 0;
+		let totalProgress = progressStart;
+		let progressRange = progressEnd - progressStart;
 		return (p: number): void => {
-			p = Math.floor(p);
-			if (progress >= p) { return; }
-			progress = p;
-			this.uiSide.notifyOfProgressOnRequest(env, progress);
+			if (currentProgress >= p) { return; }
+			currentProgress = p;
+			let newProgress = Math.floor(p/100*progressRange + progressStart);
+			if (totalProgress >= newProgress) { return; }
+			totalProgress = newProgress;
+			this.uiSide.notifyOfProgressOnRequest(env, totalProgress);
 		};
 	}
-	
-	private async handleMidProvCompletion(env: RequestEnvelope<string>):
-			Promise<boolean> {
-		let pass = env.req;
-		let progressCB = this.makeKeyGenProgressCB(env);
-		
+
+	private async completeLogin(env: RequestEnvelope<string>, pass: string,
+			progressStart: number, progressEnd: number): Promise<boolean> {
+		let progressCB = this.makeKeyGenProgressCB(env,
+			progressStart, progressEnd);
 		let passOK: boolean;
 		if (this.midProvCompletion) {
 			let skey = (await deriveMidKeyPair(this.cryptor,
@@ -101,22 +103,18 @@ export class SignIn {
 				pass, this.midProvCompletion.keyParams, progressCB)).skey
 			passOK = await this.midProvCompletion.complete(skey);
 		}
-		this.midProvCompletion = null;
-		if (passOK) {
-			this.isIdentitySet = true;
-		}
+		this.midProvCompletion = undefined;
 		return passOK;
 	}
-	
-	private async handleSetupStorage(
-			env: RequestEnvelope<signIn.SetupStoreRequest>):
+
+	private async setupStorageFromRemote(env: RequestEnvelope<string>,
+			pass: string, progressStart: number, progressEnd: number):
 			Promise<boolean> {
-		let pass = env.req.pass;
-		let user = env.req.user;
-		let thee = this;
-		async function masterCrypt(derivParams: ScryptGenParams) {
-			let skey = await deriveStorageSKey(thee.cryptor,
-				pass, derivParams, thee.makeKeyGenProgressCB(env));
+		let progressCB = this.makeKeyGenProgressCB(env,
+			progressStart, progressEnd);
+		let masterCrypt = async (derivParams: ScryptGenParams) => {
+			let skey = await deriveStorageSKey(this.cryptor,
+				pass, derivParams, progressCB);
 			let decr = sbox.formatWN.makeDecryptor(skey);
 			let encr = sbox.formatWN.makeEncryptor(
 				skey, random(sbox.NONCE_LENGTH));
@@ -126,11 +124,43 @@ export class SignIn {
 				encr: encr
 			}
 		};
-		let storageOpened = await (this.isIdentitySet ?
-			this.initStorageFromRemote(masterCrypt) :
-			this.initExistingStorage(user, masterCrypt));
+		let storageOpened = await this.initStorageFromRemote(masterCrypt);
 		if (!storageOpened) { return false; }
-		await this.initCore(this.isIdentitySet ? undefined : user);
+		await this.initCore(undefined);
+		// note that initCore closes this, making it the last call
+		return true;
+	}
+	
+	private async handleLoginAndSetupCompletion(env: RequestEnvelope<string>):
+			Promise<boolean> {
+		let pass = env.req;
+		let passOK = await this.completeLogin(env, pass, 0, 50);
+		if (!passOK) { return false; }
+		await this.setupStorageFromRemote(env, pass, 51, 100);
+		return true;
+	}
+	
+	private async handleUseExistingStorage(
+			env: RequestEnvelope<signIn.SetupStoreRequest>):
+			Promise<boolean> {
+		let pass = env.req.pass;
+		let user = env.req.user;
+		let progressCB = this.makeKeyGenProgressCB(env, 0, 100);
+		let masterCrypt = async (derivParams: ScryptGenParams) => {
+			let skey = await deriveStorageSKey(this.cryptor,
+				pass, derivParams, progressCB);
+			let decr = sbox.formatWN.makeDecryptor(skey);
+			let encr = sbox.formatWN.makeEncryptor(
+				skey, random(sbox.NONCE_LENGTH));
+			arrays.wipe(skey);
+			return {
+				decr: decr,
+				encr: encr
+			}
+		};
+		let storageOpened = await this.initExistingStorage(user, masterCrypt);
+		if (!storageOpened) { return false; }
+		await this.initCore(user);
 		// note that initCore closes this, making it the last call
 		return true;
 	}
@@ -140,10 +170,10 @@ export class SignIn {
 	 */
 	close(): void {
 		this.uiSide.close();
-		this.initCore = null;
-		this.initExistingStorage = null;
-		this.initStorageFromRemote = null;
-		this.idManager  = null;
+		this.initCore = (undefined as any);
+		this.initExistingStorage = (undefined as any);
+		this.initStorageFromRemote = (undefined as any);
+		this.idManager  = (undefined as any);
 	}
 	
 }

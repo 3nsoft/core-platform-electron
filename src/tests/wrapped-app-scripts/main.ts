@@ -44,7 +44,7 @@ tester.addHandler('set-https-global-agent', (env: RequestEnvelope<string>) => {
 
 tester.addHandler('set-dns-mock', (env: RequestEnvelope<DnsTxtRecords>) => {
 	let dnsMock = new DNSMock(env.req);
-	dns.resolveTxt = dnsMock.resolveTxt;
+	(<any> dns).resolveTxt = dnsMock.resolveTxt;
 });
 
 // Load main script

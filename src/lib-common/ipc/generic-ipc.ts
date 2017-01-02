@@ -18,12 +18,7 @@
 import { RuntimeException } from '../exceptions/runtime';
 import { ErrorWithCause } from '../exceptions/error';
 import { bind } from '../binding';
-
-export interface RequestEnvelope<T> {
-	name: string;
-	count: number;
-	req: T;
-}
+import { uint48 } from '../../lib-client/random-node';
 
 export interface WorkerError {
 	name?: string;
@@ -33,32 +28,48 @@ export interface WorkerError {
 }
 
 function toWorkerError(e: ErrorWithCause): WorkerError {
-	let cause: any;
-	if (e.cause) {
-		if (typeof e.cause === 'object') {
-			cause = toWorkerError(e.cause);
-		} else {
-			cause = e.cause;
-		}
-	}
 	let err: WorkerError = {
 		message: e.message,
 		name: e.name,
 		stack: e.stack,
-		cause
 	};
+	if (e.cause) {
+		if ((typeof e.cause !== 'object') ||
+				(e.cause as any as RuntimeException).runtimeException) {
+			err.cause = e.cause;
+		} else {
+			err.cause = toWorkerError(e.cause);
+		}
+	}
 	return err;
 }
 
-export interface ReplyEnvelope<T> {
+export interface Envelope {
+	type: 'request' | 'reply' | 'event';
+}
+
+export interface RequestEnvelope<T> extends Envelope {
+	name: string;
+	count: number;
+	req: T;
+}
+
+export interface ReplyEnvelope<T> extends Envelope {
 	reqName: string;
 	reqCount: number;
 	isInProgress?: boolean;
-	rep: T;
+	rep: T|null;
 	err?: WorkerError|RuntimeException;
 }
 
-export declare type Envelope<T> = ReplyEnvelope<T> | RequestEnvelope<T>;
+export interface EventEnvelope<T> extends Envelope {
+	eventChannel: string;
+	eventPayload: T;
+}
+
+export interface EventListener<T> {
+	(event: EventEnvelope<T>): void;
+}
 
 export interface CommunicationPoint {
 	
@@ -66,7 +77,7 @@ export interface CommunicationPoint {
 	 * This sends a given envelope to the other side of ipc.
 	 * @param env
 	 */
-	postMessage(env: Envelope<any>): void;
+	postMessage(env: Envelope): void;
 	
 	/**
 	 * This adds listener for receiving envelopes from the other side of ipc.
@@ -74,25 +85,11 @@ export interface CommunicationPoint {
 	 * @return a listener detaching function, which should be used when closing
 	 * this ipc channel.
 	 */
-	addListener(listener: (r: Envelope<any>) => void): () => void;
+	addListener(listener: (r: Envelope) => void): () => void;
 }
 
 export interface RequestHandler<TReq, TRes> {
 	(env: RequestEnvelope<TReq>): Promise<TRes>|void;
-}
-
-function isReplyMsg(env: Envelope<any>): boolean {
-	let rep = <ReplyEnvelope<any>> env;
-	return (('object' === typeof rep) &&
-			('string' === typeof rep.reqName) &&
-			('number' === typeof rep.reqCount));
-}
-
-function isRequestMsg(env: Envelope<any>): boolean {
-	let req = <RequestEnvelope<any>> env;
-	return (('object' === typeof req) &&
-			('string' === typeof req.name) &&
-			('number' === typeof req.count));
 }
 
 interface Deferred {
@@ -107,9 +104,16 @@ export class Duplex {
 	private replyDeferreds = new Map<number, Deferred>();
 	private requestHandlers = new Map<string, RequestHandler<any, any>>();
 	private detachFromComm: () => void;
+
+	/**
+	 * This is a set of known inbound event channels (as map keys), with related
+	 * sets of registered listeners (as map values).
+	 */
+	private inboundEventChannels =
+		new Map<string, Map<number, EventListener<any>>>();
 	
 	constructor(
-			private channel: string,
+			private channel: string|undefined,
 			private comm: CommunicationPoint) {
 		this.detachFromComm = this.comm.addListener(bind(this, this.handleMsg));
 		Object.seal(this);
@@ -145,10 +149,10 @@ export class Duplex {
 			err: Error|RuntimeException): void {
 		if (err === null) { return; }
 		let reply: ReplyEnvelope<any> =  {
+			type: 'reply',
 			reqName: env.name,
 			reqCount: env.count,
-			rep: null,
-			err: null
+			rep: null
 		};
 		if ((<RuntimeException> err).runtimeException) {
 			reply.err = err;
@@ -174,11 +178,13 @@ export class Duplex {
 		}
 	}
 	
-	private handleMsg(r: Envelope<any>): void {
-		if (isReplyMsg(r)) {
-			this.handleReply(<ReplyEnvelope<any>> r);
-		} else if (isRequestMsg(r)) {
-			this.handleRequest(<RequestEnvelope<any>> r);
+	private handleMsg(r: Envelope): void {
+		if (r.type === 'reply') {
+			this.handleReply(r as ReplyEnvelope<any>);
+		} else if (r.type === 'request') {
+			this.handleRequest(r as RequestEnvelope<any>);
+		} else if (r.type === 'event') {
+			this.handleInboundEvent(r as EventEnvelope<any>);
 		} else {
 			console.error(`Got malformed message: ${JSON.stringify(r)}`);
 		}
@@ -187,21 +193,29 @@ export class Duplex {
 	/**
 	 * This rejects all pending request, clearing internal containers.
 	 */
-	rejectAndClearPendingRequests() {
+	private rejectAndClearPendingRequests(): void {
 		for (let reqNum of this.replyDeferreds.keys()) {
 			if (isNaN(reqNum)) { continue; }
-			this.replyDeferreds.get(reqNum).reject(new Error(
-				'All pending requests are flushed.'));
+			let deferred = this.replyDeferreds.get(reqNum);
+			if (!deferred) { continue; }
+			deferred.reject(new Error('All pending requests are flushed.'));
 		}
 		this.replyDeferreds.clear();
 	}
-	
-	close() {
-		this.comm = null;
-		this.rejectAndClearPendingRequests();
-		this.detachFromComm();
+
+	private dropAllListeners(): void {
+		for (let listeners of this.inboundEventChannels.values()) {
+			listeners.clear();
+		}
 	}
 	
+	close() {
+		this.comm = (undefined as any);
+		this.rejectAndClearPendingRequests();
+		this.dropAllListeners();
+		this.detachFromComm();
+	}
+
 	/**
 	 * This is a generic method with first type T being a type of a final reply,
 	 * and second type P being a type of in-progress replies.
@@ -216,6 +230,7 @@ export class Duplex {
 			'Cannot make a request, cause ipc point is not connected.'); }
 		this.counter += 1;
 		let envelope: RequestEnvelope<any> = {
+			type: 'request',
 			name: (this.channel ? `${this.channel}/${reqName}` : reqName),
 			count: this.counter,
 			req: req
@@ -232,15 +247,22 @@ export class Duplex {
 	
 	/**
 	 * @param reqName is a name of request, to be handled by a given handler
-	 * @param handler handles requests that come from the other side 
+	 * @param handler handles requests that come from the other side
+	 * @param noThrowForExisting is an optional flag, which true value, is not
+	 * throwing exception for an existing handler, turning it into noop, when
+	 * handler for a given request has already been set. Default value is false,
+	 * triggering throw. 
 	 */
-	addHandler(reqName: string, handler: RequestHandler<any, any>): void {
+	addHandler(reqName: string, handler: RequestHandler<any, any>,
+			noThrowForExisting = false): void {
+		if (typeof handler !== 'function') { throw new Error(
+			`Given handler for request ${reqName} is not a function`); }
 		if (this.channel) {
 			reqName = `${this.channel}/${reqName}`;
 		}
 		let existingHandler = this.requestHandlers.get(reqName);
 		if (existingHandler) { throw new Error(
-			'Handler is already set for request '+reqName); }
+			`Handler is already set for request ${reqName}`); }
 		this.requestHandlers.set(reqName, handler);
 	}
 	
@@ -255,6 +277,7 @@ export class Duplex {
 	private replyToRequest<T>(env: RequestEnvelope<any>, rep: T,
 			isInProgress = false): void {
 		let reply: ReplyEnvelope<T> = {
+			type: 'reply',
 			reqName: env.name,
 			reqCount: env.count,
 			rep: rep,
@@ -270,12 +293,60 @@ export class Duplex {
 	}
 	
 	/**
-	 * This function sends a notification of a progress on a given request.
+	 * This method sends a notification of a progress on a given request.
 	 * @param env is a request to which notification should be maid
 	 * @param rep is a notification object
 	 */
 	notifyOfProgressOnRequest<T>(env: RequestEnvelope<any>, rep: T): void {
 		this.replyToRequest(env, rep, true);
+	}
+
+	sendOutboundEvent<T>(eventChannel: string, eventPayload: T): void {
+		let eventEnv: EventEnvelope<T> = {
+			type: 'event',
+			eventChannel,
+			eventPayload
+		};
+		this.comm.postMessage(eventEnv);
+	}
+
+	private handleInboundEvent(eventEnv: EventEnvelope<any>): void {
+		let listeners = this.inboundEventChannels.get(eventEnv.eventChannel);
+		if (!listeners) { return; }
+		for (let listener of listeners.values()) {
+			try {
+				listener(eventEnv);
+			} catch (err) {
+				console.error(err);
+			}
+		}
+	}
+
+	addInboundEventListener<T>(eventChannel: string,
+			listener: EventListener<T>): number {
+		let listeners = this.inboundEventChannels.get(eventChannel);
+		if (!listeners) {
+			listeners = new Map();
+			this.inboundEventChannels.set(eventChannel, listeners);
+		}
+		let isUnique = (listenerId: number): boolean => {
+			for (let listeners of this.inboundEventChannels.values()) {
+				if (listeners.has(listenerId)) { return false; }
+			}
+			return true;
+		};
+		let listenerId: number;
+		do {
+			listenerId = uint48();
+		} while (!isUnique(listenerId));
+		listeners.set(listenerId, listener);
+		return listenerId;
+	}
+
+	removeInboundEventListener(listenerId: number): void {
+		for (let listeners of this.inboundEventChannels.values()) {
+			if (listeners.delete(listenerId)) { return; }
+		}
 	}
 	
 }

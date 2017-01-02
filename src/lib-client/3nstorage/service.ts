@@ -33,10 +33,9 @@ export { TransactionParams }
 
 export class StorageOwner extends ServiceUser {
 	
-	// XXX keyDerivParams should be moved to a separate request, out of
-	//		session setting
-	keyDerivParams: keyGen.ScryptGenParams = null;
-	maxChunkSize: number = null;
+	private keyDerivParams: keyGen.ScryptGenParams = (undefined as any);
+	maxChunkSize: number = (undefined as any);
+	private serviceURIGetter: () => Promise<string> = (undefined as any);
 	
 	constructor(user: string, getSigner: IGetMailerIdSigner) {
 		super(user, {
@@ -47,19 +46,37 @@ export class StorageOwner extends ServiceUser {
 		Object.seal(this);
 	}
 
-	async setStorageUrl(serviceUrl: string): Promise<void> {
+	private async setServiceUrl(serviceUrl?: string): Promise<void> {
+		if (!serviceUrl) {
+			serviceUrl = await this.serviceURIGetter();
+		}
 		let info = await storageInfoAt(serviceUrl);
+		if (!info.owner) { throw new Error(`Missing owner service url in 3NStorage information at ${serviceUrl}`); }
 		this.serviceURI = info.owner;
 	}
-	
-	isSet(): boolean {
-		return !!this.serviceURI;
+
+	async setStorageUrl(serviceUrl: string|(() => Promise<string>)):
+			Promise<void> {
+		if (typeof serviceUrl === 'string') {
+			await this.setServiceUrl(serviceUrl);
+		} else {
+			this.serviceURIGetter = serviceUrl;
+		}
 	}
 	
+	// XXX keyDerivParams should be moved to a separate request, out of
+	//		session setting
+	async getKeyDerivParams(): Promise<keyGen.ScryptGenParams> {
+		if (this.keyDerivParams) { return this.keyDerivParams; }
+		await this.login();
+		if (!this.keyDerivParams) { throw new Error(`Error occured in getting key derivation parameters from the server.`); }
+		return this.keyDerivParams;
+	}
+
 	private async setSessionParams(): Promise<void> {
 		let url = this.serviceURI + api.sessionParams.URL_END;
 		let rep = await this.doBodylessSessionRequest<api.sessionParams.Reply>({
-			url: this.serviceURI + api.sessionParams.URL_END,
+			path: api.sessionParams.URL_END,
 			method: 'GET',
 			responseType: 'json'
 		});
@@ -90,6 +107,9 @@ export class StorageOwner extends ServiceUser {
 	 * successfully completes.
 	 */
 	async login(): Promise<void> {
+		if (!this.isSet) {
+			await this.setServiceUrl();
+		}
 		await this.super_login();
 		await this.setSessionParams();
 	}
@@ -101,11 +121,11 @@ export class StorageOwner extends ServiceUser {
 	 */
 	async startTransaction(objId: string,
 			transParams: TransactionParams): Promise<api.startTransaction.Reply> {
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 				api.startRootTransaction.URL_END :
 				api.startTransaction.getReqUrlEnd(objId));
 		let rep = await this.doJsonSessionRequest<api.startTransaction.Reply>({
-			url,
+			path,
 			method: 'POST',
 			responseType: 'json'
 		}, transParams);
@@ -134,11 +154,11 @@ export class StorageOwner extends ServiceUser {
 	 */
 	async cancelTransaction(objId: string, transactionId: string):
 			Promise<void> {
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 				api.cancelRootTransaction.getReqUrlEnd(transactionId) :
 				api.cancelTransaction.getReqUrlEnd(objId, transactionId));
 		let rep = await this.doBodylessSessionRequest<void>(
-			{ url, method: 'POST' });
+			{ path, method: 'POST' });
 		if (rep.status === api.cancelTransaction.SC.ok) {
 			return;
 		} else if (rep.status === api.cancelTransaction.SC.missing) {
@@ -155,11 +175,11 @@ export class StorageOwner extends ServiceUser {
 	 */
 	async completeTransaction(objId: string, transactionId: string):
 			Promise<void> {
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 				api.finalizeRootTransaction.getReqUrlEnd(transactionId) :
 				api.finalizeTransaction.getReqUrlEnd(objId, transactionId));
 		let rep = await this.doBodylessSessionRequest<void>(
-			{ url, method: 'POST' });
+			{ path, method: 'POST' });
 		if (rep.status === api.cancelTransaction.SC.ok) {
 			return;
 		} else if (rep.status === api.cancelTransaction.SC.missing) {
@@ -175,13 +195,13 @@ export class StorageOwner extends ServiceUser {
 	 * @return a promise, resolvable to object with header bytes, object version
 	 * of these bytes, and total object segments length.
 	 */
-	async getObjHeader(objId: string, ver: number = null): Promise<{
-			segsTotalLen: number; header: Uint8Array; version?: number; }> {
-		let url = this.serviceURI + ((objId === null) ?
+	async getObjHeader(objId: string, ver?: number): Promise<{
+			segsTotalLen: number; header: Uint8Array; version: number; }> {
+		let path = ((objId === null) ?
 			api.rootHeader.getReqUrlEnd(ver) :
 			api.objHeader.getReqUrlEnd(objId, ver));
 		let rep = await this.doBodylessSessionRequest<Uint8Array>({
-			url,
+			path,
 			method: 'GET',
 			responseType: 'arraybuffer',
 			responseHeaders: [ api.HTTP_HEADER.objVersion,
@@ -191,17 +211,17 @@ export class StorageOwner extends ServiceUser {
 			if (!(rep.data instanceof Uint8Array)) { throw makeException(rep,
 				`Malformed response: body is not binary`); }
 			let segsTotalLen = parseInt(
-				rep.headers.get(api.HTTP_HEADER.objSegmentsLength), 10);
+				rep.headers!.get(api.HTTP_HEADER.objSegmentsLength)!, 10);
 			if (isNaN(segsTotalLen)) { throw makeException(rep,
 				`Malformed response: header ${api.HTTP_HEADER.objSegmentsLength} is missing`); }
-			if (ver === null) {
-				let version = parseInt(rep.headers.get(
-					api.HTTP_HEADER.objVersion), 10);
+			if (typeof ver !== 'number') {
+				let version = parseInt(rep.headers!.get(
+					api.HTTP_HEADER.objVersion)!, 10);
 				if (isNaN(version)) { throw makeException(rep,
 					`Malformed response: header ${api.HTTP_HEADER.objVersion} is missing`); }
 				return { version, segsTotalLen, header: rep.data };
 			} else {
-				return { segsTotalLen, header: rep.data };
+				return { version: ver, segsTotalLen, header: rep.data };
 			}
 		} else if (rep.status === api.objSegs.SC.missing) {
 			throw makeObjNotFoundExc(objId);
@@ -213,24 +233,27 @@ export class StorageOwner extends ServiceUser {
 	/**
 	 * @param objId
 	 * @param ver
+	 * @param start
+	 * @param end
 	 * @return a promise, resolvable to object with segment bytes, and total
 	 * object segments length.
 	 */
 	async getObjSegs(objId: string, ver: number, start: number, end: number):
 			Promise<{ segsTotalLen: number; segsChunk: Uint8Array; }> {
+		if (end <= start) { throw new Error(`Given out of bounds parameters: start is ${start}, end is ${end}, -- for downloading obj ${objId}, version ${ver}`); }
 		let opts: api.GetSegsQueryOpts = { ofs: start, len: end - start };
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 			api.rootSegs.getReqUrlEnd(ver, opts) :
 			api.objSegs.getReqUrlEnd(objId, ver, opts));
 		let rep = await this.doBodylessSessionRequest<Uint8Array>({
-			url,
+			path,
 			method: 'GET',
 			responseType: 'arraybuffer',
 			responseHeaders: [ api.HTTP_HEADER.objSegmentsLength ]
 		});
 		if (rep.status === api.objSegs.SC.okGet) {
 			let segsTotalLen = parseInt(
-				rep.headers.get(api.HTTP_HEADER.objSegmentsLength), 10);
+				rep.headers!.get(api.HTTP_HEADER.objSegmentsLength)!, 10);
 			if (isNaN(segsTotalLen) || !(rep.data instanceof Uint8Array)) {
 				throw makeException(rep, 'Malformed response');
 			}
@@ -250,11 +273,11 @@ export class StorageOwner extends ServiceUser {
 	 */
 	async saveObjHeader(objId: string, transactionId: string, bytes: Uint8Array):
 			Promise<void> {
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 			api.rootHeader.putReqUrlEnd(transactionId) :
 			api.objHeader.putReqUrlEnd(objId, transactionId));
 		let rep = await this.doBinarySessionRequest<void>(
-			{ url, method: 'PUT' }, bytes);
+			{ path, method: 'PUT' }, bytes);
 		if (rep.status === api.objHeader.SC.okPut) {
 			return;
 		} else if (rep.status === api.objHeader.SC.missing) {
@@ -277,11 +300,11 @@ export class StorageOwner extends ServiceUser {
 	async saveObjSegs(objId: string, trans: string, ofs: number,
 			bytes: Uint8Array, append = false): Promise<void> {
 		let opts: api.PutSegsQueryOpts = { trans, append, ofs };
-		let url = this.serviceURI + ((objId === null) ?
+		let path = ((objId === null) ?
 			api.rootSegs.putReqUrlEnd(opts) :
 			api.objSegs.putReqUrlEnd(objId, opts));
 		let rep = await this.doBinarySessionRequest<void>(
-			{ url, method: 'PUT' }, bytes);
+			{ path, method: 'PUT' }, bytes);
 		if (rep.status === api.objSegs.SC.okPut) {
 			return;
 		} else if (rep.status === api.objSegs.SC.missing) {
@@ -300,7 +323,7 @@ export class StorageOwner extends ServiceUser {
 	 */
 	async deleteObj(objId: string): Promise<void> {
 		let rep = await this.doBodylessSessionRequest({
-			url: this.serviceURI + api.deleteObj.getReqUrlEnd(objId),
+			path: api.deleteObj.getReqUrlEnd(objId),
 			method: 'DELETE'
 		});
 		if (rep.status === api.deleteObj.SC.ok) {

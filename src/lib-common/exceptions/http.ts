@@ -34,13 +34,13 @@ export interface HTTPException extends ConnectException {
 	status: number;
 }
 
-export function makeConnectionException(url: string, method: string,
-		msg: string = null): ConnectException {
+export function makeConnectionException(url: string|undefined,
+		method: string|undefined, msg?: string): ConnectException {
 	let exc: ConnectException = {
 		runtimeException: true,
 		type: ConnectExceptionType,
-		url: url,
-		method: method
+		url: url!,
+		method: method!
 	};
 	if (msg) {
 		exc.message = msg;
@@ -49,7 +49,7 @@ export function makeConnectionException(url: string, method: string,
 }
 
 export function makeHTTPException(url: string, method: string, status: number,
-		msg: string = null): HTTPException {
+		msg?: string): HTTPException {
 	let exc: HTTPException = {
 		runtimeException: true,
 		type: HTTPExceptionType,

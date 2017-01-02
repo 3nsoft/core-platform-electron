@@ -14,51 +14,55 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { utf8 } from '../../lib-common/buffer-utils';
 import { getKeyCert, SignedLoad, JsonKeyShort } from '../../lib-common/jwkeys';
-import { secret_box as sbox } from 'ecma-nacl';
-import { SegmentsReader, makeFileKeyHolder, makeNewFileKeyHolder }
+import { secret_box as sbox, arrays } from 'ecma-nacl';
+import { SegmentsReader, makeNewFileKeyHolder, SegmentsWriter, FileKeyHolder }
 	from 'xsp-files';
 import * as delivApi from '../../lib-common/service-api/asmail/delivery';
 import * as retrievalApi from '../../lib-common/service-api/asmail/retrieval';
-import * as keyringMod from './keyring/index';
 import * as random from '../random-node';
-import * as xspUtil from '../../lib-client/xsp-utils';
-import { MailerIdServiceInfo } from '../../lib-client/service-locator';
+import { base64, base64urlSafe, utf8 } from '../../lib-common/buffer-utils';
+import { MailerIdServiceInfo } from '../service-locator';
 import { relyingParty as mid } from '../../lib-common/mid-sigs-NaCl-Ed';
+import { FolderJson, FS, File } from '../3nstorage/xsp-fs/common';
+import { ObjSource } from '../../lib-common/obj-streaming/common';
+import { bind } from '../../lib-common/binding';
+import { makeObjByteSourceFromArrays, makeObjByteSourceFromByteSource,
+	makeDecryptedByteSource } from '../../lib-common/obj-streaming/crypto';
+import { errWithCause } from '../../lib-common/exceptions/error';
+import * as confApi from '../../lib-common/service-api/asmail/config';
 
-export interface EncrDataBytes {
-	head: Uint8Array;
-	segs: Uint8Array[];
-}
+type AttachmentsContainer = web3n.asmail.AttachmentsContainer;
 
-function countTotalLength(bytes: EncrDataBytes): number {
-	let totalLen = bytes.head.length;
-	for (let i=0; i<bytes.segs.length; i+=1) {
-		totalLen += bytes.segs[i].length;
-	}
-	return totalLen;
-}
-
-export interface MsgPart<T> {
-	data: T;
-	encrBytes: EncrDataBytes;
-	id: string;
-}
-
-export interface MainData {
-	[field: string]: any;
-}
-
+/**
+ * Metadata for message that uses established key pair. 
+ * It is an unencrypted part of a message.
+ */
 export interface MetaForEstablishedKeyPair {
 	pid: string;
 }
 
+/**
+ * Metadata for message that uses introductory keys.
+ * It is an unencrypted part of a message.
+ */
 export interface MetaForNewKey {
 	recipientKid: string;
 	senderPKey: string;
 }
 
+/**
+ * Main (zeroth) object json.
+ * It is an encrypted part of a message.
+ */
+export interface MainData {
+	[field: string]: any;
+}
+
+/**
+ * Object with suggested next crypto.
+ * Located in main object.
+ */
 export interface SuggestedNextKeyPair {
 	pids: string[];
 	senderKid: string;
@@ -66,19 +70,20 @@ export interface SuggestedNextKeyPair {
 	invitation?: string;
 }
 
-export interface CryptoCertification {
-	keyCert: SignedLoad;
-	senderCert: SignedLoad;
-	provCert: SignedLoad;
-}
-
+/**
+ * Common fields in main object.
+ */
 export let HEADERS = {
+	FROM: 'From',
 	TO: 'To',
 	CC: 'Cc',
 	SUBJECT: 'Subject',
 	DO_NOT_REPLY: 'Do Not Reply'
 };
 
+/**
+ * Common fields in a main object, managed by api a little closer.
+ */
 let MANAGED_FIELDS = {
 	BODY: 'Body',
 	NEXT_CRYPTO: 'Next Crypto',
@@ -95,6 +100,24 @@ let isManagedField = (() => {
 	};
 })();
 
+/**
+ * This object is for attachments and linking other objects in main object.
+ * This is folder json with a master key for encryption of all child nodes.
+ */
+export interface FolderJsonWithMKey {
+	/**
+	 * mkey is a master key for all nodes in this folder
+	 */
+	mkey: string;
+	/**
+	 * folder is a folder json structure, exactly the same as one used in storage
+	 */
+	folder: FolderJson
+}
+
+/**
+ * 
+ */
 export interface MainBody {
 	text?: {
 		plain?: string;
@@ -102,75 +125,118 @@ export interface MainBody {
 	}
 }
 
-let SEG_SIZE_IN_K_QUATS = 16;
-
-function encryptByteArray(plainBytes: Uint8Array,
-		mkeyEnc: sbox.Encryptor): EncrDataBytes {
-	let keyHolder = makeNewFileKeyHolder(mkeyEnc, random.bytes);
-	let w = keyHolder.newSegWriter(SEG_SIZE_IN_K_QUATS, random.bytes);
-	w.setContentLength(plainBytes.length);
-	let head = w.packHeader();
-	let segs: Uint8Array[] = [];
-	let offset = 0;
-	let segInd = 0;
-	let encRes: { dataLen: number; seg: Uint8Array };
-	while (offset < plainBytes.length) {
-		encRes = w.packSeg(plainBytes.subarray(offset), segInd);
-		offset += encRes.dataLen;
-		segInd += 1;
-		segs.push(encRes.seg);
-	}
-	let encBytes: EncrDataBytes = {
-		head: head,
-		segs: segs
-	};
-	Object.freeze(encBytes.segs);
-	Object.freeze(encBytes);
-	w.destroy();
-	keyHolder.destroy();
-	return encBytes;
-}
-
-function encryptJSON(json: any, mkeyEnc: sbox.Encryptor):
-		EncrDataBytes {
-	let plainBytes = utf8.pack(JSON.stringify(json));
-	return encryptByteArray(plainBytes, mkeyEnc);
-}
-
 export interface SendReadyForm {
 	meta: delivApi.msgMeta.Request;
-	bytes: {
-		[id: string]: EncrDataBytes;
-	};
+	objSrc(objId: string): Promise<ObjSource>;
 	totalLen: number;
 }
 
+interface MsgObj {
+	json?: any;
+	folder?: FolderJsonWithMKey;
+	file?: File;
+	src?: ObjSource;
+	/**
+	 * mkey is either a master key for this object, or a master key encryptor 
+	 */
+	mkey?: string;
+	/**
+	 * This is object's id in the message
+	 */
+	id: string;
+}
+
+const SEG_SIZE_IN_K_QUATS = 16;
+
 export class MsgPacker {
-	
-	meta: MetaForEstablishedKeyPair | MetaForNewKey;
-	main: MsgPart<MainData>;
-	private allObjs: { [id: string]: MsgPart<any>; };
+
+	private meta: MetaForEstablishedKeyPair | MetaForNewKey = (undefined as any);
+	private main: MainData;
+	private mainObjId: string;
+	private allObjs = new Map<string, MsgObj>();
+	private readyPack: SendReadyForm|undefined = undefined;
+	private hasAttachments = false;
 	
 	constructor() {
-		this.meta = null;
-		this.allObjs = {};
-		this.main = this.addMsgPart(<MainData> {});
+		this.main = ({} as MainData);
+		this.mainObjId = this.addJsonObj(this.main);
 		Object.seal(this);
 	}
 
-	private addMsgPart<T>(data: T): MsgPart<T> {
+	private generateObjId(): string {
 		let id: string;
 		do {
-			id = random.stringOfB64UrlSafeChars(4);
-		} while (this.allObjs[id]);
-		let p: MsgPart<T> = {
-			data: data,
-			id: id,
-			encrBytes: null
+			id = base64urlSafe.pack(random.bytes(sbox.NONCE_LENGTH));
+		} while (this.allObjs.has(id));
+		return id;
+	}
+
+	private addJsonObj(json: any): string {
+		let id = this.generateObjId();
+		this.allObjs.set(id, { id, json });
+		return id;
+	}
+
+	private addFileInto(fJSON: FolderJson, fName: string, file: File,
+			mkey: string): void {
+		let id = this.generateObjId();
+		this.allObjs.set(id, { id, file, mkey });
+		fJSON.nodes[fName] = {
+			objId: id,
+			name: fName,
+			isFile: true
 		};
-		Object.seal(p);
-		this.allObjs[id] = p;
-		return p;
+	}
+
+	/**
+	 * @return a promise, resolvable to content size, which is predictably less,
+	 * than packed size.
+	 */
+	async sizeBeforePacking(): Promise<number> {
+		let totalSize = 0;
+		for (let o of this.allObjs.values()) {
+			if (o.file) {
+				totalSize += (await o.file.stat()).size;
+			} else if (o.folder) {
+				totalSize += utf8.pack(JSON.stringify(o.folder)).length;
+			} else if (o.json) {
+				totalSize += utf8.pack(JSON.stringify(o.json)).length;
+			}
+		}
+		return totalSize;
+	}
+
+	private async addFolderInto(outerFolder: FolderJson, fName: string,
+			fs: FS, outerMKey: string): Promise<void> {
+		
+		// prepare folder object with new master key
+		let mkey = base64.pack(random.bytes(sbox.KEY_LENGTH));
+		let folder: FolderJsonWithMKey = { mkey, folder: { nodes: {} } };
+		let fJSON = folder.folder;
+		for (let entry of await fs.listFolder('.')) {
+			let fName = entry.name;
+			if (entry.isFile) {
+				let f = await fs.readonlyFile(fName);
+				this.addFileInto(fJSON, fName, f, mkey);
+			} else if (entry.isFolder) {
+				let f = await fs.readonlySubRoot(fName);
+				this.addFolderInto(fJSON, fName, f, mkey);
+			}
+			// note that links are ignored.
+		}
+
+		// attach folder to the rest of the message
+		let id = this.generateObjId();
+		this.allObjs.set(id, { id, mkey: outerMKey, folder });
+		outerFolder.nodes[fName] = {
+			objId: id,
+			name: fName,
+			isFolder: true
+		};
+	}
+
+	private throwIfAlreadyPacked(): void {
+		if (this.readyPack) { throw new Error(`Message is already packed.`); }
 	}
 
 	/**
@@ -178,7 +244,8 @@ export class MsgPacker {
 	 * @param text
 	 */
 	setPlainTextBody(text: string): void {
-		this.main.data[MANAGED_FIELDS.BODY] = {
+		this.throwIfAlreadyPacked();
+		this.main[MANAGED_FIELDS.BODY] = {
 			text: { plain: text }
 		};
 	}
@@ -188,7 +255,8 @@ export class MsgPacker {
 	 * @param html
 	 */
 	setHtmlTextBody(html: string): void {
-		this.main.data[MANAGED_FIELDS.BODY] = {
+		this.throwIfAlreadyPacked();
+		this.main[MANAGED_FIELDS.BODY] = {
 			text: { html: html }
 		};
 	}
@@ -200,13 +268,15 @@ export class MsgPacker {
 	 * @param value can be string, number, or json.
 	 */
 	setHeader(name: string, value: any): void {
+		this.throwIfAlreadyPacked();
 		if (isManagedField(name)) { throw new Error(
 			"Cannot directly set message field '"+name+"'."); }
 		if (value === undefined) { return; }
-		this.main.data[name] = JSON.parse(JSON.stringify(value));
+		this.main[name] = JSON.parse(JSON.stringify(value));
 	}
 	
 	setMetaForEstablishedKeyPair(pid: string): void {
+		this.throwIfAlreadyPacked();
 		if (this.meta) { throw new Error(
 			"Message metadata has already been set."); }
 		this.meta = <MetaForEstablishedKeyPair> {
@@ -216,8 +286,8 @@ export class MsgPacker {
 	}
 	
 	setMetaForNewKey(recipientKid: string, senderPKey: string,
-			keyCert: SignedLoad, senderCert: SignedLoad,
-			provCert: SignedLoad): void {
+			pkeyCerts: confApi.p.initPubKey.Certs): void {
+		this.throwIfAlreadyPacked();
 		if (this.meta) { throw new Error(
 			"Message metadata has already been set."); }
 		this.meta = <MetaForNewKey> {
@@ -225,203 +295,198 @@ export class MsgPacker {
 			senderPKey: senderPKey,
 		};
 		Object.freeze(this.meta);
-		this.main.data[MANAGED_FIELDS.CRYPTO_CERTIF] = <CryptoCertification> {
-			keyCert: keyCert,
-			senderCert: senderCert,
-			provCert: provCert
-		};
+		this.main[MANAGED_FIELDS.CRYPTO_CERTIF] = pkeyCerts;
 	}
 	
 	setNextKeyPair(pair: SuggestedNextKeyPair): void {
-		if (this.main.data[MANAGED_FIELDS.NEXT_CRYPTO]) { throw new Error(
-			"Next Crypto has already been set in the message."); }
-		this.main.data[MANAGED_FIELDS.NEXT_CRYPTO] = pair;
+		this.throwIfAlreadyPacked();
+		this.main[MANAGED_FIELDS.NEXT_CRYPTO] = pair;
 	}
 
-	private toSendForm(): SendReadyForm {
-		if (!this.meta) { throw new Error("Metadata has not been set."); }
-		let meta: delivApi.msgMeta.Request =
-			JSON.parse(JSON.stringify(this.meta));
-		meta.objIds = [ this.main.id ];
-		let bytes: { [id: string]: EncrDataBytes; } = {};
-		let totalLen = 0;
-		for (let id of Object.keys(this.allObjs)) {
-			let msgPart = this.allObjs[id];
-			if (!msgPart.encrBytes) { throw new Error(
-				"Message object "+id+"is not encrypted."); }
-			bytes[id] = msgPart.encrBytes;
-			totalLen += countTotalLength(msgPart.encrBytes);
-			if (id !== this.main.id) {
-				meta.objIds.push(id);
+	async setAttachments(container?: AttachmentsContainer, fs?: FS):
+			Promise<void> {
+		this.throwIfAlreadyPacked();
+		if (this.hasAttachments) { throw new Error(
+			`Attachments are already set.`); }
+
+		// master key for attachments
+		let mkey = base64.pack(random.bytes(sbox.KEY_LENGTH));
+
+		// attachments "folder" and l-funcs for adding files and folders
+		let attachments: FolderJsonWithMKey = { mkey, folder: { nodes: {} } };
+		let fJSON = attachments.folder;
+
+		// populate attachments json
+		let attachmentsEmpty = true;
+		if (container &&
+				((container.getAllFiles().size > 0) ||
+				(container.getAllFolders().size > 0))) {
+			for (let entry of container.getAllFiles()) {
+				this.addFileInto(fJSON, entry[0], entry[1], mkey);
 			}
+			for (let entry of container.getAllFolders()) {
+				await this.addFolderInto(fJSON, entry[0], entry[1], mkey);
+			}
+			attachmentsEmpty = false;
+		} else if (fs) {
+			for (let entry of await fs.listFolder('.')) {
+				let fName = entry.name;
+				if (entry.isFile) {
+					let f = await fs.readonlyFile(fName);
+					this.addFileInto(fJSON, fName, f, mkey);
+				} else if (entry.isFolder) {
+					let f = await fs.readonlySubRoot(fName);
+					await this.addFolderInto(fJSON, fName, f, mkey);
+				} else {
+					// note that links are ignored.
+					continue;
+				}
+				attachmentsEmpty = false;
+			}
+		} else {
+			throw new Error(`Given neither container with attachments, nor attachments' file system.`);
 		}
-		return {
-			meta: meta,
-			bytes: bytes,
-			totalLen: totalLen
-		};
+
+		// insert attachments json into main object
+		if (!attachmentsEmpty) {
+			this.main[MANAGED_FIELDS.ATTACHMENTS] = attachments;
+			this.hasAttachments = true;
+		}
 	}
 	
 	private throwupOnMissingParts() {
 		if (!this.meta) { throw new Error("Message meta is not set"); }
-		if (!this.main.data[HEADERS.DO_NOT_REPLY] &&
-				!this.main.data[MANAGED_FIELDS.NEXT_CRYPTO]) { throw new Error(
+		if (!this.main[HEADERS.DO_NOT_REPLY] &&
+				!this.main[MANAGED_FIELDS.NEXT_CRYPTO]) { throw new Error(
 			"Next Crypto is not set."); }
-		if (!this.main.data[MANAGED_FIELDS.BODY]) { throw new Error(
+		if (!this.main[MANAGED_FIELDS.BODY]) { throw new Error(
 			"Message Body is not set."); }
 		if ((<MetaForNewKey> this.meta).senderPKey &&
-				!this.main.data[MANAGED_FIELDS.CRYPTO_CERTIF]) { throw new Error(
+				!this.main[MANAGED_FIELDS.CRYPTO_CERTIF]) { throw new Error(
 			"Sender's key certification is missing."); }
 	}
+
+	private async getObjSrc(objId: string, mainObjEnc?: sbox.Encryptor):
+			Promise<ObjSource> {
+		let obj = this.allObjs.get(objId);
+		if (!obj) { throw new Error(
+			`Object ${objId} is not found in the message`); }
+		if (obj.src) { return obj.src; }
+
+		// make object segments writer
+		let segWriter: SegmentsWriter;
+		let arrFactory = arrays.makeFactory();
+		if (objId === this.mainObjId) {
+			if (!mainObjEnc) { throw new Error(
+				`Encryptor for main object is not given`); }
+			let kh = makeNewFileKeyHolder(mainObjEnc, random.bytes, arrFactory);
+			segWriter = kh.newSegWriter(SEG_SIZE_IN_K_QUATS, random.bytes);
+		} else if (!obj.mkey) {
+			throw new Error(`Object ${objId} has no associated key`);
+		} else {
+			let key = base64.open(obj.mkey);
+			let nonce = base64urlSafe.open(objId);
+			let mkeyEnc = sbox.formatWN.makeEncryptor(key, nonce);
+			let kh = makeNewFileKeyHolder(mkeyEnc, random.bytes, arrFactory);
+			segWriter = kh.newSegWriter(SEG_SIZE_IN_K_QUATS, random.bytes);
+		}
+
+		// make object source
+		let src: ObjSource;
+		if (obj.json) {
+			let bytes = utf8.pack(JSON.stringify(obj.json));
+			src = makeObjByteSourceFromArrays(bytes, segWriter);
+		} else if (obj.file) {
+			let byteSrc = await obj.file.getByteSource();
+			src = makeObjByteSourceFromByteSource(byteSrc, segWriter);
+		} else if (obj.folder) {
+			let mkeyBytes = base64urlSafe.open(obj.folder.mkey);
+			let jsonBytes = utf8.pack(JSON.stringify(obj.folder.folder));
+			src = makeObjByteSourceFromArrays(
+				[ mkeyBytes, jsonBytes ], segWriter);
+		} else {
+			throw new Error(`Object ${objId} is broken`);
+		}
+		obj.src = src;
+		return src;
+	}
 	
-	encrypt(mkeyEnc: sbox.Encryptor): SendReadyForm {
-		this.throwupOnMissingParts();
-		if (Object.keys(this.allObjs).length > 1) { throw new Error(
-			"This test implementation is not encrypting multi-part messages"); }
-		this.main.encrBytes = encryptJSON(this.main.data, mkeyEnc);
-		return this.toSendForm();
+	async pack(mkeyEnc: sbox.Encryptor): Promise<SendReadyForm> {
+		if (this.readyPack) { return this.readyPack; }
+		if (!this.meta) { throw new Error("Metadata has not been set."); }
+		let meta: delivApi.msgMeta.Request =
+			JSON.parse(JSON.stringify(this.meta));
+		meta.objIds = [ this.mainObjId ];
+		let totalLen = 0;
+		for (let objId of this.allObjs.keys()) {
+			let src: ObjSource;
+			if (objId === this.mainObjId) {
+				src = await this.getObjSrc(objId, mkeyEnc);
+			} else {
+				meta.objIds.push(objId);
+				src = await this.getObjSrc(objId);
+			}
+			totalLen += await src.segSrc.getSize();
+			totalLen += (await src.readHeader()).length;
+		}
+		this.readyPack = { meta, totalLen, objSrc: bind(this, this.getObjSrc) };
+		return this.readyPack;
 	}
 	
 }
 Object.freeze(MsgPacker.prototype);
 Object.freeze(MsgPacker);
 
-export class MsgOpener {
-	
-	totalSize = 0;
-	
-	private senderAddress: string = null;
-	private senderKeyInfo: string = null;
-	get sender(): { address: string; usedKeyInfo: string; } {
-		if (!this.senderKeyInfo) { throw new Error("Sender is not set."); }
-		return {
-			address: this.senderAddress,
-			usedKeyInfo: this.senderKeyInfo
-		};
-	}
-	
-	private mainObjReader: SegmentsReader = null;
-	private mainDatum: MainData;
-	get main(): MainData {
-		return this.mainDatum;
-	}
+export class OpenedMsg {
 	
 	constructor(
 			public msgId: string,
-			public meta: retrievalApi.MsgMeta) {
-		this.totalSize = 0;
-		if (this.meta.extMeta.objIds.length === 0) {
-			throw new Error("There are no obj ids.");
-		}
-		this.meta.extMeta.objIds.forEach((objId) => {
-			let objSize = this.meta.objSizes[objId];
-			if (!objSize) { return; }
-			this.totalSize += objSize.header;
-			this.totalSize += objSize.segments;
-		});
-	}
-	
-	/**
-	 * This method tries to setup crypto mechanisms of this message.
-	 * It involves decrypting of main object's header with a proposed decryptor.
-	 * If decryptor cannot open header, an exception is thrown, and no changes
-	 * are done to this opener, allowing to try different possible decryptors.
-	 * @param decrInfo a possible decryptor of this message
-	 * @param mainHeader is a complete header of the message's main object 
-	 */
-	setCrypto(decrInfo: keyringMod.DecryptorWithInfo, mainHeader: Uint8Array):
-			void {
-		let kh = makeFileKeyHolder(decrInfo.decryptor, mainHeader);
-		this.mainObjReader = kh.segReader(mainHeader);
-		this.senderKeyInfo = decrInfo.cryptoStatus;
-		if (decrInfo.correspondent) {
-			this.senderAddress = decrInfo.correspondent;
-		}
-	}
-	
-	isCryptoSet(): boolean {
-		return !!this.mainObjReader;
-	}
-	
-	/**
-	 * This function sets up main object.
-	 * When sender is not known, its identity is obtained via verification of
-	 * provided MailerId certificates inside of the main object.
-	 * An error is thrown, when such verification fails.
-	 * @param mainObjSegs is a single byte array with all segments of message's
-	 * main object
-	 * @param midRootCert is a function that gets MailerId root certificate for
-	 * a given address. This parameter must be given, when sender's identity
-	 * is not known, and should be established via openning main object, and
-	 * checking sender's MailerId signature certification of its public key.
-	 */
-	async setMain(mainObjSegs: Uint8Array,
-			midRootCert?: (address: string) => Promise<
-				{ info: MailerIdServiceInfo; domain: string; }>):
-			Promise<void> {
-		if (this.mainDatum) { throw new Error("Main has already been set."); }
-		if (!this.mainObjReader) { throw new Error("Crypto is not set"); }
-		let bytes = xspUtil.openAllSegs(this.mainObjReader, mainObjSegs);
-		let main: MainData = JSON.parse(utf8.open(bytes));
-		if (this.senderAddress) {
-			this.mainDatum = main;
-			return;
-		}
-		if ('function' !== typeof midRootCert) { throw new Error(
-			"Certificate verifier is not given, when it is needed for "+
-			"verification of sender's introductory key, and sender's "+
-			"identity."); }
-		if (!this.meta.extMeta.senderPKey) { throw new Error(
-			"Sender key is missing in external meta, while message's "+
-			"sender is not known, which is possible only when sender "+
-			"key is given in external meta."); }
-		let currentCryptoCert = <CryptoCertification>
-			main[MANAGED_FIELDS.CRYPTO_CERTIF];
-		let senderPKeyCert = getKeyCert(currentCryptoCert.keyCert);
-		if (senderPKeyCert.cert.publicKey.k !==
-				this.meta.extMeta.senderPKey) {
-			this.mainObjReader = null;
-			throw new Error("Sender's key used for encryption "+
-				"is not the same as the one, provided with certificates "+
-				"in the message.");
-		}
-		let senderAddress = senderPKeyCert.cert.principal.address;
-		if (this.meta.authSender && (this.meta.authSender !== senderAddress)) {
-			throw new Error("Sender address, used in authentication to "+
-				"server, is not the same as the one used for athentication "+
-				"of an introductory key");
-		}
-		let midServ = await midRootCert(senderAddress);
-		let validAt = Math.round(this.meta.deliveryCompletion/1000);
-		mid.verifyPubKey(
-			currentCryptoCert.keyCert, senderAddress,
-			{ user: currentCryptoCert.senderCert,
-				prov: currentCryptoCert.provCert,
-				root: midServ.info.currentCert },
-			midServ.domain, validAt);
-		this.senderAddress = senderAddress;
-		this.mainDatum = main;
-	}
-	
-	getMainBody(): MainBody {
-		if (!this.main) { throw new Error("Main message part is not set."); }
-		let body = this.main[MANAGED_FIELDS.BODY];
-		if (!body) { throw new Error("Body is missing in the main part."); }
-		return body;
-	}
-	
-	getNextCrypto(): SuggestedNextKeyPair {
-		if (!this.main) { throw new Error("Main message part is not set."); }
-		return this.main[MANAGED_FIELDS.NEXT_CRYPTO];
+			private main: MainData) {
+		Object.freeze(this);
 	}
 	
 	getHeader(name: string): any {
-		if (!this.main) { throw new Error("Main message part is not set."); }
-		return this.main[HEADERS.SUBJECT];
+		return this.main[name];
+	}
+
+	getSender(): string {
+		return this.getHeader(HEADERS.FROM);
+	}
+	
+	getMainBody(): MainBody {
+		let body: MainBody = this.getHeader(MANAGED_FIELDS.BODY);
+		return (body ? body : {});
+	}
+	
+	getNextCrypto(): SuggestedNextKeyPair|undefined {
+		return this.getHeader(MANAGED_FIELDS.NEXT_CRYPTO);
+	}
+
+	getCurrentCryptoCerts(): confApi.p.initPubKey.Certs {
+		return this.getHeader(MANAGED_FIELDS.CRYPTO_CERTIF);
+	}
+
+	getAttachmentsJSON(): FolderJsonWithMKey|undefined {
+		return this.getHeader(MANAGED_FIELDS.ATTACHMENTS);
 	}
 	
 }
-Object.freeze(MsgOpener.prototype);
-Object.freeze(MsgOpener);
+Object.freeze(OpenedMsg.prototype);
+Object.freeze(OpenedMsg);
+
+
+export async function openMsg(msgId: string, mainObj: ObjSource,
+		fKeyHolder: FileKeyHolder): Promise<OpenedMsg> {
+	try {
+		let byteSrc = await makeDecryptedByteSource(
+			mainObj, fKeyHolder.segReader);
+		let bytes = await byteSrc.read(undefined);
+		if (!bytes) { throw new Error(`End of bytes is reached too soon`); }
+		let jsonOfMain = JSON.parse(utf8.open(bytes));
+		return new OpenedMsg(msgId, jsonOfMain);
+	} catch (err) {
+		throw errWithCause(err, `Cannot open main object of message ${msgId}`);
+	}
+}
 
 Object.freeze(exports);

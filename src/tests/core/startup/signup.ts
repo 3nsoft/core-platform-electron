@@ -15,16 +15,22 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
-import { minimalSetup, setAwaiterJS6InClient }
-	from '../../libs-for-tests/setups';
+import { minimalSetup } from '../../libs-for-tests/setups';
+import { setAwaiterJS6InClient, setRemoteJasmineInClient,
+	checkRemoteExpectations }
+	from '../../libs-for-tests/remote-js-utils';
 import { sleep } from '../../../lib-common/processes';
-import { checkKeyDerivNotifications, checkSecondWindow }
+import { checkSecondWindow, setKeyDerivNotifsChecker }
 	from '../../libs-for-tests/startup';
 
 declare var w3n: {
-	signUp: Web3N.Startup.SignUpService;
-	signIn: Web3N.Startup.SignInService;
+	signUp: web3n.startup.SignUpService;
+	signIn: web3n.startup.SignInService;
 }
+declare var cExpect: typeof expect;
+declare var cFail: typeof fail;
+declare function collectAllExpectations(): void;
+declare function checkKeyDerivNotifications(notifPerc: number[]): void;
 
 // NOTE: it-specs inside signUp process expect to run in a given order -- they
 //		change app's state, expected by following specs in this describe.
@@ -33,63 +39,63 @@ describe('signUp process', () => {
 	let s = minimalSetup();
 
 	beforeAllAsync(async () => {
-		await setAwaiterJS6InClient(s.app);
+		await setAwaiterJS6InClient(s.app.c);
+		await setRemoteJasmineInClient(s.app.c);
+		await setKeyDerivNotifsChecker(s.app.c);
 	});
 
 	let name = 'Mike Marlow ';
 	let pass = 'some long passphrase';
 
 	itAsync('gets available addresses', async () => {
-		let addresses: string[] = (await s.c.executeAsync(
-		async function(name: string, done: Function) {
-			let addresses = await w3n.signUp.getAvailableAddresses(name);
-			done(addresses);
-		}, name)).value;
-		expect(Array.isArray(addresses)).toBe(true);
-		expect(addresses.length).toBe(s.signupDomains.length);
-		for (let d of s.signupDomains) {
-			expect(addresses).toContain(`${name}@${d}`);
-		}
+		let exps = (await s.c.executeAsync(async function(
+				name: string, signupDomains: string[], done: Function) {
+			try {
+				let addresses = await w3n.signUp.getAvailableAddresses(name);
+				cExpect(Array.isArray(addresses)).toBe(true);
+				cExpect(addresses.length).toBe(signupDomains.length);
+				for (let d of signupDomains) {
+					cExpect(addresses).toContain(`${name}@${d}`);
+				}
+			} catch (err) {
+				cFail(err);
+			}
+			done(collectAllExpectations());
+		}, name, s.signupDomains)).value;
+		checkRemoteExpectations(exps, 2 + s.signupDomains.length);
 	});
 
-	itAsync('creates MailerId parameters', async () => {
-		(<any> s.c).timeouts('script', 59000);
-		let notifPerc: number[] = (await s.c.executeAsync(
-		async function(pass: string, done: Function) {
+	itAsync('creates User parameters', async () => {
+		(s.c as any).timeouts('script', 59000);
+		let exps = (await s.c.executeAsync(async function(
+				pass: string, done: Function) {
 			let notifications: number[] = [];
 			let notifier = (p) => { notifications.push(p); }
-			await w3n.signUp.createMailerIdParams(pass, notifier);
-			done(notifications);
+			try {
+				await w3n.signUp.createUserParams(pass, notifier);
+				checkKeyDerivNotifications(notifications);
+			} catch (err) {
+				cFail(err);
+			}
+			done(collectAllExpectations());
 		}, pass)).value;
-		(<any> s.c).timeouts('script', 5000);
-		// although, function returns noting, key derivation notifications are
-		// needed for UI display
-		checkKeyDerivNotifications(notifPerc);
-	}, 60000);
-
-	itAsync('creates Storage parameters', async () => {
-		(<any> s.c).timeouts('script', 59000);
-		let notifPerc: number[] = (await s.c.executeAsync(
-		async function(pass: string, done: Function) {
-			let notifications: number[] = [];
-			let notifier = (p) => { notifications.push(p); }
-			await w3n.signUp.createStorageParams(pass, notifier);
-			done(notifications);
-		}, pass)).value;
-		(<any> s.c).timeouts('script', 5000);
-		// although, function returns noting, key derivation notifications are
-		// needed for UI display
-		checkKeyDerivNotifications(notifPerc);
+		(s.c as any).timeouts('script', 5000);
+		checkRemoteExpectations(exps);
 	}, 60000);
 
 	itAsync('creates user account', async () => {
 		let userId = `${name}@${s.signupDomains[0]}`;
-		let isCreated: boolean = (await s.c.executeAsync(
-		async function(userId: string, done: Function) {
-			let isCreated = await w3n.signUp.addUser(userId);
-			done(isCreated);
+		let exps = (await s.c.executeAsync(async function(
+				userId: string, done: Function) {
+			try {
+				let isCreated = await w3n.signUp.addUser(userId);
+				cExpect(isCreated).toBe(true);
+			} catch (err) {
+				cFail(err);
+			}
+			done(collectAllExpectations());
 		}, userId)).value;
-		expect(isCreated).toBe(true);
+		checkRemoteExpectations(exps, 1);
 		await sleep(2000);
 	});
 

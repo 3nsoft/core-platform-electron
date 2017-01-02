@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,7 +15,7 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 
-declare namespace Web3N.Startup {
+declare namespace web3n.startup {
 	
 	/**
 	 * This is a collection of functions, that are are used by startup
@@ -47,20 +47,12 @@ declare namespace Web3N.Startup {
 		isActivated(userId: string): Promise<boolean>;
 		
 		/**
+		 * This returns a promise, resolvable when MailerId login and storage
+		 * secret keys, have been derived from a password.
 		 * @param pass
 		 * @param progressCB is a callback for progress notification
-		 * @return a promise, resolvable when MailerId secret key for login, has
-		 * been derived from a password.
 		 */
-		createMailerIdParams(pass: string,
-			progressCB: (progress: number) => void): Promise<void>;
-		/**
-		 * @param pass
-		 * @param progressCB is a callback for progress notification
-		 * @return a promise, resolvable when storage secret key, has been derived
-		 * from a password.
-		 */
-		createStorageParams(pass: string,
+		createUserParams(pass: string,
 			progressCB: (progress: number) => void): Promise<void>;
 		
 	}
@@ -73,35 +65,39 @@ declare namespace Web3N.Startup {
 	interface SignInService {
 		
 		/**
-		 * @return array of user ids, found on the cached on the disk.
+		 * This returns an array of users, whose storages are found on a disk.
 		 */
 		getUsersOnDisk(): Promise<string[]>;
 		
 		/**
+		 * This starts a login process, when application is started without user
+		 * storage on a disk.
+		 * It returns a promise, resolvable either to true, if provisioning has
+		 * started, or to false, if given address is not known to the MailerId
+		 * server.
 		 * @param address
-		 * @return a promise, resolvable either to true, if provisioning has started,
-		 * or to false, if given address is not known to the MailerId server.
 		 */
-		startMidProvisioning(address: string): Promise<boolean>;
+		startLoginToRemoteStorage(address: string): Promise<boolean>;
 		
 		/**
+		 * This completes login and setup of user's storage on a disk.
+		 * It returns a promise, resolvable either to true, when provisioning is
+		 * done, or to false, when given password is incorrect.
 		 * @param pass is a MailerId login password
 		 * @param progressCB is a callback for progress notification
-		 * @return a promise, resolvable either to true, if provisioning is done,
-		 * or to false, if given password was not accepted.
 		 */
-		completeMidProvisioning(pass: string,
+		completeLoginAndLocalSetup(pass: string,
 			progressCB: (progress: number) => void): Promise<boolean>;
 		
 		/**
-		 * @param address is user's login address, required when starting up from
-		 * an existing local storage.
-		 * @param pass is a storage password
+		 * This method initializes core to run from an existing on a disk storage.
+		 * It returns a promise, resolvable either to true, when password opens
+		 * storage, and to false, when given password is incorrect.
+		 * @param address is user' address.
+		 * @param pass is user's password.
 		 * @param progressCB is a callback for progress notification
-		 * @return a promise, resolvable either to true, if password opens storage,
-		 * or to false, if given password is incorrect.
 		 */
-		setupStorage(address: string, pass: string,
+		useExistingStorage(address: string, pass: string,
 			progressCB: (progress: number) => void): Promise<boolean>;
 		
 	}

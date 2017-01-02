@@ -14,22 +14,27 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { Duplex, RequestEnvelope }
-	from '../../lib-common/ipc/electron-ipc';
-import { IGetSigner, IGenerateCrypt, storage, fsProxy, sinkProxy, sourceProxy }
+import { Duplex, RequestEnvelope }	from '../../lib-common/ipc/electron-ipc';
+import { IGetSigner, IGenerateCrypt, MasterCryptors, storage }
 	from '../../renderer/common';
-import { FS, Storage as IStorage, sysFolders }
+import { FS as DevFS } from '../../lib-client/local-files/device-fs';
+import { FS, SyncedStorage, Storage, sysFolders, StorageGetter, StorageType }
 	from '../../lib-client/3nstorage/xsp-fs/common';
 import { FS as xspFS } from '../../lib-client/3nstorage/xsp-fs/fs';
 import { StorageException as BaseExc, StorageExceptionType }
 	from '../../lib-client/3nstorage/exceptions';
 import { makeStorageFS } from '../../lib-client/local-files/app-files';
-import { make3NStorageOwner } from './stores';
+import { makeSyncedStorage } from './synced/storage';
+import { makeLocalStorage } from './local/storage';
 import { getStorageServiceFor } from '../../lib-client/service-locator';
 import { bind } from '../../lib-common/binding';
 import { makeRuntimeException } from '../../lib-common/exceptions/runtime';
-import { stringOfB64Chars } from '../../lib-client/random-node';
-import { ByteSink, ByteSource } from '../../lib-common/byte-streaming/common';
+import { AllProxies, ProxiedObjGetter } from '../proxied-objs/fs';
+import { ScryptGenParams } from '../../lib-client/key-derivation';
+import { FileException } from '../../lib-common/exceptions/file';
+import { secret_box as sbox } from 'ecma-nacl';
+
+type EncryptionException = web3n.EncryptionException;
 
 export interface StorageException extends BaseExc {
 	appName?: string;
@@ -53,69 +58,56 @@ function makeNotAllowedToOpenFSExc(appName: string): StorageException {
 
 let CORE_APPS_PREFIX = 'computer.3nweb.core';
 
-export class Storage {
+const KD_PARAMS_FILE_NAME = 'kd-params';
+const LOCAL_STORAGE_DIR = 'local';
+const SYNCED_STORAGE_DIR = 'synced';
+
+async function getRootKeyDerivParams(fs: DevFS,
+		getFromServer: () => Promise<ScryptGenParams>): Promise<ScryptGenParams> {
+	return fs.readJSONFile<ScryptGenParams>(KD_PARAMS_FILE_NAME).catch(
+		async (exc: FileException) => {
+			if (!exc.notFound) { throw exc; }
+			let params = await getFromServer();
+			await fs.writeJSONFile(KD_PARAMS_FILE_NAME, params);
+			return params;
+	});
+}
+
+class StorageAndFS<T extends Storage> {
 	
-	private storage: IStorage = null;
-	private rootFS: FS = null;
-	private perWinStorages = new Set<PerWinStorage>();
+	rootFS: FS = (undefined as any);
 	
-	constructor() {
+	constructor(
+			public storage: T) {
 		Object.seal(this);
 	}
-	
-	async initExisting(user: string, getSigner: IGetSigner,
-			generateMasterCrypt: IGenerateCrypt):
-			Promise<boolean> {
-		let storageDevFS = await makeStorageFS(user);
-		this.storage = await make3NStorageOwner(
-			storageDevFS, user, null, getSigner);
-		let params = await this.storage.getRootKeyDerivParams();
-		let master = await generateMasterCrypt(params);
+
+	async initExisting(decr: sbox.Decryptor): Promise<boolean> {
 		try {
-			this.rootFS = await xspFS.makeExisting(
-				this.storage, null, master.decr);
+			this.rootFS = await xspFS.makeExisting(this.storage, null!, decr);
+			return true;
 		} catch (err) {
-			if (err.failedCipherVerification) {
+			if ((err as EncryptionException).failedCipherVerification) {
 				return false;
 			} else {
 				throw err;
 			}
-		} finally {
-			master.decr.destroy();
-			master.encr.destroy();
 		}
-		return true;
 	}
-	
-	async initFromRemote(user: string, getSigner: IGetSigner,
-			generateMasterCrypt: IGenerateCrypt): Promise<boolean> {
-		let serviceURL = await getStorageServiceFor(user);
-		let storageDevFS = await makeStorageFS(user);
-		this.storage = await make3NStorageOwner(
-			storageDevFS, user, serviceURL, getSigner);
-		let params = await this.storage.getRootKeyDerivParams();
-		let master = await generateMasterCrypt(params);
+
+	async initFromRemote(master: MasterCryptors): Promise<boolean> {
 		try {
-			this.rootFS = await xspFS.makeExisting(
-				this.storage, null, master.decr);
+			this.rootFS = await xspFS.makeExisting(this.storage, null!, master.decr);
 		} catch (err) {
-			if ((<StorageException> err).objNotFound) {
+			if ((err as StorageException).objNotFound) {
 				this.rootFS = await xspFS.makeNewRoot(this.storage, master.encr);
-			} else if (err.failedCipherVerification) {
+			} else if ((err as EncryptionException).failedCipherVerification) {
 				return false;
 			} else {
 				throw err;
 			}
-		} finally {
-			master.decr.destroy();
-			master.encr.destroy();
 		}
 		return true;
-	}
-	
-	attachTo(rendererSide: Duplex, policy: StoragePolicy): void {
-		let winStorage = new PerWinStorage(this, rendererSide, policy);
-		this.perWinStorages.add(winStorage);
 	}
 	
 	makeAppFS(appFolder: string): Promise<FS> {
@@ -125,25 +117,157 @@ export class Storage {
 			throw makeBadAppNameExc(appFolder);
 		}
 		if (!this.rootFS) { throw new Error('Storage is not initialized.'); }
-		return this.rootFS.makeSubRoot(sysFolders.appData+'/'+appFolder);
+		return this.rootFS.writableSubRoot(`${sysFolders.appData}/${appFolder}`);
 	}
-	
+
 	async close(): Promise<void> {
 		if (!this.rootFS) { return; }
+		await this.rootFS.close();
+		await this.storage.close();
+		this.rootFS = (undefined as any);
+		this.storage = (undefined as any);
+	}
+}
+
+export class Storages {
+	
+	private synced: StorageAndFS<SyncedStorage> = (undefined as any);
+	
+	private local: StorageAndFS<Storage> = (undefined as any);
+
+	private perWinStorages = new Set<PerWinStorage>();
+	
+	constructor() {
+		Object.seal(this);
+	}
+
+	private storageGetterForLocalStorage(): StorageGetter {
+		return (type: StorageType, location?: string): Storage => {
+			if (type === 'local') {
+				return this.local.storage;
+			} else if (type === 'synced') {
+				return this.synced.storage;
+			} else if (type === 'share') {
+				// TODO implement returning shared storage
+				throw new Error(`Providing shared storage is not implemented, yet`);
+			} else {
+				throw new Error(`Cannot provide ${type} storage via local storage`);
+			}
+		};
+	}
+
+	private storageGetterForSyncedStorage(): StorageGetter {
+		return (type: StorageType, location?: string): Storage => {
+			if (type === 'synced') {
+				return this.synced.storage;
+			} else if (type === 'share') {
+				// TODO implement returning shared storage
+				throw new Error(`Providing shared storage is not implemented, yet`);
+			} else {
+				throw new Error(`Cannot provide ${type} storage via synced storage`);
+			}
+		};
+	}
+
+	storageGetterForASMail(): StorageGetter {
+		return (type: StorageType, location?: string): Storage => {
+			if (type === 'share') {
+				// TODO implement returning shared storage
+				throw new Error(`Providing shared storage is not implemented, yet`);
+			} else {
+				throw new Error(`Cannot provide ${type} storage via asmail message storage`);
+			}
+		};
+	}
+	
+	/**
+	 * This does an initial part of initialization, common to both initialization
+	 * scenarios.
+	 * @param user
+	 * @param getSigner
+	 * @param generateMasterCrypt
+	 */
+	private async initFst(user: string, getSigner: IGetSigner,
+			generateMasterCrypt: IGenerateCrypt): Promise<MasterCryptors> {
+		let storageFS = await makeStorageFS(user);
+		if (!this.synced) {
+			this.synced = new StorageAndFS(await makeSyncedStorage(
+				user, getSigner,
+				await storageFS.writableSubRoot(SYNCED_STORAGE_DIR),
+				() => getStorageServiceFor(user),
+				this.storageGetterForSyncedStorage()));
+		}
+		if (!this.local) {
+			this.local = new StorageAndFS(await makeLocalStorage(
+				await storageFS.writableSubRoot(LOCAL_STORAGE_DIR),
+				this.storageGetterForLocalStorage()));
+		}
+		let params = await getRootKeyDerivParams(storageFS,
+			this.synced.storage.getRootKeyDerivParamsFromServer);
+		return await generateMasterCrypt(params);
+	}
+
+	async initExisting(user: string, getSigner: IGetSigner,
+			generateMasterCrypt: IGenerateCrypt):
+			Promise<boolean> {
+		let master = await this.initFst(user, getSigner,generateMasterCrypt);
+		try {
+			let ok = (await this.synced.initExisting(master.decr)) &&
+				(await this.local.initExisting(master.decr));
+			return ok;
+		} finally {
+			master.decr.destroy();
+			master.encr.destroy();
+		}
+	}
+	
+	async initFromRemote(user: string, getSigner: IGetSigner,
+			generateMasterCrypt: IGenerateCrypt): Promise<boolean> {
+		let master = await this.initFst(user, getSigner,generateMasterCrypt);
+		try {
+			let ok = (await this.synced.initFromRemote(master)) &&
+				(await this.local.initFromRemote(master));
+			return ok;
+		} catch (err) {
+			this.synced = (undefined as any);
+			this.local = (undefined as any);
+			throw err;
+		} finally {
+			master.decr.destroy();
+			master.encr.destroy();
+		}
+	}
+	
+	attachTo(rendererSide: Duplex, policy: StoragePolicy): ProxiedObjGetter {
+		let winStorage = new PerWinStorage(this, rendererSide, policy);
+		this.perWinStorages.add(winStorage);
+		return winStorage.proxiedObjsGetter();
+	}
+	
+	makeSyncedFSForApp(appFolder: string): Promise<FS> {
+		return this.synced.makeAppFS(appFolder);
+	}
+
+	makeLocalFSForApp(appFolder: string): Promise<FS> {
+		return this.local.makeAppFS(appFolder);
+	}
+
+	async close(): Promise<void> {
+		if (!this.synced) { return; }
 		let tasks: Promise<void>[] = [];
 		for (let s of this.perWinStorages) {
 			tasks.push(s.close());
 		}
+		tasks.push(this.synced.close());
+		tasks.push(this.local.close());
 		await Promise.all(tasks);
-		await this.rootFS.close();
-		tasks.push(this.storage.close());
-		this.storage = null;
-		this.rootFS = null;
+		this.synced = (undefined as any);
+		this.local = (undefined as any);
 	}
 	
 }
-Object.freeze(Storage.prototype);
-Object.freeze(Storage);
+Object.freeze(Storages.prototype);
+Object.freeze(Storages);
 
 export interface StoragePolicy {
 	canOpenAppFS(appName: string): boolean;
@@ -151,24 +275,30 @@ export interface StoragePolicy {
 
 export class PerWinStorage {
 
-	private fss: ProxyFS;
+	private proxies: AllProxies;
 	
 	constructor(
-			private store: Storage,
+			private store: Storages,
 			private rendererSide: Duplex,
 			private policy: StoragePolicy) {
-		this.fss = new ProxyFS(rendererSide, storage.reqNames.PREFIX);
+		this.proxies = new AllProxies(rendererSide);
 		this.attachHandlersToUI();
 		Object.freeze(this);
+	}
+
+	proxiedObjsGetter(): ProxiedObjGetter {
+		return this.proxies.objGetter;
 	}
 	
 	private attachHandlersToUI(): void {
 		let reqNames = storage.reqNames;
-		this.rendererSide.addHandler(reqNames.openAppFS,
-			bind(this, this.handleOpenAppFS));
+		this.rendererSide.addHandler(reqNames.openAppSyncedFS,
+			bind(this, this.handleOpenAppSyncedFS));
+		this.rendererSide.addHandler(reqNames.openAppLocalFS,
+			bind(this, this.handleOpenAppLocalFS));
 	}
 	
-	private async handleOpenAppFS(env: RequestEnvelope<string>):
+	private async handleOpenAppSyncedFS(env: RequestEnvelope<string>):
 			Promise<string> {
 		let appFolder = env.req;
 		if (typeof appFolder !== 'string') { throw makeBadAppNameExc(appFolder); }
@@ -178,257 +308,32 @@ export class PerWinStorage {
 		}
 		if (!this.policy.canOpenAppFS(appFolder)) {
 			throw makeNotAllowedToOpenFSExc(appFolder); }
-		let appFS = await this.store.makeAppFS(appFolder);
-		let fsId = this.fss.add(appFS);
+		let appFS = await this.store.makeSyncedFSForApp(appFolder);
+		let fsId = this.proxies.fss.add(appFS);
+		return fsId;
+	}
+	
+	private async handleOpenAppLocalFS(env: RequestEnvelope<string>):
+			Promise<string> {
+		let appFolder = env.req;
+		if (typeof appFolder !== 'string') { throw makeBadAppNameExc(appFolder); }
+		if (CORE_APPS_PREFIX ===
+				appFolder.substring(0, CORE_APPS_PREFIX.length)) {
+			throw makeNotAllowedToOpenFSExc(appFolder);
+		}
+		if (!this.policy.canOpenAppFS(appFolder)) {
+			throw makeNotAllowedToOpenFSExc(appFolder); }
+		let appFS = await this.store.makeLocalFSForApp(appFolder);
+		let fsId = this.proxies.fss.add(appFS);
 		return fsId;
 	}
 	
 	async close(): Promise<void> {
-		await this.fss.close();
+		await this.proxies.fss.close();
 	}
 
 }
 Object.freeze(PerWinStorage.prototype);
 Object.freeze(PerWinStorage);
-
-class ProxyFS {
-	
-	// TODO implement FSView weak-referencing on renderer side, calling
-	//		cleanup close()'s, when refs are collected on renderer side.
-	// For now, if renderer is not calling close and loose ref, we have a leak.
-	private fss = new Map<string, FS>();
-	private sinks: ProxySink;
-	private srcs: ProxySource;
-	
-	constructor(
-			private rendererSide: Duplex,
-			private prefix: string) {
-		this.sinks = new ProxySink(
-			rendererSide, prefix + fsProxy.reqNames.PREFIX);
-		this.srcs = new ProxySource(
-			rendererSide, prefix + fsProxy.reqNames.PREFIX);
-		this.attachHandlersToUI();
-		Object.freeze(this);
-	}
-
-	async close(): Promise<void> {
-		let tasks: Promise<void>[] = [];
-		for (let appFS of this.fss.values()) {
-			tasks.push(appFS.close());
-		}
-		this.fss.clear();
-		await Promise.all(tasks);
-	}
-	
-	private attachHandlersToUI(): void {
-		let reqNames = fsProxy.reqNames;
-		let methodToReq = {
-			listFolder: this.prefix + reqNames.listFolder,
-			makeFolder: this.prefix + reqNames.makeFolder,
-			deleteFolder: this.prefix + reqNames.deleteFolder,
-			deleteFile: this.prefix + reqNames.deleteFile,
-			writeJSONFile: this.prefix + reqNames.writeJSONFile,
-			readJSONFile: this.prefix + reqNames.readJSONFile,
-			writeTxtFile: this.prefix + reqNames.writeTxtFile,
-			readTxtFile: this.prefix + reqNames.readTxtFile,
-			writeBytes: this.prefix + reqNames.writeBytes,
-			readBytes: this.prefix + reqNames.readBytes,
-			checkFolderPresence: this.prefix + reqNames.checkFolderPresence,
-			checkFilePresence: this.prefix + reqNames.checkFilePresence,
-			move: this.prefix + reqNames.move,
-		};
-		for (let methodName of Object.keys(methodToReq)) {
-			let reqName = methodToReq[methodName];
-			this.rendererSide.addHandler(reqName,
-				this.makeHandler(reqName, methodName));
-		}
-		this.rendererSide.addHandler(this.prefix + reqNames.close,
-			bind(this, this.handleFSClose));
-		this.rendererSide.addHandler(this.prefix + reqNames.makeSubRoot,
-			bind(this, this.handleMakeSubRoot));
-		this.rendererSide.addHandler(this.prefix + reqNames.getByteSink,
-			bind(this, this.handleGetByteSink));
-		this.rendererSide.addHandler(this.prefix + reqNames.getByteSource,
-			bind(this, this.handleGetByteSource));
-	}
-
-	add(fs: FS): string {
-		let fsId = stringOfB64Chars(32);
-		while (this.fss.has(fsId)) {
-			fsId = stringOfB64Chars(32);
-		}
-		this.fss.set(fsId, fs);
-		return fsId;
-	}
-
-	private getFSforRequest(env: RequestEnvelope<fsProxy.RequestToFS>): FS {
-		let fs = this.fss.get(env.req.fsId);
-		if (!fs) { throw new Error(`Filesystem ${env.req.fsId} is not opened.`); }
-		let args = env.req.args;
-		if (!Array.isArray(args)) { throw new Error(
-			'Parameter args is not an array'); }
-		return fs;
-	}
-	
-	private makeHandler(reqName: string, funcName: string) {
-		return (env: RequestEnvelope<fsProxy.RequestToFS>) => {
-			let fs = this.getFSforRequest(env);
-			return fs[funcName](...env.req.args);
-		};
-	}
-	
-	private async handleMakeSubRoot(
-			env: RequestEnvelope<fsProxy.RequestToFS>): Promise<string> {
-		let fs = this.getFSforRequest(env);
-		let subFS: FS = await (<any> fs.makeSubRoot)(...env.req.args);
-		let fsId = this.add(subFS);
-		return fsId;
-	}
-	
-	private async handleGetByteSink(env: RequestEnvelope<fsProxy.RequestToFS>):
-			Promise<fsProxy.SinkDetails> {
-		let appFS = this.getFSforRequest(env);
-		let sink: ByteSink = await (<any> appFS.getByteSink)(...env.req.args);
-		let sinkId = this.sinks.add(sink);
-		let sInfo: fsProxy.SinkDetails = {
-			sinkId,
-			seekable: !!sink.seek
-		};
-		return sInfo;
-	}
-	
-	private async handleGetByteSource(env: RequestEnvelope<fsProxy.RequestToFS>):
-			Promise<fsProxy.SourceDetails> {
-		let appFS = this.getFSforRequest(env);
-		let src: ByteSource = await (<any> appFS.getByteSource)(...env.req.args);
-		let srcId = this.srcs.add(src);
-		let sInfo: fsProxy.SourceDetails = {
-			srcId,
-			seekable: !!src.seek
-		};
-		return sInfo;
-	}
-
-	private async handleFSClose(env: RequestEnvelope<fsProxy.RequestToFS>):
-			Promise<void> {
-		let fsId = env.req.fsId;
-		let appFS = this.fss.get(fsId);
-		if (!appFS) { return; }
-		await appFS.close();
-		this.fss.delete(fsId);
-	}
-
-}
-Object.freeze(ProxyFS.prototype);
-Object.freeze(ProxyFS);
-
-class ProxySink {
-
-	private sinks = new Map<string, ByteSink>();
-	
-	constructor(
-			private rendererSide: Duplex,
-			private prefix: string) {
-		this.attachHandlersToUI();
-		Object.freeze(this);
-	}
-	
-	private attachHandlersToUI(): void {
-		let reqNames = sinkProxy.reqNames;
-		let methodToReq = {
-			write: this.prefix + reqNames.write,
-			getSize: this.prefix + reqNames.getSize,
-			setSize: this.prefix + reqNames.setSize,
-			seek: this.prefix + reqNames.seek,
-			getPosition: this.prefix + reqNames.getPosition
-		};
-		for (let methodName of Object.keys(methodToReq)) {
-			let reqName = methodToReq[methodName];
-			this.rendererSide.addHandler(reqName,
-				this.makeHandler(reqName, methodName));
-		}
-	}
-
-	add(sink: ByteSink): string {
-		let sinkId = stringOfB64Chars(32);
-		while (this.sinks.has(sinkId)) {
-			sinkId = stringOfB64Chars(32);
-		}
-		this.sinks.set(sinkId, sink);
-		setTimeout(() => {
-			this.sinks.delete(sinkId);
-		}, 5*60000).unref();
-		return sinkId;
-	}
-	
-	private makeHandler(reqName: string, funcName: string) {
-		return (env: RequestEnvelope<sinkProxy.RequestToSink>) => {
-			let sink = this.sinks.get(env.req.sinkId);
-			if (!sink) { throw new Error(
-				`Byte sink ${env.req.sinkId} is not opened.`); }
-			let args = env.req.args;
-			if (!Array.isArray(args)) { throw new Error(
-				'Parameter args is not an array'); }
-			return sink[funcName](...args);
-		};
-	}
-
-}
-Object.freeze(ProxySink.prototype);
-Object.freeze(ProxySink);
-
-class ProxySource {
-
-	private srcs = new Map<string, ByteSource>();
-	
-	constructor(
-			private rendererSide: Duplex,
-			private prefix: string) {
-		this.attachHandlersToUI();
-		Object.freeze(this);
-	}
-	
-	private attachHandlersToUI(): void {
-		let reqNames = sourceProxy.reqNames;
-		let methodToReq = {
-			read: this.prefix + reqNames.read,
-			getSize: this.prefix + reqNames.getSize,
-			seek: this.prefix + reqNames.seek,
-			getPosition: this.prefix + reqNames.getPosition
-		};
-		for (let methodName of Object.keys(methodToReq)) {
-			let reqName = methodToReq[methodName];
-			this.rendererSide.addHandler(reqName,
-				this.makeHandler(reqName, methodName));
-		}
-	}
-
-	add(src: ByteSource): string {
-		let srcId = stringOfB64Chars(32);
-		while (this.srcs.has(srcId)) {
-			srcId = stringOfB64Chars(32);
-		}
-		this.srcs.set(srcId, src);
-		setTimeout(() => {
-			this.srcs.delete(srcId);
-		}, 5*60000).unref();
-		return srcId;
-	}
-	
-	private makeHandler(reqName: string, funcName: string) {
-		return (env: RequestEnvelope<sourceProxy.RequestToSource>) => {
-			let src = this.srcs.get(env.req.srcId);
-			if (!src) { throw new Error(
-				`Byte source ${env.req.srcId} is not opened.`); }
-			let args = env.req.args;
-			if (!Array.isArray(args)) { throw new Error(
-				'Parameter args is not an array'); }
-			return src[funcName](...args);
-		};
-	}
-
-}
-Object.freeze(ProxySource.prototype);
-Object.freeze(ProxySource);
 
 Object.freeze(exports);

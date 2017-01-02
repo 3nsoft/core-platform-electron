@@ -29,19 +29,23 @@ let Uri = require('jsuri');
 
 const LIMIT_ON_MAX_CHUNK = 1024*1024;
 
-const EXCEPTION_TYPE = 'asmail-delivery';
+export const EXCEPTION_TYPE = 'asmail-delivery';
+
+type ASMailSendException = web3n.asmail.ASMailSendException;
 
 export class MailSender {
 	
-	sessionId: string = null;
-	maxMsgLength = 0;
-	redirectedFrom: string = null;
-	recipientPubKeyCerts: api.initPubKey.Reply = null;
-	msgId: string = null;
+	sessionId: string = (undefined as any);
+	maxMsgLength: number = (undefined as any);
+	redirectedFrom: string = (undefined as any);
+	recipientPubKeyCerts: api.initPubKey.Reply = (undefined as any);
+	msgId: string = (undefined as any);
 	maxChunkSize = LIMIT_ON_MAX_CHUNK;
 	
-	private uri: string = null;
+	private uri: string = (undefined as any);
 	get deliveryURI(): string {
+		if (typeof this.uri !== 'string') { throw new Error(
+			`Delivery uri is not initialized.`); }
 		return this.uri;
 	}
 	private get serviceDomain(): string {
@@ -49,50 +53,69 @@ export class MailSender {
 	}
 	
 	/**
-	 * @param sender is a string with sender's mail address, or null, for anonymous
-	 * sending (non-authenticated).
+	 * @param sender is a string with sender's mail address, or undefined,
+	 * for anonymous sending (non-authenticated).
 	 * @param recipient is a required string with recipient's mail address.
 	 * @param invitation is an optional string token, used with either anonymous
 	 * (non-authenticated) delivery, or in a more strict delivery control in
 	 * authenticated setting.
 	 */
 	constructor(
-			public sender: string,
+			public sender: string|undefined,
 			public recipient: string,
-			public invitation: string = null) {
+			public invitation?: string) {
 		Object.seal(this);
 	}
 
 	async setDeliveryUrl(serviceUrl: string): Promise<void> {
 		let info = await asmailInfoAt(serviceUrl);
+		if (!info.delivery) { throw new Error(`Missing delivery service url in ASMail information at ${serviceUrl}`); }
 		this.uri = info.delivery;
 	}
 	
-	private makeException(flag: string): Web3N.ASMail.ASMailSendException {
-		let exc = <Web3N.ASMail.ASMailSendException> makeRuntimeException(
+	private makeException(flag: string): ASMailSendException {
+		let exc = <ASMailSendException> makeRuntimeException(
 			flag, EXCEPTION_TYPE);
 		exc.address = this.recipient;
 		return exc;
 	}
 	
-	private badRedirectExc(): Web3N.ASMail.ASMailSendException {
+	private badRedirectExc(): ASMailSendException {
 		return this.makeException('badRedirect');
 	}
 	
-	private unknownRecipientExc(): Web3N.ASMail.ASMailSendException {
+	private unknownRecipientExc(): ASMailSendException {
 		return this.makeException('unknownRecipient');
 	}
 	
-	private senderNotAllowedExc(): Web3N.ASMail.ASMailSendException {
+	private senderNotAllowedExc(): ASMailSendException {
 		return this.makeException('senderNotAllowed');
 	}
 	
-	private inboxIsFullExc(): Web3N.ASMail.ASMailSendException {
+	private inboxIsFullExc(): ASMailSendException {
 		return this.makeException('inboxIsFull');
 	}
 	
-	private authFailedOnDeliveryExc(): Web3N.ASMail.ASMailSendException {
+	private authFailedOnDeliveryExc(): ASMailSendException {
 		return this.makeException('authFailedOnDelivery');
+	}
+
+	private recipientHasNoPubKeyExc(): ASMailSendException {
+		return this.makeException('recipientHasNoPubKey');
+	}
+
+	/**
+	 * This method throws, if given message size is greater that a maximum
+	 * message size that server is willing to take.
+	 * @param msgSize is a total number of bytes for all message objects.
+	 */
+	ensureMsgFitsLimits(msgSize: number): void {
+		if (typeof this.maxMsgLength !== 'number') { throw new Error(`Premature call to ensure size fit: maximum message length isn't set.`); }
+		if (msgSize > this.maxMsgLength) {
+			let exc: ASMailSendException = this.makeException('msgTooBig');
+			exc.allowedSize = this.maxMsgLength;
+			throw exc;
+		}
 	}
 	
 	private prepareRedirectOrThrowUp(rep: api.sessionStart.RedirectReply): void {
@@ -231,7 +254,7 @@ export class MailSender {
 			sessionId: this.sessionId
 		}, reqData);
 		if (rep.status === api.authSender.SC.ok) { return; }
-		this.sessionId = null;
+		this.sessionId = (undefined as any);
 		if (rep.status === api.authSender.SC.authFailed) {
 			throw this.authFailedOnDeliveryExc();
 		} else {
@@ -256,6 +279,8 @@ export class MailSender {
 		if (rep.status === api.initPubKey.SC.ok) {
 			this.recipientPubKeyCerts = rep.data;
 			return this.recipientPubKeyCerts;
+		} else if (rep.status === api.initPubKey.SC.pkeyNotRegistered) {
+			throw this.recipientHasNoPubKeyExc();
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
@@ -316,7 +341,7 @@ export class MailSender {
 			append: false,
 			ofs: offset
 		};
-		if ('number' === typeof totalHeadLen) {
+		if (typeof totalHeadLen === 'number') {
 			opts.total = totalHeadLen;
 		}
 		let url = this.deliveryURI + api.msgObjHeader.genUrlEnd(objId, opts);
@@ -370,7 +395,7 @@ export class MailSender {
 			sessionId: this.sessionId
 		});
 		if (rep.status === api.completion.SC.ok) {
-			this.sessionId = null;
+			this.sessionId = (undefined as any);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
