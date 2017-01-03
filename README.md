@@ -12,11 +12,11 @@ Platform's core runs as a main process, while apps run in renderer processes.
 
 To use this repo, you need [Node.js](https://nodejs.org/) with [Typescript](http://www.typescriptlang.org/), installed globally to Node.js (with flag `-g`).
 
-When in the project's folder, run
+When in the project's folder, run enclosed script (put runnable flag on it)
 ```
-npm install
+./refresh-repos.sh
 ```
-to pull in all necessary dependencies.
+this will pull other related projects (server, UI apps), placing them side-by-side with this folder.
 
 After that, run npm scripts:
 ```
