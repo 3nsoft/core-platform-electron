@@ -86,12 +86,19 @@ gulp.task('run-fast', gulp.series('build',
 	shell.task(`electron ${APP_SCRIPT} --console-log-http ${dataDirLineParam}`)));
 
 const SERVER_FOLDER = 'home-server';
+const PROPER_SERVER_FOLDER = 'spec-server';
 
 // tasks for testing
 gulp.task('test', gulp.series('build',
 	shell.task(`node build/tests/jasmine.js ; rm -f npm-debug.log`)));
 gulp.task('prep-test', gulp.series('build-all',
-	shell.task(`cd ../${SERVER_FOLDER} ; npm run build`)));
+	shell.task(`
+	if [ -d ../${SERVER_FOLDER} ]; then
+		cd ../${SERVER_FOLDER};
+	else
+		cd ../${PROPER_SERVER_FOLDER};
+	fi
+	npm run build`)));
 
 /**
  * @param outDir is an output directory for complete binaries

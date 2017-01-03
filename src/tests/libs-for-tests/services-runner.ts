@@ -18,6 +18,7 @@ import { fork, ChildProcess } from 'child_process';
 import { Duplex, commToChild } from '../../lib-common/ipc/node-child-ipc';
 import { DnsTxtRecords } from './dns';
 import { sleep } from '../../lib-common/processes';
+import { readdirSync } from 'fs';
 
 export interface ServiceUrls {
 	mailerId: string;
@@ -27,8 +28,18 @@ export interface ServiceUrls {
 	tlsCert: string;
 }
 
+function serverFolder(): string {
+	let path = `${__dirname}/../../../../home-server`;
+	try {
+		readdirSync(path);
+		return path;
+	} catch (err) {
+		return `${__dirname}/../../../../spec-server`;
+	}
+}
+
 const DEFAULT_SERVER_SCRIPT_PATH =
-	__dirname+'/../../../../home-server/build/mock/mock-as-child-proc.js';
+	`${serverFolder()}/build/mock/mock-as-child-proc.js`;
 
 const SERVER_MOCK_CHANNEL = 'server-mock';
 
