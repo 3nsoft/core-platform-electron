@@ -27,8 +27,8 @@ import { reqNames, ScryptRequest, CRYPTOR_CHANNEL, OpenWNRequest, OpenRequest,
 import * as nacl from 'ecma-nacl';
 import { toBuffer, bufFromJson } from '../../lib-common/buffer-utils';
 
-let parent = commToParent(CRYPTOR_CHANNEL);
-let arrFactory = nacl.arrays.makeFactory();
+const parent = commToParent(CRYPTOR_CHANNEL);
+const arrFactory = nacl.arrays.makeFactory();
 
 parent.addHandler(reqNames.scrypt, scrypt);
 async function scrypt(env: RequestEnvelope<ScryptRequest>):
@@ -122,10 +122,10 @@ async function verifySignature(env: RequestEnvelope<VerifySigRequest>):
 parent.addHandler(reqNames.signatureKeyPair, signatureKeyPair);
 async function signatureKeyPair(env: RequestEnvelope<Buffer>):
 		Promise<SigKeyPairReply> {
-	let pair = nacl.signing.generate_keypair(
+	const pair = nacl.signing.generate_keypair(
 		bufFromJson(env.req),
 		arrFactory);
-	let reply: SigKeyPairReply = {
+	const reply: SigKeyPairReply = {
 		skey: toBuffer(pair.skey),
 		pkey: toBuffer(pair.pkey)
 	}

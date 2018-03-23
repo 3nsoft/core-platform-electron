@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015, 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -22,10 +22,17 @@ import * as jwk from '../../jwkeys';
 import * as config from './config';
 import { stringify as stringifyOpts } from 'querystring';
 
+export const HTTP_HEADER = {
+	contentType: 'Content-Type',
+	contentLength: 'Content-Length',
+}
+Object.freeze(HTTP_HEADER);
+
 export const ERR_SC = {
 	duplicateReq: 475,
 	earlyReq: 476,
 	malformed: 400,
+	needSession: 401,
 	server: 500,
 	contentTooLong: 413,
 	contentLenMissing: 411,
@@ -79,6 +86,33 @@ export namespace sessionStart {
 	
 }
 Object.freeze(sessionStart);
+
+export namespace sessionRestart {
+	
+	export const URL_END = 'restart-session';
+	
+	export interface Request {
+		recipient: string;
+		msgId: string;
+	}
+	
+	export interface Reply extends preFlight.Reply {
+		sessionId: string;
+		maxChunkSize? : number;
+	}
+	
+	export interface RedirectReply extends preFlight.RedirectReply {}
+	
+	export const SC = {
+		ok: 200,
+		unknownRecipient: 474,
+		unknownMsg: 473,
+		redirect: 373
+	};
+	Object.freeze(SC);
+	
+}
+Object.freeze(sessionRestart);
 
 export namespace authSender {
 	
@@ -140,33 +174,65 @@ export namespace msgMeta {
 }
 Object.freeze(msgMeta);
 
-export interface BlobQueryOpts {
+export interface PutObjFirstQueryOpts {
+
 	/**
-	 * Indicates that bytes in this request should be appended to the blob.
+	 * This is a length of header, when it is sent in a request.
+	 * Header must be sent with the first request, located in http body start.
+	 */
+	header: number;
+
+	/**
+	 * This is a total length of segments in the object. When total segments
+	 * length is known a priori, this field must be present. Else, append flag
+	 * must be present instead of this field.
+	 * Segments bytes are located in http body after object's header.
+	 */
+	segs?: number;
+
+	/**
+	 * This is a boolean flag, which true value indicates that total length of
+	 * segment is not known, and that segment bytes in this transaction should be
+	 * appended to new object's version.
 	 */
 	append?: boolean;
+
+}
+
+export interface PutObjSecondQueryOpts {
+
 	/**
-	 * Total number of bytes that need to be transferred, marking this
-	 * request as the first one in sending a blob. If more than one request
-	 * is required to transfer a blob, subsequent request should not have
-	 * this option parameter in the request. In other words, this parameter
-	 * indicates the first request in blob transfer.
-	 * When blob's length is not yet known, and a blob is written in an
-	 * appending mode, this parameter must be set to -1.
-	 */
-	total?: number;
-	/**
-	 * Offset in a blob. It must be present with in an not appending mode.
+	 * This is an offset into segments. It must be present in a non-appending
+	 * request, and must be absent in appending requests.
 	 */
 	ofs?: number;
+
+	/**
+	 * This is a boolean flag, which true value indicates that segment bytes in
+	 * the body should be appended to new object's version.
+	 */
+	append?: boolean;
+
+	/**
+	 * This is a boolean flag, which true value indicates that this is the last
+	 * request in sending the object.
+	 */
+	last?: boolean;
+
 }
 
-export namespace msgObjHeader {
+export namespace msgObj {
 	
-	export const EXPRESS_URL_END = 'msg/obj/:objId/header';
+	export const EXPRESS_URL_END = 'msg/obj/:objId';
 	
-	export function genUrlEnd(objId: string, opts: BlobQueryOpts): string {
-		return `msg/obj/${objId}/header?${stringifyOpts(opts)}`;
+	export function firstPutReqUrlEnd(objId: string,
+			opts: PutObjFirstQueryOpts): string {
+		return `msg/obj/${objId}?${stringifyOpts(opts)}`;
+	}
+	
+	export function secondPutReqUrlEnd(objId: string,
+			opts: PutObjSecondQueryOpts): string {
+		return `msg/obj/${objId}?${stringifyOpts(opts)}`;
 	}
 	
 	export const SC = {
@@ -177,25 +243,7 @@ export namespace msgObjHeader {
 	Object.freeze(SC);
 	
 }
-Object.freeze(msgObjHeader);
-
-export namespace msgObjSegs {
-	
-	export const EXPRESS_URL_END = 'msg/obj/:objId/segments';
-	
-	export function genUrlEnd(objId: string, opts: BlobQueryOpts): string {
-		return `msg/obj/${objId}/segments?${stringifyOpts(opts)}`;
-	}
-	
-	export const SC = {
-		ok: 201,
-		objAlreadyExists: 473,
-		unknownObj: 474
-	};
-	Object.freeze(SC);
-	
-}
-Object.freeze(msgObjSegs);
+Object.freeze(msgObj);
 
 export namespace completion {
 	

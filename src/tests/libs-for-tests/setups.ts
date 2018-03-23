@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,18 +16,18 @@
 
 import { AppRunner, User } from '../libs-for-tests/app-runner';
 import { ServicesRunner, ServiceUrls } from './services-runner';
-import { displayBrowserLogs, displayStdOutLogs } from './spectron-logs';
 import { DnsTxtRecords } from './dns';
 import { beforeAllAsync, afterAllAsync, afterEachAsync } from './async-jasmine';
 import { sleep } from '../../lib-common/processes';
 import { ErrorWithCause } from '../../lib-common/exceptions/error';
+import { SpectronClient } from 'spectron';
 
 export { checkRemoteExpectations } from './remote-js-utils';
 
 export interface Setup {
 
 	app: AppRunner;
-	c: WebdriverIO.Client<any>;
+	c: SpectronClient;
 
 	signupDomains: string[];
 
@@ -60,7 +60,7 @@ export function makeSetupObject(signupDomains: string[]): Setup {
 
 	let setup: Setup = {
 		get app(): AppRunner { return app; },
-		get c(): WebdriverIO.Client<any> { return app.c; },
+		get c(): SpectronClient { return app.c; },
 		
 		get signupDomains(): string[] { return signupDomains; },
 
@@ -77,10 +77,10 @@ export function makeSetupObject(signupDomains: string[]): Setup {
 		},
 
 		async displayBrowserLogs(): Promise<void> {
-			await displayBrowserLogs(app)
+			await app.displayBrowserLogs();
 		},
 		async displayStdOutLogs(): Promise<void> {
-			await displayStdOutLogs(app)
+			await app.displayStdOutLogs()
 		}
 	};
 
@@ -106,12 +106,8 @@ export function minimalSetup(
 	afterAllAsync(async () => {
 		await s.stop();
 		await s.app.removeDataFolder();
-	});
+	}, 30000);
 
-	afterEachAsync(async () => {
-		await s.displayBrowserLogs();
-	});
-	
 	return s;
 }
 
@@ -119,7 +115,7 @@ export interface MultiUserSetup {
 
 	users: User[];
 	apps: Map<string, AppRunner>;
-	c(userId: string): WebdriverIO.Client<any>;
+	c(userId: string): SpectronClient;
 
 	signupDomains: string[];
 
@@ -144,7 +140,8 @@ export function makeMultiUserSetupObject(signupDomains: string[]):
 	let setup: MultiUserSetup = {
 		apps,
 		users,
-		c(userId: string): WebdriverIO.Client<any> {
+
+		c(userId: string): SpectronClient {
 			let app = apps.get(userId);
 			if (!app) { throw new Error(`No app set for user ${userId}`); }
 			return app.c;
@@ -157,12 +154,14 @@ export function makeMultiUserSetupObject(signupDomains: string[]):
 			recs = dnsRecsFrom(signupDomains, urls);
 			await server.setDns(recs);
 		},
+
 		async stop() {
 			for (let app of apps.values()) {
 				await app.stop();
 			}
 			await server.stop();
 		},
+
 		async createUser(userId: string): Promise<User> {
 			let app = new AppRunner();
 			await app.start(urls.signup, urls.tlsCert);
@@ -175,12 +174,13 @@ export function makeMultiUserSetupObject(signupDomains: string[]):
 
 		async displayBrowserLogs(): Promise<void> {
 			for (let app of apps.values()) {
-				await displayBrowserLogs(app)
+				await app.displayBrowserLogs();
 			}
 		},
+		
 		async displayStdOutLogs(): Promise<void> {
 			for (let app of apps.values()) {
-				await displayStdOutLogs(app)
+				await app.displayStdOutLogs();
 			}
 		}
 	};
@@ -224,12 +224,8 @@ export function setupWithUsers(users = ['Bob Marley @rock.cafe']):
 		for (let app of s.apps.values()) {
 			await app.removeDataFolder();
 		}
-	});
+	}, 30000);
 
-	afterEachAsync(async () => {
-		await s.displayBrowserLogs();
-	});
-	
 	return s;
 }
 

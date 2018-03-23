@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,13 +16,17 @@
 
 import { fork, ChildProcess } from 'child_process';
 import { cpus } from 'os';
-import { commToChild, Duplex } from '../../lib-common/ipc/node-child-ipc';
+import { commToChild, IPCToChild } from '../../lib-common/ipc/node-child-ipc';
 import { reqNames, ScryptRequest, CRYPTOR_CHANNEL, OpenRequest, OpenWNRequest,	PackRequest, DHSharedKeyRequest, SignatureRequest, VerifySigRequest,
 	SigKeyPairReply }
 	from './common';
 import { signing } from 'ecma-nacl';
 import { bind } from '../../lib-common/binding';
 import { toBuffer, bufFromJson } from '../../lib-common/buffer-utils';
+import { logWarning } from '../logging/log-to-file';
+import { AsyncSBoxCryptor } from 'xsp-files';
+
+import { arrays, secret_box as sbox } from 'ecma-nacl';
 
 export interface Cryptor {
 	
@@ -30,16 +34,7 @@ export interface Cryptor {
 		p: number, dkLen: number, progressCB: (p: number) => void):
 		Promise<Uint8Array>;
 	
-	sbox: {
-		
-		open(c: Uint8Array, n: Uint8Array, k: Uint8Array): Promise<Uint8Array>;
-		pack(m: Uint8Array, n: Uint8Array, k: Uint8Array): Promise<Uint8Array>;
-		
-		formatWN: {
-			open(c: Uint8Array, k: Uint8Array): Promise<Uint8Array>;
-			pack(m: Uint8Array, n: Uint8Array, k: Uint8Array): Promise<Uint8Array>;
-		}
-	};
+	sbox: AsyncSBoxCryptor;
 	
 	box: {
 		generate_pubkey(sk: Uint8Array): Promise<Uint8Array>;
@@ -69,23 +64,24 @@ const MAX_IDLE_MILLIS = 60*1000;
 class Child {
 	
 	proc: ChildProcess;
-	private comm: Duplex;
+	private comm: IPCToChild;
 	isBusy = false;
 	lastActiveAt = 0;
 	periodicCheck = setInterval(() => {
 		if (this.isBusy) { return; }
 		if ((Date.now() - this.lastActiveAt) > MAX_IDLE_MILLIS) {
 			this.proc.kill();
-			this.periodicCheck.unref();
+			clearInterval(this.periodicCheck);
 		}
 	}, MAX_IDLE_MILLIS);
 	
 	constructor() {
 		this.proc = fork(CHILD_SCRIPT);
 		this.comm = commToChild(CRYPTOR_CHANNEL, this.proc);
+		this.periodicCheck.unref();
 		this.proc.on('exit', () => {
 			this.comm.close();
-			this.periodicCheck.unref();
+			clearInterval(this.periodicCheck);
 		});
 		Object.seal(this);
 	}
@@ -93,7 +89,7 @@ class Child {
 	makeRequest<T>(t: Task<any>): Promise<T> {
 		try {
 			this.isBusy = true;
-			let r = this.comm.makeRequest<T>(t.reqName, t.req, t.notifyCallback);
+			const r = this.comm.makeRequest<T>(t.reqName, t.req, t.notifyCallback);
 			if (t.resolve) { t.resolve(r); }
 			return r;
 		} catch (err) {
@@ -119,7 +115,7 @@ class CryptService {
 	private isClosed = false;
 	
 	constructor(maxThreads: number|undefined) {
-		let numOfCPUs = cpus().length;
+		const numOfCPUs = cpus().length;
 		if (numOfCPUs <= 2) {
 			this.numOfThreads = 1;
 		} else if (maxThreads === undefined) {
@@ -154,9 +150,9 @@ class CryptService {
 	
 	private startNextTaskOrSetIdle(child: Child): void {
 		if (this.isClosed) { return; }
-		let i = this.busy.indexOf(child);
+		const i = this.busy.indexOf(child);
 		if (i < 0) { return; }
-		let t = this.tasks.shift();
+		const t = this.tasks.shift();
 		if (t) {
 			child.makeRequest(t);
 		} else {
@@ -167,7 +163,7 @@ class CryptService {
 	
 	private async execTask<T>(t: Task<any>): Promise<T> {
 		if (this.isClosed) { throw new Error('Cryptor is closed.'); }
-		let child = this.getChildForNewTask();
+		const child = this.getChildForNewTask();
 		if (child) {
 			try {
 				return await child.makeRequest<T>(t);
@@ -186,7 +182,7 @@ class CryptService {
 	async scrypt(passwd: Uint8Array, salt: Uint8Array, logN: number, r: number,
 			p: number, dkLen: number, progressCB: (p: number) => void):
 			Promise<Uint8Array> {
-		let t: Task<ScryptRequest> = {
+		const t: Task<ScryptRequest> = {
 			reqName: reqNames.scrypt,
 			req: {
 				passwd: toBuffer(passwd),
@@ -198,7 +194,7 @@ class CryptService {
 	}
 	
 	async sboxWNOpen(c: Uint8Array, k: Uint8Array): Promise<Uint8Array> {
-		let t: Task<OpenWNRequest> = {
+		const t: Task<OpenWNRequest> = {
 			reqName: reqNames.sboxWNOpen,
 			req: {
 				c: toBuffer(c),
@@ -210,7 +206,7 @@ class CryptService {
 	
 	async sboxOpen(c: Uint8Array, n: Uint8Array, k: Uint8Array):
 			Promise<Uint8Array> {
-		let t: Task<OpenRequest> = {
+		const t: Task<OpenRequest> = {
 			reqName: reqNames.sboxOpen,
 			req: {
 				c: toBuffer(c),
@@ -223,7 +219,7 @@ class CryptService {
 	
 	async sboxPack(m: Uint8Array, n: Uint8Array, k: Uint8Array):
 			Promise<Uint8Array> {
-		let t: Task<PackRequest> = {
+		const t: Task<PackRequest> = {
 			reqName: reqNames.sboxPack,
 			req: {
 				m: toBuffer(m),
@@ -236,7 +232,7 @@ class CryptService {
 	
 	async sboxWNPack(m: Uint8Array, n: Uint8Array, k: Uint8Array):
 			Promise<Uint8Array> {
-		let t: Task<PackRequest> = {
+		const t: Task<PackRequest> = {
 			reqName: reqNames.sboxWNPack,
 			req: {
 				m: toBuffer(m),
@@ -248,7 +244,7 @@ class CryptService {
 	}
 	
 	async boxGenPubKey(sk: Uint8Array): Promise<Uint8Array> {
-		let t: Task<Buffer> = {
+		const t: Task<Buffer> = {
 			reqName: reqNames.boxGenPubKey,
 			req: toBuffer(sk)
 		};
@@ -256,7 +252,7 @@ class CryptService {
 	}
 	
 	async boxDHSharedKey(pk: Uint8Array, sk: Uint8Array): Promise<Uint8Array> {
-		let t: Task<DHSharedKeyRequest> = {
+		const t: Task<DHSharedKeyRequest> = {
 			reqName: reqNames.boxDHSharedKey,
 			req: {
 				pk: toBuffer(pk),
@@ -267,7 +263,7 @@ class CryptService {
 	}
 	
 	async signature(m: Uint8Array, sk: Uint8Array): Promise<Uint8Array> {
-		let t: Task<SignatureRequest> = {
+		const t: Task<SignatureRequest> = {
 			reqName: reqNames.signature,
 			req: {
 				m: toBuffer(m),
@@ -279,7 +275,7 @@ class CryptService {
 	
 	async verifySignature(sig: Uint8Array, m: Uint8Array, pk: Uint8Array):
 			Promise<boolean> {
-		let t: Task<VerifySigRequest> = {
+		const t: Task<VerifySigRequest> = {
 			reqName: reqNames.verifySignature,
 			req: {
 				sig: toBuffer(sig),
@@ -291,12 +287,12 @@ class CryptService {
 	}
 	
 	async signatureKeyPair(seed: Uint8Array): Promise<signing.Keypair> {
-		let t: Task<Buffer> = {
+		const t: Task<Buffer> = {
 			reqName: reqNames.signatureKeyPair,
 			req: toBuffer(seed)
 		};
-		let reply = await this.execTask<SigKeyPairReply>(t);
-		let pair: signing.Keypair = {
+		const reply = await this.execTask<SigKeyPairReply>(t);
+		const pair: signing.Keypair = {
 			skey: bufFromJson(reply.skey),
 			pkey: bufFromJson(reply.pkey)
 		};
@@ -305,17 +301,17 @@ class CryptService {
 	
 	close(): void {
 		if (this.isClosed) { return; }
-		for (let child of this.idle) {
+		for (const child of this.idle) {
 			child.proc.kill();
 		}
-		for (let child of this.busy) {
-			console.warn('Closing cryptor, while some work still goes on.');
+		for (const child of this.busy) {
+			logWarning('Closing cryptor, while some work still goes on.');
 			child.proc.kill();
 		}
 		if (this.tasks.length > 0) {
-			console.warn(
+			logWarning(
 				'Closing cryptor, while there still tasks waiting execution.');
-			for (let t of this.tasks) {
+			for (const t of this.tasks) {
 				t.reject!(new Error('Cryptor is closed.'));
 			}
 		}
@@ -338,26 +334,45 @@ export function makeCryptor(maxThreads?: number):
 		if (maxThreads !== undefined) { throw new Error(
 			`Illegal parameter is given as number of htreads ${maxThreads}`); }
 	}
-	let cs = new CryptService(maxThreads);
-	let cryptor: Cryptor = {
+	const cs = new CryptService(maxThreads);
+
+	// XXX we are inserting on-tread crypto till moment when passing buffers
+	//		to child is less heavy, than current json-ification.
+	const arrFactory = arrays.makeFactory();
+	const ac: AsyncSBoxCryptor = {
+		open: async (c, n, k) => sbox.open(c, n, k, arrFactory),
+		pack: async (m, n, k) => sbox.pack(m, n, k, arrFactory),
+		formatWN: {
+			open: async (c, k) => sbox.formatWN.open(c, k, arrFactory),
+			pack: async (m, n, k) => sbox.formatWN.pack(m, n, k, arrFactory),
+		}
+	};
+
+	const cryptor: Cryptor = {
+		
 		scrypt: bind(cs, cs.scrypt),
+		
 		box: {
 			calc_dhshared_key: bind(cs, cs.boxDHSharedKey),
 			generate_pubkey: bind(cs, cs.boxGenPubKey)
 		},
-		sbox: {
-			open: bind(cs, cs.sboxOpen),
-			pack: bind(cs, cs.sboxPack),
-			formatWN: {
-				open: bind(cs, cs.sboxWNOpen),
-				pack: bind(cs, cs.sboxPack),
-			}
-		},
+
+		// sbox: {
+		// 	open: bind(cs, cs.sboxOpen),
+		// 	pack: bind(cs, cs.sboxPack),
+		// 	formatWN: {
+		// 		open: bind(cs, cs.sboxWNOpen),
+		// 		pack: bind(cs, cs.sboxPack),
+		// 	}
+		// },
+		sbox: ac,
+		
 		signing: {
 			generate_keypair: bind(cs, cs.signatureKeyPair),
 			signature: bind(cs, cs.signature),
 			verify: bind(cs, cs.verifySignature),
 		}
+
 	};
 	Object.freeze(cryptor.box);
 	Object.freeze(cryptor.sbox);

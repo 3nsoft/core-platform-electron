@@ -15,9 +15,12 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { createConnection, createServer, Socket, Server } from 'net';
-import { Duplex, CommunicationPoint } from '../../lib-common/ipc/generic-ipc';
+import { RequestingClient, RequestServer, RawDuplex, makeRequestServer,
+	makeRequestingClient, Observer, Envelope, SingleObserverWrap }
+	from '../../lib-common/ipc/generic-ipc';
 
-export { Duplex, RequestEnvelope } from '../../lib-common/ipc/generic-ipc';
+export { RequestingClient, RequestServer, RequestEnvelope }
+	from '../../lib-common/ipc/generic-ipc';
 
 const HEAD_STATE = 'head';
 const BODY_STATE = 'body';
@@ -31,15 +34,22 @@ class Parser {
 	private isWriting = false;
 	private writeQueue: any[] = [];
 
+	private observer = new SingleObserverWrap<Envelope>();
+
 	constructor(
 			private sock: Socket,
-			private envListener: (r: any) => void) {
+			obs: Observer<Envelope>) {
+		this.observer.set(obs);
 		this.sock.setEncoding('utf8');
 		this.sock.unref();
 		this.sock.on('data', (str: string) => { this.onData(str); });
-		this.sock.on('error', (e: any) => {
-			console.log(`Error in IPC client: ${JSON.stringify(e, null, '  ')}`); });
-		this.sock.on('close', () => { this.cleanup(); });
+		this.sock.on('error', (e: any) => { this.destroySockOnErr(e) });
+		this.sock.on('close', () => {
+			this.observer.complete();
+			this.sock = (undefined as any);
+			this.writeQueue = (undefined as any);
+			this.buf = (undefined as any);
+		});
 		Object.seal(this);
 	}
 
@@ -54,6 +64,7 @@ class Parser {
 	}
 
 	private onData(str: string): void {
+		if (this.observer.done) { return; }
 		let pointer = 0;
 		while (pointer < str.length) {
 			if (this.state === HEAD_STATE) {
@@ -65,7 +76,7 @@ class Parser {
 					this.buf += str.substring(pointer, end);
 					this.expectedBodyLen = parseInt(this.buf);
 					if (isNaN(this.expectedBodyLen)) {
-						this.sock.destroy(new Error(
+						this.destroySockOnErr(new Error(
 							'Header cannot be parsed as an integer'));
 						return;
 					}
@@ -78,16 +89,17 @@ class Parser {
 				if (delta === 0) {
 					if (str[pointer] === '\n') {
 						try {
-							this.envListener(JSON.parse(this.buf));
+							this.observer.next(JSON.parse(this.buf));
 						} catch (err) {
-							this.sock.destroy(err);
+							this.destroySockOnErr(err);
 							return;
 						}
 						this.buf = '';
 						this.state = HEAD_STATE;
 						pointer +=  1;
 					} else {
-						this.sock.destroy('Missing newline after body.');
+						this.destroySockOnErr(new Error(
+							'Missing newline after body.'));
 						return;
 					}
 				} else if (delta >= (str.length - pointer)) {
@@ -101,16 +113,19 @@ class Parser {
 		}
 	}
 
-	private cleanup(): void {
+	private destroySockOnErr(err: any): void {
+		if (!this.sock) { return; }
+		if (!this.sock.destroyed) {
+			this.sock.destroy(err);
+		}
 		this.sock = (undefined as any);
-		this.writeQueue = (undefined as any);
-		this.buf = (undefined as any);
+		this.observer.error(err);
 	}
 
 	close(): void {
-		if (this.sock) {
-			this.sock.end();
-		}
+		if (!this.sock || this.sock.destroyed) { return; }
+		this.sock.end();
+		this.observer.detach();
 	}
 
 	write(json: any): void {
@@ -126,14 +141,13 @@ class Parser {
 Object.freeze(Parser.prototype);
 Object.freeze(Parser);
 
-export function commToServer(port: number):
-		Duplex {
+export function commToServer(port: number): RequestingClient {
 	let parser: Parser|undefined;
-	let commPoint: CommunicationPoint = {
-		addListener(listener: (r: any) => void): () => void {
+	let commPoint: RawDuplex<Envelope> = {
+		subscribe(obs: Observer<Envelope>): () => void {
 			if (parser) { throw new Error(
 				'Envelope listener has already been added.'); }
-			parser = new Parser(createConnection(port, 'localhost'), listener);
+			parser = new Parser(createConnection(port, 'localhost'), obs);
 			return () => {
 				if (!parser) { return; }
 				parser.close();
@@ -144,20 +158,20 @@ export function commToServer(port: number):
 			parser!.write(env);
 		}
 	};
-	return new Duplex(undefined, commPoint);
+	return makeRequestingClient(undefined, commPoint);
 }
 
-export function commToClient(port: number): Duplex {
+export function commToClient(port: number): RequestServer {
 	let parser: Parser|undefined;
 	let server: Server;
-	function cleanup() {
+	function detach() {
 		if (!parser) { return; }
 		parser.close();
 		parser = undefined;
 		server.close();
 	}
-	let commPoint: CommunicationPoint = {
-		addListener(listener: (r: any) => void): () => void {
+	let commPoint: RawDuplex<Envelope> = {
+		subscribe(obs: Observer<Envelope>): () => void {
 			if (parser) { throw new Error(
 				'Envelope listener has already been added.'); }
 			server = createServer((sock: Socket) => {
@@ -165,21 +179,21 @@ export function commToClient(port: number): Duplex {
 					sock.end();
 					return;
 				}
-				parser = new Parser(sock, listener);
+				parser = new Parser(sock, obs);
 			})
 			.on('error', (err) => {
-				console.error(`Error in IPC server: ${JSON.stringify(err)}`) 
-				cleanup();
+				if (obs.error) { obs.error(err); }
+				detach();
 			})
 			.listen({ host: 'localhost', port });
 			server.unref();
-			return () => { cleanup(); };
+			return () => { detach(); };
 		},
 		postMessage(env: any): void {
 			parser!.write(env);
 		}
 	};
-	return new Duplex(undefined, commPoint);
+	return makeRequestServer(undefined, commPoint);
 }
 
 Object.freeze(exports);

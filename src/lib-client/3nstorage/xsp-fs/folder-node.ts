@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,47 +19,49 @@
  * reliance set.
  */
 
-import * as random from '../../random-node';
-import { arrays, secret_box as sbox } from 'ecma-nacl';
-import { FileKeyHolder, makeFileKeyHolder, makeNewFileKeyHolder, makeHolderFor }
-	from 'xsp-files';
-import { utf8 } from '../../../lib-common/buffer-utils';
+import { utf8, base64 } from '../../../lib-common/buffer-utils';
 import { ByteSink, ByteSource }
 	from '../../../lib-common/byte-streaming/common';
-import { ObjSink } from '../../../lib-common/obj-streaming/common';
-import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { makeDecryptedByteSource, makeObjByteSourceFromArrays }
-	from '../../../lib-common/obj-streaming/crypto';
+import { ObjSink, ObjSource } from '../../../lib-common/obj-streaming/common';
+import { idToHeaderNonce } from '../../../lib-common/obj-streaming/crypto';
 import { makeFileException, Code as excCode, FileException }
 	from '../../../lib-common/exceptions/file';
 import { errWithCause } from '../../../lib-common/exceptions/error';
-import { ListingEntry, Storage } from './common';
-import { FS } from './fs';
-import { NodeInFS, NodeCrypto, SEG_SIZE, SymLink } from './node-in-fs';
+import { Storage, Node, NodeType, SyncedStorage } from './common';
+import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { FileNode } from './file-node';
 import { LinkNode } from './link-node';
 import { LinkParameters } from '../../files';
-import { base64 } from '../../../lib-common/buffer-utils';
 import { StorageException } from '../exceptions';
 import { defer, Deferred } from '../../../lib-common/processes';
+import { copy } from '../../../lib-common/json-utils';
+import { AsyncSBoxCryptor, KEY_LENGTH, NONCE_LENGTH, calculateNonce }
+	from 'xsp-files';
+import * as random from '../../../lib-common/random-node';
+import { deserializeFolderInfo, serializeFolderInfo }
+	from './folder-node-serialization';
 
-export interface NodeJson {
+type ListingEntry = web3n.files.ListingEntry;
+type SymLink = web3n.files.SymLink;
+type FolderEvent = web3n.files.FolderEvent;
+type EntryAdditionEvent = web3n.files.EntryAdditionEvent;
+type EntryRemovalEvent = web3n.files.EntryRemovalEvent;
+type RemovedEvent = web3n.files.RemovedEvent;
+type EntryRenamingEvent = web3n.files.EntryRenamingEvent;
+
+export interface NodeInfo {
 	/**
 	 * This is a usual file name.
 	 */
 	name: string;
 	/**
-	 * This is an id of file's object, or an array of ordered objects
-	 * that constitute the whole of file.
-	 * An array may have specific use case for file editing, and it allows
-	 * for a general hiding a big file among smaller ones.
+	 * This is a key that en(de)crypts this node's object(s).
 	 */
-	objId: string|string[];
+	key: Uint8Array;
 	/**
-	 * This field is to be used, when extra bytes are added to file content
-	 * to hide its size, by making it bigger.
+	 * This is an id of file's object.
 	 */
-	contentLen?: number;
+	objId: string;
 	/**
 	 * If this field is present and is true, it indicates that entity is a
 	 * folder.
@@ -77,139 +79,52 @@ export interface NodeJson {
 	isLink?: boolean;
 }
 
-export interface FolderJson {
+export interface FolderInfo {
 	nodes: {
-		[name: string]: NodeJson;
+		[name: string]: NodeInfo;
 	};
+}
+
+function infoToJSON(folderInfo: FolderInfo): any {
+	const json = copy(folderInfo);
+	Object.values(json.nodes)
+	.forEach(node => {
+		(node.key as any) = base64.pack(node.key);
+	});
+	return json;
+}
+
+function jsonToInfo(json: any): FolderInfo {
+	const folderInfo: FolderInfo = copy(json);
+	Object.values(folderInfo.nodes)
+	.forEach(node => {
+		node.key = base64.open(node.key as any);
+	});
+	return folderInfo;
 }
 
 class FolderCrypto extends NodeCrypto {
 	
-	private mkey: Uint8Array = (undefined  as any);
-	private mkeyDecr: sbox.Decryptor = (undefined  as any);
-	
-	constructor(keyHolder: FileKeyHolder) {
-		super(keyHolder);
+	constructor(zNonce: Uint8Array, key: Uint8Array, cryptor: AsyncSBoxCryptor) {
+		super(zNonce, key, cryptor);
 		Object.seal(this);
 	}
 	
-	static makeForNewFolder(parentEnc: sbox.Encryptor): FolderCrypto {
-		let keyHolder = makeNewFileKeyHolder(
-			parentEnc, random.bytes, NodeCrypto.arrFactory);
-		let fc = new FolderCrypto(keyHolder);
-		fc.mkey = random.bytes(sbox.KEY_LENGTH);
-		return fc;
-	}
-
-	static makeReadonly(mkey: Uint8Array): FolderCrypto {
-		let fc = new FolderCrypto(undefined as any);
-		fc.mkey = mkey;
-		return fc;
+	async pack(folderInfo: FolderInfo, version: number): Promise<ObjSource> {
+		return this.packBytes(serializeFolderInfo(folderInfo), version);
 	}
 	
-	/**
-	 * @param parentDecr
-	 * @param objSrc
-	 * @param arrFactory
-	 * @return folder crypto object with null mkey, which should be set
-	 * somewhere else.
-	 */
-	static async makeForExistingFolder(parentDecr: sbox.Decryptor,
-			objSrc: ObjSource):
-			Promise<{ crypto: FolderCrypto; folderJson: FolderJson; }> {
-		let keyHolder: FileKeyHolder = (undefined as any);
-		let byteSrc = await makeDecryptedByteSource(objSrc,
-			(header: Uint8Array) => {
-				keyHolder = makeFileKeyHolder(parentDecr, header,
-					NodeCrypto.arrFactory);
-				return keyHolder.segReader(header);
-			});
-		let bytes = await byteSrc.read(undefined);
-		if (!bytes) { throw new Error(`Expected object ${objSrc.getObjVersion()} to non-empty`); }
-		let fc = new FolderCrypto(keyHolder);
-		let folderJson = fc.setMKeyAndParseRestOfBytes(bytes)
-		return { crypto: fc, folderJson: folderJson };
-	}
-	
-	/**
-	 * This packs folder's binary object.
-	 * Structure of this object is following: master-key bytes, followed by
-	 * folder-json structure.
-	 */
-	pack(json: FolderJson, version: number): ObjSource {
-		if (!this.keyHolder) { throw new Error("Cannot use wiped object."); }
-		let segWriter = this.keyHolder.newSegWriter(SEG_SIZE, random.bytes);
-		let completeContent = [ this.mkey, utf8.pack(JSON.stringify(json)) ];
-		let objSrc = makeObjByteSourceFromArrays(
-			completeContent, segWriter, version);
-		segWriter.destroy();
-		return objSrc;
-	}
-	
-	private setMKeyAndParseRestOfBytes(bytes: Uint8Array): FolderJson {
-		if (bytes.length < sbox.KEY_LENGTH) {
-			throw new Error("Too few bytes folder object.");
+	async open(src: ObjSource): Promise<FolderInfo> {
+		try {
+			return deserializeFolderInfo(await this.openBytes(src));
+		} catch (err) {
+			throw errWithCause(err, `Cannot open folder object`);
 		}
-		let mkeyPart = bytes.subarray(0, sbox.KEY_LENGTH);
-		this.mkey = new Uint8Array(mkeyPart);
-		arrays.wipe(mkeyPart);
-		return JSON.parse(utf8.open(bytes.subarray(sbox.KEY_LENGTH)));
-	}
-	
-	childMasterDecr(): sbox.Decryptor {
-		if (!this.mkey) { throw new Error("Master key is not set."); }
-		if (!this.mkeyDecr) {
-			this.mkeyDecr = sbox.formatWN.makeDecryptor(this.mkey, this.arrFactory);
-		}
-		return this.mkeyDecr;
-	}
-	
-	childMasterEncr(): sbox.Encryptor {
-		if (!this.mkey) { throw new Error("Master key is not set."); }
-		return sbox.formatWN.makeEncryptor(
-			this.mkey, random.bytes(sbox.NONCE_LENGTH), 1, this.arrFactory);
-	}
-	
-	async openAndSetFrom(src: ObjSource): Promise<FolderJson> {
-		if (!this.keyHolder) { throw new Error("Cannot use wiped object."); }
-		let byteSrc = await makeDecryptedByteSource(
-			src, this.keyHolder.segReader);
-		let bytes = await byteSrc.read(undefined)
-		if (!bytes) { throw new Error(`Expected object ${src.getObjVersion()} to non-empty`); }
-		return this.setMKeyAndParseRestOfBytes(bytes);
-	}
-	
-	wipe(): void {
-		super.wipe();
-		if (this.mkey) {
-			arrays.wipe(this.mkey);
-			this.mkey = (undefined as any);
-		}
-		if (this.mkeyDecr) {
-			this.mkeyDecr.destroy();
-			this.mkeyDecr = (undefined as any);
-		}
-	}
-	
-	clone(arrFactory: arrays.Factory): FolderCrypto {
-		let fc = new FolderCrypto(this.keyHolder.clone(arrFactory));
-		if (this.mkey) {
-			fc.mkey = new Uint8Array(this.mkey);
-		}
-		return fc;
 	}
 	
 }
 Object.freeze(FolderCrypto.prototype);
 Object.freeze(FolderCrypto);
-
-function makeFileJson(objId: string, name: string): NodeJson {
-	let f: NodeJson = {
-		name: name,
-		objId: objId
-	};
-	return f;
-}
 
 export interface FolderLinkParams {
 	folderName: string;
@@ -219,94 +134,90 @@ export interface FolderLinkParams {
 
 export class FolderNode extends NodeInFS<FolderCrypto> {
 	
-	private folderJson: FolderJson = (undefined as any);
+	private currentState: FolderInfo = { nodes: {} };
+	private transitionState: FolderInfo = (undefined as any);
+	private transitionVersion: number|undefined = undefined;
+	private transitionSaved = false;
 	
-	private constructor(storage: Storage, name: string|undefined, objId: string,
-			version: number|undefined, parentId: string|undefined) {
-		super(storage, 'folder', name!, objId, version, parentId);
+	private constructor(storage: Storage, name: string|undefined,
+			objId: string|null, zNonce: Uint8Array|undefined, version: number,
+			parentId: string|undefined, key: Uint8Array) {
+		super(storage, 'folder', name!, objId!, version, parentId);
 		if (!name && (objId || parentId)) {
 			throw new Error("Root folder must "+
 				"have both objId and parent as nulls.");
 		} else if (objId === null) {
 			new Error("Missing objId for non-root folder");
 		}
+		if (!zNonce) {
+			if (!objId) { throw new Error(
+				`Missing object id for folder, when zeroth nonce is not given`); }
+			zNonce = idToHeaderNonce(objId);
+		}
+		this.crypto = new FolderCrypto(zNonce, key, storage.cryptor);
 		Object.seal(this);
 	}
 	
-	static newRoot(fs: FS, masterEnc: sbox.Encryptor): FolderNode {
-		let rf = new FolderNode(fs.storage, (undefined as any), (null as any), undefined, undefined);
-		rf.setEmptyFolderJson();
-		rf.crypto = FolderCrypto.makeForNewFolder(masterEnc);
-		fs.storage.nodes.set(rf);
-		rf.save();
+	static async newRoot(storage: Storage, key: Uint8Array):
+			Promise<FolderNode> {
+		const zNonce = await random.bytes(NONCE_LENGTH);
+		const rf = new FolderNode(storage, undefined,
+			null, zNonce, 0, undefined, key);
+		rf.storage.nodes.set(rf);
+		await rf.saveFirstVersion();
 		return rf;
 	}
 	
-	static async rootFromObjBytes(fs: FS, name: string|undefined, objId: string,
-			src: ObjSource, masterDecr: sbox.Decryptor):
+	static async rootFromObjBytes(storage: Storage, name: string|undefined,
+			objId: string|null, src: ObjSource, key: Uint8Array):
 			Promise<FolderNode> {
-		let version = src.getObjVersion();
-		let rf = new FolderNode(fs.storage, name, objId, version, undefined);
-		let partsForInit = await FolderCrypto.makeForExistingFolder(
-			masterDecr, src);
-		rf.crypto = partsForInit.crypto;
-		rf.setFolderJson(partsForInit.folderJson);
-		fs.storage.nodes.set(rf);
+		let zNonce: Uint8Array|undefined = undefined;
+		if (!objId) {
+			const header = await src.readHeader();
+			zNonce = calculateNonce(
+				header.subarray(0, NONCE_LENGTH), -src.version);
+		}
+		const rf = new FolderNode(
+			storage, name, objId, zNonce, src.version, undefined, key);
+		rf.currentState = await rf.crypto.open(src);
+		rf.storage.nodes.set(rf);
 		return rf;
 	}
 
-	static async makeForLinkParams(storage: Storage, params: FolderLinkParams):
+	static async rootFromLinkParams(storage: Storage, params: FolderLinkParams):
 			Promise<FolderNode> {
-		let src = await storage.getObj(params.objId);
-		let fileHeader = await src.readHeader();
-		let keyHolder = makeHolderFor(base64.open(params.fKey), fileHeader);
-		let f = new FolderNode(storage, params.folderName, params.objId,
-			src.getObjVersion(), undefined);
-		f.crypto = new FolderCrypto(keyHolder);
-		f.crypto.openAndSetFrom(src);
-		let existingNode = storage.nodes.get(f.objId);
+		const existingNode = storage.nodes.get(params.objId);
+
 		if (existingNode) {
-			// note, that, although we return existing folder node, above crypto
-			// operations ensure that link parameters are valid
+			if (existingNode.type !== 'folder') { throw new Error(
+				`Existing object ${params.objId} type is ${existingNode.type}, while link parameters ask for folder.`); }
+			// Note that, although we return existing folder node, we should check
+			// if link parameters contained correct key. Only holder of a correct
+			// key may use existing object.
+			(existingNode as FolderNode).crypto.compareKey(params.fKey);
 			return (existingNode as FolderNode);
-		} else {
-			storage.nodes.set(f);
-			return f;
 		}
+
+		const src = await storage.getObj(params.objId);
+		const key = base64.open(params.fKey);
+		return FolderNode.rootFromObjBytes(
+			storage, params.folderName, params.objId, src, key);
 	}
 
 	static rootFromJSON(storage: Storage, name: string|undefined,
-			folderJson: FolderJson, mkey: string): FolderNode {
-		let f = new FolderNode(storage, name, null!, undefined, undefined);
-		let k = base64.open(mkey);
-		f.crypto = FolderCrypto.makeReadonly(k);
-		f.folderJson = folderJson;
-		storage.nodes.set(f);
-		return f;
-	}
-	
-	private registerInFolderJson(f: NodeInFS<NodeCrypto>): void {
-		let fj: NodeJson = {
-			name: f.name,
-			objId: f.objId,
-		};
-		if (f.type === 'folder') { fj.isFolder = true; }
-		else if (f.type === 'file') { fj.isFile = true; }
-		else if (f.type === 'link') { fj.isLink = true; }
-		else { throw new Error(`Unknown type of file system entity: ${f.type}`); }
-		this.folderJson.nodes[fj.name] = fj;
-	}
-	
-	private deregisterInFolderJson(f: NodeInFS<NodeCrypto>): void {
-		delete this.folderJson.nodes[f.name];
+			folderJson: FolderInfo): FolderNode {
+		const rf = new FolderNode(storage, name, 'readonly-root', EMPTY_ARR,
+			0, undefined, (undefined as any));
+		rf.currentState = checkFolderInfo(jsonToInfo(folderJson));
+		return rf;
 	}
 	
 	list(): { lst: ListingEntry[]; version: number; } {
-		let names = Object.keys(this.folderJson.nodes);
-		let lst: ListingEntry[] = new Array(names.length);
+		const names = Object.keys(this.currentState.nodes);
+		const lst: ListingEntry[] = new Array(names.length);
 		for (let i=0; i < names.length; i+=1) {
-			let entity = this.folderJson.nodes[names[i]];
-			let info: ListingEntry = { name: entity.name };
+			const entity = this.currentState.nodes[names[i]];
+			const info: ListingEntry = { name: entity.name };
 			if (entity.isFolder) { info.isFolder = true; }
 			else if (entity.isFile) { info.isFile = true }
 			else if (entity.isLink) { info.isLink = true }
@@ -316,14 +227,13 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 	}
 	
 	listFolders(): string[] {
-		return Object.keys(this.folderJson.nodes).filter((name) => {
-			return !!this.folderJson.nodes[name].isFolder;
-		});
+		return Object.keys(this.currentState.nodes).filter(
+			name => !!this.currentState.nodes[name].isFolder);
 	}
 	
-	private getFileJson(name: string, undefOnMissing = false):
-			NodeJson|undefined {
-		let fj = this.folderJson.nodes[name];
+	private getNodeInfo(name: string, undefOnMissing = false):
+			NodeInfo|undefined {
+		const fj = this.currentState.nodes[name];
 		if (fj) {
 			return fj;
 		} else if (undefOnMissing) {
@@ -334,16 +244,7 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 	}
 
 	hasChild(childName: string, throwIfMissing = false): boolean {
-		return !!this.getFileJson(childName, !throwIfMissing);
-	}
-
-	private fixMissingChildAndThrow(exc: StorageException, childInfo: NodeJson):
-			never {
-		delete this.folderJson.nodes[childInfo.name];
-		this.save();
-		let fileExc = makeFileException(excCode.notFound, childInfo.name, exc);
-		fileExc.inconsistentStateOfFS = true;
-		throw fileExc;
+		return !!this.getNodeInfo(childName, !throwIfMissing);
 	}
 
 	/**
@@ -352,200 +253,367 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 	 * been registered under a given id, and, therefore, has to be resolved with
 	 * node.
 	 */
-	private getNodeOrArrangePromise<T extends NodeInFS<NodeCrypto>>(
+	private getNodeOrArrangePromise<T extends Node>(
 			objId: string):
 			{ nodeOrPromise?: T|Promise<T>, deferred?: Deferred<T> } {
-		let { node, nodePromise } =
+		const { node, nodePromise } =
 			this.storage.nodes.getNodeOrPromise<T>(objId);
 		if (node) { return { nodeOrPromise: node }; }
 		if (nodePromise) { return { nodeOrPromise: nodePromise }; }
-		let deferred = defer<T>();
+		const deferred = defer<T>();
 		this.storage.nodes.setPromise(objId, deferred.promise);
 		return { deferred };
 	}
 
-	async getFolder(name: string, undefOnMissing = false):
-			Promise<FolderNode|undefined> {
-		let childInfo = this.getFileJson(name, undefOnMissing);
+	private async getNode<T extends Node>(type: NodeType, name: string,
+			undefOnMissing: boolean|undefined): Promise<T|undefined> {
+		const childInfo = this.getNodeInfo(name, undefOnMissing);
 		if (!childInfo) { return; }
-		if (!childInfo.isFolder) {
-			throw makeFileException(excCode.notDirectory, childInfo.name); }
-		if (Array.isArray(childInfo.objId)) {
-			throw new Error("This implementation does not support "+
-				"folders, spread over several objects.");
+
+		if ((type === 'file') && !childInfo.isFile) {
+			throw makeFileException(excCode.notFile, childInfo.name);
+		} else if ((type === 'folder') && !childInfo.isFolder) {
+			throw makeFileException(excCode.notDirectory, childInfo.name);
+		} else if ((type === 'link') && !childInfo.isLink) {
+			throw makeFileException(excCode.notLink, childInfo.name);
 		}
-		let { nodeOrPromise: child, deferred } =
-			this.getNodeOrArrangePromise<FolderNode>(childInfo.objId);
-		if (child) { 
-			return child; }
+
+		const { nodeOrPromise: child, deferred } =
+			this.getNodeOrArrangePromise<T>(childInfo.objId);
+		if (child) { return child; }
+		
 		try {
-			let src = await this.storage.getObj(childInfo.objId);
-			let partsForInit = await FolderCrypto.makeForExistingFolder(
-				this.crypto.childMasterDecr(), src);
-			let f = new FolderNode(this.storage, childInfo.name,
-				childInfo.objId, src.getObjVersion(), this.objId);
-			f.crypto = partsForInit.crypto;
-			f.setFolderJson(partsForInit.folderJson);
-			deferred!.resolve(f);
-			return f;
+			let node: Node;
+			if (type === 'file') {
+				node = await FileNode.makeForExisting(
+					this.storage, this.objId, name, childInfo.objId, childInfo.key);
+			} else if (type === 'folder') {
+				const src = await this.storage.getObj(childInfo.objId);
+				const f = new FolderNode(
+					this.storage, childInfo.name, childInfo.objId, undefined,
+					src.version, this.objId, childInfo.key);
+				f.currentState = await f.crypto.open(src);
+				node = f;
+			} else if (type === 'link') {
+				node = await LinkNode.makeForExisting(
+					this.storage, this.objId, name, childInfo.objId, childInfo.key);
+			} else {
+				throw new Error(`Unknown type of node: ${type}`);
+			}
+			deferred!.resolve(node as T);
+			return node as T;
 		} catch (exc) {
 			deferred!.reject(exc);
-			if (exc.objNotFound) { this.fixMissingChildAndThrow(exc, childInfo); }
-			throw errWithCause(exc, `Cannot instantiate folder node '${this.name}/${childInfo.name}' from obj ${childInfo.objId}`);
+			if (exc.objNotFound) {
+				await this.fixMissingChildAndThrow(exc, childInfo);
+			}
+			throw errWithCause(exc, `Cannot instantiate ${type} node '${this.name}/${childInfo.name}' from obj ${childInfo.objId}`);
 		}
+	}
+
+	getFolder(name: string, undefOnMissing = false):
+			Promise<FolderNode|undefined> {
+		return this.getNode<FolderNode>('folder', name, undefOnMissing);
 	}
 	
 	async getFile(name: string, undefOnMissing = false):
 			Promise<FileNode|undefined> {
-		let childInfo = this.getFileJson(name, undefOnMissing);
-		if (!childInfo) { return; }
-		if (!childInfo.isFile) { throw makeFileException(
-			excCode.notFile, childInfo.name); }
-		if (Array.isArray(childInfo.objId)) {
-			throw new Error("This implementation does not support "+
-				"files, spread over several objects.");
-		}
-		let { nodeOrPromise: child, deferred } =
-			this.getNodeOrArrangePromise<FileNode>(childInfo.objId);
-		if (child) { return child; }
-		try {
-			let f = await FileNode.makeForExisting(this.storage, this.objId, name,
-					this.crypto.childMasterDecr(), childInfo.objId);
-			deferred!.resolve(f);
-			return f;
-		} catch (exc) {
-			deferred!.reject(exc);
-			if (exc.objNotFound) { this.fixMissingChildAndThrow(exc, childInfo); }
-			throw errWithCause(exc, `Cannot instantiate file node '${this.name}/${childInfo.name}'`);
-		}
+		return this.getNode<FileNode>('file', name, undefOnMissing);
 	}
 	
 	async getLink(name: string, undefOnMissing = false):
 			Promise<LinkNode|undefined> {
-		let childInfo = this.getFileJson(name, undefOnMissing);
-		if (!childInfo) { return; }
-		if (!childInfo.isLink) { throw makeFileException(
-			excCode.notLink, childInfo.name); }
-		if (Array.isArray(childInfo.objId)) {
-			throw new Error("This implementation does not support "+
-				"links, spread over several objects.");
-		}
-		let { nodeOrPromise: child, deferred } =
-			this.getNodeOrArrangePromise<LinkNode>(childInfo.objId);
-		if (child) { return child; }
-		try {
-			let l = await LinkNode.makeForExisting(this.storage, this.objId, name,
-				this.crypto.childMasterDecr(), childInfo.objId);
-			deferred!.resolve(l);
-			return l;
-		} catch (exc) {
-			deferred!.reject(exc);
-			if (exc.objNotFound) { this.fixMissingChildAndThrow(exc, childInfo); }
-			throw errWithCause(exc, `Cannot instantiate link node '${this.name}/${childInfo.name}'`);
-		}
-	}
-	
-	createFolder(name: string): FolderNode {
-		if (this.getFileJson(name, true)) {
-			throw makeFileException(excCode.alreadyExists, name); }
-		let f = new FolderNode(this.storage, name,
-			this.storage.generateNewObjId(), undefined, this.objId);
-		f.setEmptyFolderJson();
-		// Always new encryptor gets random nonce.
-		//	Reusing encryptor will leave related nonces, exposing files in the
-		// same folder.
-		let childMasterEncr = this.crypto.childMasterEncr();
-		f.crypto = FolderCrypto.makeForNewFolder(childMasterEncr);
-		childMasterEncr.destroy();
-		this.registerInFolderJson(f);
-		this.storage.nodes.set(f);
-		f.save();
-		this.save();
-		return f;
-	}
-	
-	createFile(name: string): FileNode {
-		if (this.getFileJson(name, true)) {
-			throw makeFileException(excCode.alreadyExists, name); }
-		// Always new encryptor gets random nonce.
-		//	Reusing encryptor will leave related nonces, exposing files in the
-		// same folder.
-		let childMasterEncr = this.crypto.childMasterEncr();
-		let f = FileNode.makeForNew(this.storage, this.objId, name,
-			childMasterEncr);
-		childMasterEncr.destroy();
-		this.registerInFolderJson(f);
-		this.storage.nodes.set(f);
-		f.save([]);
-		this.save();
-		return f;
+		return this.getNode<LinkNode>('link', name, undefOnMissing);
 	}
 
-	createLink(name: string, params: LinkParameters<FolderLinkParams>): void {
-		if (this.getFileJson(name, true)) {
-			throw makeFileException(excCode.alreadyExists, name); }
-		// Always new encryptor gets random nonce.
-		//	Reusing encryptor will leave related nonces, exposing files in the
-		// same folder.
-		let childMasterEncr = this.crypto.childMasterEncr();
-		let l = LinkNode.makeForNew(this.storage, this.objId, name,
-			childMasterEncr);
-		childMasterEncr.destroy();
-		this.registerInFolderJson(l);
-		this.storage.nodes.set(l);
-		l.setLinkParams(params);
-		this.save();
+	private async fixMissingChildAndThrow(exc: StorageException,
+			childInfo: NodeInfo): Promise<never> {
+		await this.doTransition(true, async () => {
+			delete this.transitionState.nodes[childInfo.name];
+			const event: EntryRemovalEvent = {
+				type: 'entry-removal',
+				path: this.name,
+				name: childInfo.name,
+				newVersion: this.transitionVersion
+			};
+			this.broadcastEvent(event);
+		}).catch(() => {});
+		const fileExc = makeFileException(excCode.notFound, childInfo.name, exc);
+		fileExc.inconsistentStateOfFS = true;
+		throw fileExc;
+	}
+
+	/**
+	 * This method prepares a transition state, runs given action, and completes
+	 * transition to a new version. Returned promise resolves to whatever given
+	 * action returns (promise is unwrapped).
+	 * Note that if there is already an ongoing change, this transition will
+	 * wait. Such behaviour is generally needed for folder as different processes
+	 * may be sharing same elements in a file tree. In contrast, file
+	 * operations should more often follow a throw instead wait approach.
+	 * @param autoSave true value turns on saving in of transition by this call,
+	 * while false value indicates that saving will be done within a given action
+	 * @param action is a function that is run when transition is started
+	 */
+	private doTransition<T>(autoSave: boolean, action: () => Promise<T>):
+			Promise<T> {
+		return this.doChange(true, async () => {
+			
+			// start transition and prepare transition state
+			// Note on copy: byte arrays are not cloned
+			this.transitionState = copy(this.currentState);
+			this.transitionVersion = this.version + 1;
+			
+			try {
+				
+				// do action within transition state
+				const result = await action();
+
+				// return fast, if transaction was canceled
+				if (!this.transitionState) { return result; }
+
+				// save transition state, if saving hasn't been done inside of action
+				if (autoSave) {
+					await this.saveTransitionState();
+				}
+
+				// complete transition
+				if (!this.transitionSaved) { throw new Error(
+					`Transition state has not been saved`); }
+				this.currentState = this.transitionState;
+				this.setCurrentVersion(this.transitionVersion);
+				
+				return result;
+
+			} finally {
+				// cleanup after both completion and fail
+				this.clearTransitionState();
+			}
+		});
 	}
 	
-	removeChild(f: NodeInFS<NodeCrypto>): void {
-		let childJSON = this.folderJson.nodes[f.name];
-		if (!childJSON || (childJSON.objId !== f.objId)) { throw new Error(
-			`Not a child given: name==${f.name}, objId==${f.objId}, parentId==${f.parentId}, this folder objId==${this.objId}`); }
-		this.deregisterInFolderJson(f);
-		this.storage.nodes.delete(f);
-		this.storage.removeObj(f.objId);
-		this.save();
+	clearTransitionState(): void {
+		this.transitionState = (undefined as any);
+		this.transitionVersion = undefined;
+		this.transitionSaved = false;
+	}
+
+	private addToTransitionState(f: Node, key: Uint8Array): void {
+		const nodeInfo: NodeInfo = {
+			name: f.name,
+			objId: f.objId,
+			key
+		};
+		if (f.type === 'folder') { nodeInfo.isFolder = true; }
+		else if (f.type === 'file') { nodeInfo.isFile = true; }
+		else if (f.type === 'link') { nodeInfo.isLink = true; }
+		else { throw new Error(`Unknown type of file system entity: ${f.type}`); }
+		this.transitionState.nodes[nodeInfo.name] = nodeInfo;
+	}
+
+	/**
+	 * This function only creates folder node, but it doesn't insert it anywhere.
+	 * @param name
+	 */
+	private async makeAndSaveNewChildFolderNode(name: string):
+			Promise<{ node: FolderNode; key: Uint8Array; }> {
+		const key = await random.bytes(KEY_LENGTH);
+		const node = new FolderNode(this.storage, name,
+			this.storage.generateNewObjId(), undefined, 0, this.objId, key);
+		await node.saveFirstVersion().catch((exc: StorageException) => {
+			if (!exc.objExists) { throw exc; }
+			// call this method recursively, if obj id is already used in storage
+			return this.makeAndSaveNewChildFolderNode(name);
+		});
+		return { node, key };
+	}
+	
+	/**
+	 * This function only creates file node, but it doesn't insert it anywhere.
+	 * @param name
+	 */
+	private async makeAndSaveNewChildFileNode(name: string):
+			Promise<{ node: FileNode; key: Uint8Array; }> {
+		const key = await random.bytes(KEY_LENGTH);
+		const node = FileNode.makeForNew(
+			this.storage, this.objId, name, key, this.storage.cryptor);
+		await node.save([]).catch((exc: StorageException) => {
+			if (!exc.objExists) { throw exc; }
+			// call this method recursively, if obj id is already used in storage
+			return this.makeAndSaveNewChildFileNode(name);
+		});
+		return { node, key };
+	}
+	
+	/**
+	 * This function only creates link node, but it doesn't insert it anywhere.
+	 * @param name
+	 * @param params
+	 */
+	private async makeAndSaveNewChildLinkNode(name: string,
+			params: LinkParameters<any>):
+			Promise<{ node: LinkNode; key: Uint8Array; }> {
+		const key = await random.bytes(KEY_LENGTH);
+		const node = LinkNode.makeForNew(this.storage, this.objId, name, key);
+		await node.setLinkParams(params).catch((exc: StorageException) => {
+			if (!exc.objExists) { throw exc; }
+			// call this method recursively, if obj id is already used in storage
+			return this.makeAndSaveNewChildLinkNode(name, params);
+		});
+		return { node, key };
+	}
+	
+	private create<T extends Node>(type: NodeType, name: string,
+			exclusive: boolean, linkParams?: LinkParameters<any>): Promise<T> {
+		return this.doTransition(false, async () => {
+			// do check for concurrent creation of a node
+			if (this.getNodeInfo(name, true)) {
+				if (exclusive) {
+					throw makeFileException(excCode.alreadyExists, name);
+				} else if (type === 'folder') {
+					this.clearTransitionState();
+					return (await this.getNode<T>('folder', name, false))!;
+				} else if (type === 'file') {
+					this.clearTransitionState();
+					return (await this.getNode<T>('file', name, false))!;
+				} else if (type === 'link') {
+					throw new Error(`Link is created in non-exclusive mode`);
+				} else {
+					throw new Error(`Unknown type of node: ${type}`);
+				}
+			}
+
+			// create new node
+			let node: Node;
+			let key: Uint8Array;
+			if (type === 'file') {
+				({ node, key } = await this.makeAndSaveNewChildFileNode(name));
+			} else if (type === 'folder') {
+				({ node, key } = await this.makeAndSaveNewChildFolderNode(name));
+			} else if (type === 'link') {
+				({ node, key } = await this.makeAndSaveNewChildLinkNode(
+					name, linkParams!));
+			} else {
+				throw new Error(`Unknown type of node: ${type}`);
+			}
+			this.addToTransitionState(node, key);
+			await this.saveTransitionState();	// manual save
+			this.storage.nodes.set(node);
+			const event: EntryAdditionEvent = {
+				type: 'entry-addition',
+				path: this.name,
+				newVersion: this.transitionVersion,
+				entry: {
+					name: node.name,
+					isFile: (node.type === 'file'),
+					isFolder: (node.type === 'folder'),
+					isLink: (node.type === 'link')
+				}
+			};
+			this.broadcastEvent(event);
+			return node as T;
+		});
+	}
+	
+	createFolder(name: string, exclusive: boolean): Promise<FolderNode> {
+		return this.create<FolderNode>('folder', name, exclusive);
+	}
+
+	createFile(name: string, exclusive: boolean): Promise<FileNode> {
+		return this.create<FileNode>('file', name, exclusive);
+	}
+
+	async createLink(name: string, params: LinkParameters<any>): Promise<void> {
+		await this.create<LinkNode>('link', name, true, params);
+	}
+	
+	async removeChild(f: NodeInFS<NodeCrypto>): Promise<void> {
+		await this.doTransition(true, async () => {
+			const childJSON = this.transitionState.nodes[f.name];
+			if (!childJSON || (childJSON.objId !== f.objId)) { throw new Error(
+				`Not a child given: name==${f.name}, objId==${f.objId}, parentId==${f.parentId}, this folder objId==${this.objId}`); }
+			delete this.transitionState.nodes[f.name];
+			const event: EntryRemovalEvent = {
+				type: 'entry-removal',
+				path: this.name,
+				name: f.name,
+				newVersion: this.transitionVersion
+			};
+			this.broadcastEvent(event);
+		});
+		// explicitly do not wait on a result of child's delete, cause if it fails
+		// we just get traceable garbage, yet, the rest of a live/non-deleted tree
+		// stays consistent
+		f.delete();
+	}
+
+	private changeChildName(initName: string, newName: string): Promise<void> {
+		return this.doTransition(true, async () => {
+			const child = this.transitionState.nodes[initName];
+			delete this.transitionState.nodes[child.name];
+			this.transitionState.nodes[newName] = child;
+			child.name = newName;
+			const childNode = this.storage.nodes.get(child.objId);
+			if (childNode) {
+				childNode.name = newName;
+			}
+			const event: EntryRenamingEvent = {
+				type: 'entry-renaming',
+				path: this.name,
+				newName,
+				oldName: initName,
+				newVersion: this.transitionVersion
+			};
+			this.broadcastEvent(event);
+		});
 	}
 	
 	async moveChildTo(childName: string, dst: FolderNode, nameInDst: string):
 			Promise<void> {
-		let childJSON = this.getFileJson(childName)!;
-		if (Array.isArray(childJSON.objId)) {
-			throw new Error("This implementation does not support "+
-				"links, spread over several objects.");
-		}
 		if (dst.hasChild(nameInDst)) {
 			throw makeFileException(excCode.alreadyExists, nameInDst); }
 		if (dst === this) {
 			// In this case we only need to change child's name
-			delete this.folderJson.nodes[childName];
-			this.folderJson.nodes[nameInDst] = childJSON;
-			childJSON.name = nameInDst;
-			let child = this.storage.nodes.get(childJSON.objId);
-			if (child) {
-				child.name = nameInDst;
-			}
-			this.save();
-			return;
+			return this.changeChildName(childName, nameInDst);
 		}
-		let child: NodeInFS<NodeCrypto>;
-		if (childJSON.isFolder) {
-			child = (await this.getFolder(childName))!;
-		} else if (childJSON.isFile) {
-			child = (await this.getFile(childName))!;
-		} else if (childJSON.isLink) {
-			child = (await this.getLink(childName))!;
-		} else {
-			throw new Error(`Unknown fs node type ${JSON.stringify(childJSON)}`);
-		}
-		await child.reencryptAndSave(dst.crypto.childMasterEncr());
-		delete this.folderJson.nodes[childName];
-		dst.folderJson.nodes[nameInDst] = childJSON;
-		childJSON.name = nameInDst;
-		child.name = nameInDst;
-		child.parentId = dst.objId;
-		this.save();
-		dst.save();
+		const childJSON = this.getNodeInfo(childName)!;
+		// we have two transitions here, in this and in dst.
+		await Promise.all([
+			await dst.moveChildIn(nameInDst, childJSON),
+			await this.moveChildOut(childName)
+		]);
+	}
+
+	private async moveChildOut(name: string): Promise<void> {
+		await this.doTransition(true, async () => {
+			delete this.transitionState.nodes[name];
+			const event: EntryRemovalEvent = {
+				type: 'entry-removal',
+				path: this.name,
+				name,
+				newVersion: this.transitionVersion
+			};
+		});
+	}
+
+	private async moveChildIn(newName: string, child: NodeInfo): Promise<void> {
+		child = copy(child);
+		await this.doTransition(true, async () => {
+			child.name = newName;
+			this.transitionState.nodes[child.name] = child;
+			const event: EntryAdditionEvent = {
+				type: 'entry-addition',
+				path: this.name,
+				entry: {
+					name: child.name,
+					isFile: child.isFile,
+					isFolder: child.isFolder,
+					isLink: child.isLink
+				},
+				newVersion: this.transitionVersion
+			};
+			this.broadcastEvent(event);
+		});
 	}
 	
 	async getFolderInThisSubTree(path: string[], createIfMissing = false,
@@ -563,12 +631,12 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 				}
 			}
 		} catch (err) {
-			if (!(<FileException> err).notFound) { throw err; }
+			if (!(err as FileException).notFound) { throw err; }
 			if (!createIfMissing) { throw err; }
 			try {
-				f = this.createFolder(path[0]);
+				f = await this.createFolder(path[0], exclusiveCreate);
 			} catch (exc) {
-				if ((<FileException> exc).alreadyExists && !exclusiveCreate) {
+				if ((exc as FileException).alreadyExists && !exclusiveCreate) {
 					return this.getFolderInThisSubTree(path, createIfMissing);
 				} 
 				throw exc;
@@ -582,58 +650,174 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 		}
 	}
 	
-	save(): Promise<void> {
-		this.version += 1;
-		let src = this.crypto.pack(this.folderJson, this.version);
-		return this.storage.saveObj(this.objId, src);
+	private async saveTransitionState(): Promise<void> {
+		if (!this.transitionState || !this.transitionVersion) { throw new Error(
+			`Transition is not set correctly`); }
+		if (this.transitionSaved) { throw new Error(
+			`Transition has already been saved.`); }
+		const src = await this.crypto.pack(
+			this.transitionState, this.transitionVersion);
+		await this.storage.saveObj(this.objId, src);
+		this.transitionSaved = true;
 	}
 	
-	private setEmptyFolderJson(): void {
-		this.folderJson = {
-			nodes: {}
-		};
+	private async saveFirstVersion(): Promise<void> {
+		await this.doChange(false, async () => {
+			if (this.version > 0) { throw new Error(
+				`Can call this function only for zeroth version, not ${this.version}`); }
+			this.setCurrentVersion(1);
+			const src = await this.crypto.pack(this.currentState, this.version);
+			await this.storage.saveObj(this.objId, src);
+		});
 	}
-	
-	private setFolderJson(folderJson: FolderJson): void {
-		// TODO sanitize folderJson before using it
-		
-		this.folderJson = folderJson;
+
+	/**
+	 * This returns true if folder has no child nodes, i.e. is empty.
+	 */
+	isEmpty(): boolean {
+		return (Object.keys(this.currentState.nodes).length === 0);
 	}
-	
-	async update(encrSrc: ObjSource): Promise<void> {
-		let src = await this.storage.getObj(this.objId);
-		let folderJson = await this.crypto.openAndSetFrom(src);
-		this.version = src.getObjVersion()!;
-		this.setFolderJson(folderJson);
-	}
-	
-	remove(): void {
-		if (Object.keys(this.folderJson.nodes).length > 0) {
-			throw makeFileException(excCode.notEmpty, this.name);
+
+	private async getAllNodes(): Promise<NodeInFS<NodeCrypto>[]> {
+		const lst = (await this.list()).lst;
+		const content: NodeInFS<NodeCrypto>[] = [];
+		for (const entry of lst) {
+			let node: NodeInFS<NodeCrypto>|undefined;
+			if (entry.isFile) {
+				node = await this.getFile(entry.name, true);
+			} else if (entry.isFolder) {
+				node = await this.getFolder(entry.name, true);
+			} else if (entry.isLink) {
+				node = await this.getLink(entry.name, true);
+			}
+			if (node) {
+				content.push(node);
+			}
 		}
-		let p = this.getParent();
-		if (!p) { throw new Error('Cannot remove root folder'); }
-		p.removeChild(this);
+		return content;
+	}
+
+	async delete(remoteEvent?: boolean): Promise<void> {
+		if (remoteEvent) {
+			return super.delete(true);
+		}
+
+		const childrenNodes = await this.doChange(true, async () => {
+			const childrenNodes = await this.getAllNodes();
+			await this.storage.removeObj(this.objId);
+			this.storage.nodes.delete(this);
+			this.setCurrentVersion(-1);
+			this.currentState = { nodes: {} };
+			const event: RemovedEvent = {
+				type: 'removed',
+				path: this.name,
+				isRemote: remoteEvent
+			};
+			this.broadcastEvent(event, true);
+			return childrenNodes;
+		});
+		// explicitly do not wait on a result of child's delete, cause if it fails
+		// we just get traceable garbage, yet, the rest of a live/non-deleted tree
+		// stays consistent
+		for (const node of childrenNodes) {
+			node.delete();
+		}
 	}
 
 	getParamsForLink(): LinkParameters<FolderLinkParams> {
 		if ((this.storage.type !== 'synced') && (this.storage.type !== 'local')) {
 			throw new Error(`Creating link parameters to object in ${this.storage.type} file system, is not implemented.`); }
-		let params: FolderLinkParams = {
+		const params: FolderLinkParams = {
 			folderName: (undefined as any),
 			objId: this.objId,
 			fKey: this.crypto.fileKeyInBase64()
 		};
-		let linkParams: LinkParameters<FolderLinkParams> = {
+		const linkParams: LinkParameters<FolderLinkParams> = {
 			storageType: this.storage.type,
 			isFolder: true,
 			params
 		};
 		return linkParams;
 	}
-	
+
+	// XXX make default conflict resolution for folder
+	// async resolveConflict(remoteVersion: number): Promise<void> {
+	// 	// XXX we need to read remote version outside of doChange
+	// 	const src = await (this.storage as SyncedStorage).getSyncedObjVersion(
+	// 		this.objId, remoteVersion);
+	// 	const remInfo = await this.crypto.open(src);
+	// 	await this.doChange(true, async () => {
+	// 		// XXX this is a default conflict resolution
+	// 		// XXX drop all previous local versions(!)
+	// 	});
+	// }
+
+	absorbExternalChange(): Promise<void> {
+		return this.doChange(true, async () => {
+			const src = await this.storage.getObj(this.objId);
+			const newVersion = src.version;
+			if (newVersion <= this.version) { return; }
+			const folderJson = await this.crypto.open(src);
+			const initState = this.currentState;
+			this.currentState = checkFolderInfo(folderJson);
+			this.setCurrentVersion(newVersion);
+
+			const addedEntries = Object.keys(this.currentState.nodes)
+			.filter(name => !initState.nodes[name]);
+			const removedEntries = Object.keys(initState.nodes)
+			.filter(name => !this.currentState.nodes);
+			
+			if ((addedEntries.length === 1) && (removedEntries.length === 1)) {
+				const event: EntryRenamingEvent = {
+					type: 'entry-renaming',
+					path: this.name,
+					isRemote: true,
+					oldName: removedEntries[0],
+					newName: addedEntries[0],
+					newVersion
+				}
+				this.broadcastEvent(event);
+			} else {
+				addedEntries.forEach(name => {
+					const addedNode = this.currentState.nodes[name];
+					const event: EntryAdditionEvent = {
+						type: 'entry-addition',
+						path: this.name,
+						isRemote: true,
+						entry: {
+							name: addedNode.name,
+							isFile: addedNode.isFile,
+							isFolder: addedNode.isFolder,
+							isLink: addedNode.isLink
+						},
+						newVersion
+					};
+					this.broadcastEvent(event);
+				});
+				removedEntries.forEach(name => {
+					const event: EntryRemovalEvent = {
+						type: 'entry-removal',
+						path: this.name,
+						isRemote: true,
+						name: removedEntries[0],
+						newVersion
+					};
+					this.broadcastEvent(event);
+				});
+			}
+		});
+	}
+
 }
 Object.freeze(FolderNode.prototype);
 Object.freeze(FolderNode);
+
+const EMPTY_ARR = new Uint8Array(0);
+
+function checkFolderInfo(folderJson: FolderInfo): FolderInfo {
+	// TODO throw if folderJson is not ok
+	
+	return folderJson;
+}
 
 Object.freeze(exports);

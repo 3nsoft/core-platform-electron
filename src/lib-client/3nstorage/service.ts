@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,86 +18,74 @@
  * This defines functions that implement 3NStorage protocol.
  */
 
-import { makeException } from '../xhr-utils';
+import { makeException, extractIntHeader } from '../electron/net';
 import * as api from '../../lib-common/service-api/3nstorage/owner';
-import { TransactionParams }
-	from '../../lib-common/service-api/3nstorage/owner';
 import { ServiceUser, IGetMailerIdSigner } from '../user-with-mid-session';
 import { storageInfoAt } from '../service-locator';
 import * as keyGen from '../key-derivation';
 import { makeObjNotFoundExc, makeObjExistsExc, makeConcurrentTransExc,
-	makeWrongStateExc, makeUnknownObjOrTransExc } from './exceptions';
+	makeUnknownTransactionExc, makeVersionMismatchExc }
+	from './exceptions';
+import { makeSubscriber, SubscribingClient } from '../../lib-common/ipc/ws-ipc';
 
-export { TransactionParams }
-	from '../../lib-common/service-api/3nstorage/owner';
+export type ObjId = string|null;
+
+export type FirstSaveReqOpts = api.PutObjFirstQueryOpts;
+export type FollowingSaveReqOpts = api.PutObjSecondQueryOpts;
 
 export class StorageOwner extends ServiceUser {
 	
-	private keyDerivParams: keyGen.ScryptGenParams = (undefined as any);
-	maxChunkSize: number = (undefined as any);
-	private serviceURIGetter: () => Promise<string> = (undefined as any);
+	maxChunkSize: number|undefined = undefined;
 	
-	constructor(user: string, getSigner: IGetMailerIdSigner) {
-		super(user, {
-			login: api.midLogin.MID_URL_PART,
-			logout: api.closeSession.URL_END,
-			canBeRedirected: true
-		}, getSigner);
+	constructor(user: string, getSigner: IGetMailerIdSigner,
+		mainUrlGetter: () => Promise<string>
+	) {
+		super(user,
+			{
+				login: api.midLogin.MID_URL_PART,
+				logout: api.closeSession.URL_END,
+				canBeRedirected: true
+			},
+			getSigner,
+			async (): Promise<string> => {
+				const serviceUrl = await mainUrlGetter();
+				const info = await storageInfoAt(this.net, serviceUrl);
+				if (!info.owner) { throw new Error(`Missing owner service url in 3NStorage information at ${serviceUrl}`); }
+				return info.owner;
+			});
 		Object.seal(this);
 	}
 
-	private async setServiceUrl(serviceUrl?: string): Promise<void> {
-		if (!serviceUrl) {
-			serviceUrl = await this.serviceURIGetter();
-		}
-		let info = await storageInfoAt(serviceUrl);
-		if (!info.owner) { throw new Error(`Missing owner service url in 3NStorage information at ${serviceUrl}`); }
-		this.serviceURI = info.owner;
-	}
-
-	async setStorageUrl(serviceUrl: string|(() => Promise<string>)):
-			Promise<void> {
-		if (typeof serviceUrl === 'string') {
-			await this.setServiceUrl(serviceUrl);
-		} else {
-			this.serviceURIGetter = serviceUrl;
-		}
-	}
-	
-	// XXX keyDerivParams should be moved to a separate request, out of
-	//		session setting
 	async getKeyDerivParams(): Promise<keyGen.ScryptGenParams> {
-		if (this.keyDerivParams) { return this.keyDerivParams; }
-		await this.login();
-		if (!this.keyDerivParams) { throw new Error(`Error occured in getting key derivation parameters from the server.`); }
-		return this.keyDerivParams;
-	}
-
-	private async setSessionParams(): Promise<void> {
-		let url = this.serviceURI + api.sessionParams.URL_END;
-		let rep = await this.doBodylessSessionRequest<api.sessionParams.Reply>({
-			path: api.sessionParams.URL_END,
+		const rep = await this.doBodylessSessionRequest<keyGen.ScryptGenParams>({
+			appPath: api.keyDerivParams.URL_END,
 			method: 'GET',
 			responseType: 'json'
 		});
 		if (rep.status !== api.sessionParams.SC.ok) {
 			throw makeException(rep, 'Unexpected status');
 		}
-		if (!keyGen.checkParams(rep.data.keyDerivParams) ||
-				(typeof rep.data.maxChunkSize !== 'number') ||
+		const keyDerivParams = rep.data;
+		if (!keyGen.checkParams(rep.data)) {
+			throw makeException(rep, 'Malformed response');
+		}
+		return keyDerivParams;
+	}
+
+	private async setSessionParams(): Promise<void> {
+		const rep = await this.doBodylessSessionRequest<api.sessionParams.Reply>({
+			appPath: api.sessionParams.URL_END,
+			method: 'GET',
+			responseType: 'json'
+		});
+		if (rep.status !== api.sessionParams.SC.ok) {
+			throw makeException(rep, 'Unexpected status');
+		}
+		if ((typeof rep.data.maxChunkSize !== 'number') ||
 				(rep.data.maxChunkSize < 64*1024)) {
 			throw makeException(rep, 'Malformed response');
 		}
-		this.keyDerivParams = rep.data.keyDerivParams;
 		this.maxChunkSize = rep.data.maxChunkSize;
-	}
-	
-	/**
-	 * This method hides super from await, till ES7 comes with native support
-	 * for await.
-	 */
-	private super_login(): Promise<void> {
-		return super.login();
 	}
 	
 	/**
@@ -107,208 +95,153 @@ export class StorageOwner extends ServiceUser {
 	 * successfully completes.
 	 */
 	async login(): Promise<void> {
-		if (!this.isSet) {
-			await this.setServiceUrl();
-		}
-		await this.super_login();
+		await super.login();
 		await this.setSessionParams();
 	}
 	
 	/**
 	 * @param objId must be null for root object, and a string id for other ones
-	 * @param transParams
-	 * @return a promise, resolvable to transaction id.
-	 */
-	async startTransaction(objId: string,
-			transParams: TransactionParams): Promise<api.startTransaction.Reply> {
-		let path = ((objId === null) ?
-				api.startRootTransaction.URL_END :
-				api.startTransaction.getReqUrlEnd(objId));
-		let rep = await this.doJsonSessionRequest<api.startTransaction.Reply>({
-			path,
-			method: 'POST',
-			responseType: 'json'
-		}, transParams);
-		if (rep.status === api.startTransaction.SC.ok) {
-			if ((typeof rep.data.transactionId !== 'string')) {
-				throw makeException(rep, 'Malformed response');
-			}
-			return rep.data;
-		} else if (rep.status === api.startTransaction.SC.unknownObj) {
-			throw makeObjNotFoundExc(objId);
-		} else if (rep.status === api.startTransaction.SC.objAlreadyExists) {
-			throw makeObjExistsExc(objId);
-		} else if (rep.status === api.startTransaction.SC.concurrentTransaction) {
-			throw makeConcurrentTransExc(objId);
-		} else if (rep.status === api.startTransaction.SC.incompatibleObjState) {
-			throw makeWrongStateExc(objId);
-		} else {
-			throw makeException(rep, 'Unexpected status');
-		}
-	}
-	
-	/**
-	 * @param objId must be null for root object, and a string id for other ones
 	 * @param transactionId
 	 * @return a promise, resolvable to transaction id.
 	 */
-	async cancelTransaction(objId: string, transactionId: string):
+	async cancelTransaction(objId: ObjId, transactionId?: string):
 			Promise<void> {
-		let path = ((objId === null) ?
+		const appPath = ((objId === null) ?
 				api.cancelRootTransaction.getReqUrlEnd(transactionId) :
 				api.cancelTransaction.getReqUrlEnd(objId, transactionId));
-		let rep = await this.doBodylessSessionRequest<void>(
-			{ path, method: 'POST' });
+		const rep = await this.doBodylessSessionRequest<void>(
+			{ appPath, method: 'POST' });
 		if (rep.status === api.cancelTransaction.SC.ok) {
 			return;
 		} else if (rep.status === api.cancelTransaction.SC.missing) {
-			throw makeUnknownObjOrTransExc(objId);
+			throw makeUnknownTransactionExc(objId!);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
 	
 	/**
-	 * @param objId must be null for root object, and a string id for other ones
-	 * @param transactionId
-	 * @return a promise, resolvable to transaction id.
+	 * This method returns either first part of an object, or a whole of it,
+	 * depending on a given limit for segments. Returned promise resolves to a
+	 * total segments length, header bytes and a first chunk of segments, which
+	 * can be a whole of object segments, if chunk's length is equal to total
+	 * segments length.
+	 * @param objId 
+	 * @param limit this is a limit on segments size that we can accept in this
+	 * request.
 	 */
-	async completeTransaction(objId: string, transactionId: string):
-			Promise<void> {
-		let path = ((objId === null) ?
-				api.finalizeRootTransaction.getReqUrlEnd(transactionId) :
-				api.finalizeTransaction.getReqUrlEnd(objId, transactionId));
-		let rep = await this.doBodylessSessionRequest<void>(
-			{ path, method: 'POST' });
-		if (rep.status === api.cancelTransaction.SC.ok) {
-			return;
-		} else if (rep.status === api.cancelTransaction.SC.missing) {
-			throw makeUnknownObjOrTransExc(objId);
-		} else {
-			throw makeException(rep, 'Unexpected status');
-		}
-	}
-	
-	/**
-	 * @param objId
-	 * @param ver
-	 * @return a promise, resolvable to object with header bytes, object version
-	 * of these bytes, and total object segments length.
-	 */
-	async getObjHeader(objId: string, ver?: number): Promise<{
-			segsTotalLen: number; header: Uint8Array; version: number; }> {
-		let path = ((objId === null) ?
-			api.rootHeader.getReqUrlEnd(ver) :
-			api.objHeader.getReqUrlEnd(objId, ver));
-		let rep = await this.doBodylessSessionRequest<Uint8Array>({
-			path,
+	async getCurrentObj(objId: ObjId, limit: number): Promise<{ version: number;
+			segsTotalLen: number; header: Uint8Array; segsChunk: Uint8Array; }> {
+		const opts: api.GetObjQueryOpts = { header: true, limit };
+		const appPath = (objId ?
+			api.currentObj.getReqUrlEnd(objId, opts) :
+			api.currentRootObj.getReqUrlEnd(opts));
+		const rep = await this.doBodylessSessionRequest<Uint8Array>({
+			appPath,
 			method: 'GET',
 			responseType: 'arraybuffer',
 			responseHeaders: [ api.HTTP_HEADER.objVersion,
-					api.HTTP_HEADER.objSegmentsLength ]
+				api.HTTP_HEADER.objSegmentsLength, api.HTTP_HEADER.objHeaderLength ]
 		});
-		if (rep.status === api.objSegs.SC.okGet) {
+		
+		if (rep.status === api.currentObj.SC.okGet) {
 			if (!(rep.data instanceof Uint8Array)) { throw makeException(rep,
 				`Malformed response: body is not binary`); }
-			let segsTotalLen = parseInt(
-				rep.headers!.get(api.HTTP_HEADER.objSegmentsLength)!, 10);
-			if (isNaN(segsTotalLen)) { throw makeException(rep,
-				`Malformed response: header ${api.HTTP_HEADER.objSegmentsLength} is missing`); }
-			if (typeof ver !== 'number') {
-				let version = parseInt(rep.headers!.get(
-					api.HTTP_HEADER.objVersion)!, 10);
-				if (isNaN(version)) { throw makeException(rep,
-					`Malformed response: header ${api.HTTP_HEADER.objVersion} is missing`); }
-				return { version, segsTotalLen, header: rep.data };
-			} else {
-				return { version: ver, segsTotalLen, header: rep.data };
-			}
-		} else if (rep.status === api.objSegs.SC.missing) {
-			throw makeObjNotFoundExc(objId);
+			const version = extractIntHeader(rep, api.HTTP_HEADER.objVersion);
+			const segsTotalLen = extractIntHeader(rep,
+				api.HTTP_HEADER.objSegmentsLength);
+			const headerLen = extractIntHeader(rep,
+				api.HTTP_HEADER.objHeaderLength);
+			if (rep.data.length > (headerLen + segsTotalLen)) {
+				throw makeException(rep, `Malformed response: body is too long`); }
+			return {
+				version, segsTotalLen,
+				header: rep.data.subarray(0, headerLen),
+				segsChunk: rep.data.subarray(headerLen)
+			};
+		} else if (rep.status === api.currentObj.SC.unknownObj) {
+			throw makeObjNotFoundExc(objId!);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
-	
+
 	/**
-	 * @param objId
-	 * @param ver
-	 * @param start
-	 * @param end
-	 * @return a promise, resolvable to object with segment bytes, and total
-	 * object segments length.
+	 * This method reads particular part of object's segments.
+	 * @param objId 
+	 * @param version is object's expected current version. If object's current
+	 * version on server has already changed, exception will be thrown.
+	 * @param start is a start read position in segments
+	 * @param end is an end, excluded, read position in segments
 	 */
-	async getObjSegs(objId: string, ver: number, start: number, end: number):
-			Promise<{ segsTotalLen: number; segsChunk: Uint8Array; }> {
-		if (end <= start) { throw new Error(`Given out of bounds parameters: start is ${start}, end is ${end}, -- for downloading obj ${objId}, version ${ver}`); }
-		let opts: api.GetSegsQueryOpts = { ofs: start, len: end - start };
-		let path = ((objId === null) ?
-			api.rootSegs.getReqUrlEnd(ver, opts) :
-			api.objSegs.getReqUrlEnd(objId, ver, opts));
-		let rep = await this.doBodylessSessionRequest<Uint8Array>({
-			path,
+	async getCurrentObjSegs(objId: ObjId, version: number,
+			start: number, end: number): Promise<Uint8Array> {
+		if (end <= start) { throw new Error(`Given out of bounds parameters: start is ${start}, end is ${end}, -- for downloading obj ${objId}, version ${version}`); }
+		const limit = end - start;
+		
+		const opts: api.GetObjQueryOpts = { ofs: start, limit, ver: version };
+		const appPath = (objId ?
+			api.currentObj.getReqUrlEnd(objId, opts) :
+			api.currentRootObj.getReqUrlEnd(opts));
+		const rep = await this.doBodylessSessionRequest<Uint8Array>({
+			appPath,
 			method: 'GET',
 			responseType: 'arraybuffer',
-			responseHeaders: [ api.HTTP_HEADER.objSegmentsLength ]
 		});
-		if (rep.status === api.objSegs.SC.okGet) {
-			let segsTotalLen = parseInt(
-				rep.headers!.get(api.HTTP_HEADER.objSegmentsLength)!, 10);
-			if (isNaN(segsTotalLen) || !(rep.data instanceof Uint8Array)) {
-				throw makeException(rep, 'Malformed response');
-			}
-			return { segsTotalLen, segsChunk: rep.data };
-		} else if (rep.status === api.objSegs.SC.missing) {
-			throw makeObjNotFoundExc(objId);
+		
+		if (rep.status === api.currentObj.SC.okGet) {
+			if (!(rep.data instanceof Uint8Array)) { throw makeException(rep,
+				`Malformed response: body is not binary`); }
+			return rep.data;
+		} else if (rep.status === api.currentObj.SC.unknownObj) {
+			throw makeObjNotFoundExc(objId!);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
-	
+
 	/**
-	 * @param objId
-	 * @param transactionId
-	 * @param bytes is header bytes array
-	 * @return a promise, resolvable, when header bytes are saved
+	 * This upload given bytes as a new version of a given object.
+	 * Returned promise resolves either to undefined, when object upload is
+	 * complete, or to a transaction id, which must be used for subsequent
+	 * request(s).
+	 * @param objId is object's id, with null value for root object
+	 * @param bytes are bytes to upload
+	 * @param fstReq is options object for the first request
+	 * @param followReq is options object for subsequent request(s)
 	 */
-	async saveObjHeader(objId: string, transactionId: string, bytes: Uint8Array):
-			Promise<void> {
-		let path = ((objId === null) ?
-			api.rootHeader.putReqUrlEnd(transactionId) :
-			api.objHeader.putReqUrlEnd(objId, transactionId));
-		let rep = await this.doBinarySessionRequest<void>(
-			{ path, method: 'PUT' }, bytes);
-		if (rep.status === api.objHeader.SC.okPut) {
-			return;
-		} else if (rep.status === api.objHeader.SC.missing) {
-			throw makeUnknownObjOrTransExc(objId);
+	async saveNewObjVersion(objId: ObjId, bytes: Uint8Array|Uint8Array[],
+			fstReq: FirstSaveReqOpts|undefined,
+			followReq: FollowingSaveReqOpts|undefined):
+			Promise<string|undefined> {
+		let appPath: string;
+		if (fstReq) {
+			appPath = (objId ?
+				api.currentObj.firstPutReqUrlEnd(objId, fstReq):
+				api.currentRootObj.firstPutReqUrlEnd(fstReq));
+		} else if (followReq) {
+			appPath = (objId ?
+				api.currentObj.secondPutReqUrlEnd(objId, followReq):
+				api.currentRootObj.secondPutReqUrlEnd(followReq));
 		} else {
-			throw makeException(rep, 'Unexpected status');
+			throw new Error(`Missing request options`);
 		}
-	}
-	
-	/**
-	 * @param objId
-	 * @param trans is a transaction id
-	 * @param ofs is an offset parameter, identifying where given should be
-	 * written
-	 * @param bytes is segments bytes array
-	 * @param append is an optional parameter, identifying if given write should
-	 * be in append mode. Default value is false, i.e. non-appending mode.
-	 * @return a promise, resolvable, when header bytes are saved
-	 */
-	async saveObjSegs(objId: string, trans: string, ofs: number,
-			bytes: Uint8Array, append = false): Promise<void> {
-		let opts: api.PutSegsQueryOpts = { trans, append, ofs };
-		let path = ((objId === null) ?
-			api.rootSegs.putReqUrlEnd(opts) :
-			api.objSegs.putReqUrlEnd(objId, opts));
-		let rep = await this.doBinarySessionRequest<void>(
-			{ path, method: 'PUT' }, bytes);
-		if (rep.status === api.objSegs.SC.okPut) {
-			return;
-		} else if (rep.status === api.objSegs.SC.missing) {
-			throw makeUnknownObjOrTransExc(objId);
+		
+		const rep = await this.doBinarySessionRequest<api.currentObj.ReplyToPut>(
+			{ appPath, method: 'PUT', responseType: 'json' }, bytes);
+		if (rep.status === api.currentObj.SC.okPut) {
+			return rep.data.transactionId;
+		} else if (rep.status === api.currentObj.SC.unknownObj) {
+			throw makeObjNotFoundExc(objId!);
+		} else if (rep.status === api.currentObj.SC.concurrentTransaction) {
+			throw makeConcurrentTransExc(objId!);
+		} else if (rep.status === api.currentObj.SC.unknownTransaction) {
+			throw makeUnknownTransactionExc(objId!);
+		} else if (rep.status === api.currentObj.SC.mismatchedObjVer) {
+			const curVer = (rep as any as api.currentObj.MismatchedObjVerReply).current_version;
+			if (!Number.isInteger(curVer)) { throw new Error(
+				`Got non-integer current object version value from a version mismatch reply ${curVer}`); }
+			throw makeVersionMismatchExc(objId!, curVer);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
@@ -322,21 +255,30 @@ export class StorageOwner extends ServiceUser {
 	 * @return a promise, resolvable, when an object is deleted.
 	 */
 	async deleteObj(objId: string): Promise<void> {
-		let rep = await this.doBodylessSessionRequest({
-			path: api.deleteObj.getReqUrlEnd(objId),
+		const rep = await this.doBodylessSessionRequest<void>({
+			appPath: api.currentObj.getReqUrlEnd(objId),
 			method: 'DELETE'
 		});
-		if (rep.status === api.deleteObj.SC.ok) {
+		if (rep.status === api.currentObj.SC.okDelete) {
 			return;
-		} else if (rep.status === api.deleteObj.SC.concurrentTransaction) {
+		} else if (rep.status === api.currentObj.SC.concurrentTransaction) {
 			throw makeConcurrentTransExc(objId);
-		} else if (rep.status === api.deleteObj.SC.missing) {
-			throw makeUnknownObjOrTransExc(objId);
+		} else if (rep.status === api.currentObj.SC.unknownObj) {
+			throw makeObjNotFoundExc(objId);
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
-	
+
+	async openEventSource(): Promise<SubscribingClient> {
+		const rep = await this.openWS(api.wsEventChannel.URL_END);
+		if (rep.status === api.wsEventChannel.SC.ok) {
+			return makeSubscriber(rep.data, undefined);
+		} else {
+			throw makeException(rep, 'Unexpected status');
+		}
+	}
+
 }
 Object.freeze(StorageOwner.prototype);
 Object.freeze(StorageOwner);

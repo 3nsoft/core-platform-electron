@@ -24,15 +24,10 @@ declare namespace web3n.asmail {
 	interface Service {
 		
 		/**
-		 * @return a promise resolvable to id (address) of a current signed
+		 * This returns a promise resolvable to id (address) of a current signed
 		 * user.
 		 */
 		getUserId(): Promise<string>;
-		
-		/**
-		 * @return a container for fs and file objects, for use with messages.
-		 */
-		makeAttachmentsContainer(): AttachmentsContainer;
 
 		inbox: InboxService;
 		
@@ -56,13 +51,15 @@ declare namespace web3n.asmail {
 	interface DeliveryService {
 		
 		/**
+		 * This returns a promise, resolvable to an allowable total size of a
+		 * message
 		 * @param toAddress
-		 * @return a promise, resolvable to an allowable total size of a message
 		 */
 		preFlight(toAddress: string): Promise<number>;
 
 		/**
-		 * This method adds a message for delivery.
+		 * This method adds a message for delivery, returning a promise,
+		 * resolvable when core accepts message for delivery.
 		 * If message requires small amount of network connection, it is set to be
 		 * sent immediately. Else, when message is big, or is sent to too many
 		 * recipients, it is added to an internal queue for orderly processing.
@@ -77,62 +74,53 @@ declare namespace web3n.asmail {
 		 * forces given message to be sent immediately, instead of adding it to
 		 * an internal message queue.
 		 * Default value for this flag is false.
-		 * @return a promise, resolvable when core accepts message for delivery.
 		 */
-		addMsg(recipients: string[], msg: asmail.OutgoingMessage, id: string,
-			sendImmeditely?: boolean): Promise<void>;
+		addMsg(recipients: string[], msg: OutgoingMessage, id: string,
+			sendImmediately?: boolean): Promise<void>;
 
 		/**
-		 * @return a promise, resolvable to an array of objects, each carrying
-		 * message id, used when message was added, and a respective delivery
-		 * progress info. This shows all messages currently in a delivery
+		 * This returns a promise, resolvable to an array of objects, each
+		 * carrying message id, used when message was added, and a respective
+		 * delivery progress info. This shows all messages currently in a delivery
 		 * sub-system, even those with completed delivery process.
 		 */
 		listMsgs(): Promise<{ id: string; info: DeliveryProgress; }[]>;
 		
 		/**
-		 * @param id of a message, used when the message was added
-		 * @return a promise, resolvable to current delivery info.
+		 * This returns a promise, resolvable to current delivery info.
 		 * If given id is not known, promise resolves to undefined.
+		 * @param id of a message, used when the message was added
 		 */
 		currentState(id: string): Promise<DeliveryProgress|undefined>;
 
 		/**
+		 * This function attaches listeners to observe delivery process of a
+		 * particular message. This call returns a detaching function.
+		 * Due to immediate subscription, given callbacks become hot.
 		 * @param id of a message, used when the message was added
-		 * @return a promise, resolvable to a delivery progress object, when
-		 * delivery process completes for a given message.
-		 * If given id of a message is not known, promise resolves to undefined.
-		 * If message delivery is already complete, promise resolves fast, but not
-		 * instantaneously, cause communication with core takes async time.
+		 * @param observer is an object with at least one of three methods: next,
+		 * completed, and error.
+		 * Method next it is an on-event callback, called every time there is
+		 * an event, which can be zero or more times. This is never called after
+		 * either completion, error, or detachment.
+		 * Method complete is a callback that is called only once, when event
+		 * source says that there will be no more events, i.e. when a normal
+		 * completion occurs. Note that this function is not called when detacher
+		 * is triggered.
+		 * Method error is a callback that is called on error, either coming
+		 * from event source, or if onNext throws something, although it must
+		 * handle its own stuff.
 		 */
-		completionOf(id: string): Promise<DeliveryProgress|undefined>;
-
-		/**
-		 * @param id of a message, used when the message was added
-		 * @param cb is a callback function, that is called to report on delivery
-		 * progress of the message
-		 * @return a promise, resolvable to a callback id, which can be used to
-		 * deregister callback.
-		 * If given id of a message is not known, or if message delivery has
-		 * already completed, promise resolves to undefined.
-		 * Note that callbacks are all dropped when message delivery completes.
-		 */
-		registerProgressCB(id: string, cb: (p: DeliveryProgress) => void):
-			Promise<number|undefined>;
+		observeDelivery(id: string, observer: Observer<DeliveryProgress>):
+			() => void;
 		
 		/**
-		 * @param cbId is a callback id, produced by callback registration
-		 * @return a promise, resolvable, when request is completed by the core.
-		 */
-		deregisterProgressCB(cbId: number): Promise<void>;
-		
-		/**
+		 * This returns a promise, resolvable when the message is removed from a
+		 * delivery sub-system.
 		 * @param id of a message, used when the message was added
 		 * @param cancelSending is a flag, which true value forces delivery
 		 * cancelation of a message. With a default false value, message is not
 		 * removed, if its delivery process hasn't completed, yet.
-		 * @return a promise, resolvable when the message is removed from a
-		 * delivery sub-system.
 		 */
 		rmMsg(id: string, cancelSending?: boolean): Promise<void>;
 
@@ -141,125 +129,131 @@ declare namespace web3n.asmail {
 	interface InboxService {
 		
 		/**
+		 * This returns a promise, resolvable to info objects for messages that
+		 * are present on a server, timestamped starting with a given time, if it
+		 * is given.
 		 * @param fromTS an optional timestamp to limit message listing only to
 		 * those messages with the same or more recent timestamps.
-		 * @return a promise, resolvable to info objects for messages that are
-		 * present on a server, timestamped starting with a given time, if it is
-		 * given.
 		 */
-		listMsgs(fromTS?: number): Promise<asmail.MsgInfo[]>;
+		listMsgs(fromTS?: number): Promise<MsgInfo[]>;
 		
 		/**
+		 * This returns a promise, resolvable when a given message has been
+		 * removed on the server.
 		 * @param msgId
-		 * @return a promise, resolvable when a given message has been removed
-		 * on the server.
 		 */
 		removeMsg(msgId: string): Promise<void>;
 		
 		/**
+		 * This returns a promise, resolvable to a message, present on a server.
 		 * @param
-		 * @return a promise, resolvable to a message, present on a server.
 		 */
-		getMsg(msgId: string): Promise<asmail.IncomingMessage>;
+		getMsg(msgId: string): Promise<IncomingMessage>;
+
+		/**
+		 * This function attaches listeners for a given event, returning a
+		 * detaching function.
+		 * Due to immediate subscription, given callbacks become hot.
+		 * @param event
+		 * @param observer is an object with at least one of three methods: next,
+		 * completed, and error.
+		 * Method next it is an on-event callback, called every time there is
+		 * an event, which can be zero or more times. This is never called after
+		 * either completion, error, or detachment.
+		 * Method complete is a callback that is called only once, when event
+		 * source says that there will be no more events, i.e. when a normal
+		 * completion occurs. Note that this function is not called when detacher
+		 * is triggered.
+		 * Method error is a callback that is called on error, either coming
+		 * from event source, or if next throws something, although it must
+		 * handle its own stuff.
+		 */
+		subscribe(event: 'message', observer: Observer<IncomingMessage>):
+			() => void;
 		
 	}
-	
+
 	interface MsgStruct {
+		/**
+		 * Message type can be
+		 * (a) "mail" for messages that better be viewed in mail styly UI,
+		 * (b) "chat" for messages that better be viewed in chat style UI,
+		 * (c) "app:<app-domain>" for application messages, for example, messages
+		 * for app with domain app.com should have type "app:app.com".
+		 */
+		msgType: string;
 		subject?: string;
-		msgType?: string;
-		chatId?: string;
 		plainTxtBody?: string;
 		htmlTxtBody?: string;
+		jsonBody?: any;
 		carbonCopy?: string[];
 		recipients?: string[];
 	}
 	
 	interface MsgInfo {
 		msgId: string;
+		msgType: string;
 		deliveryTS: number;
 	}
 	
 	interface IncomingMessage extends MsgInfo, MsgStruct {
 		sender: string;
-		deliveryComplete: boolean;
-		attachments?: storage.FS;
+		establishedSenderKeyChain: boolean;
+		attachments?: files.ReadonlyFS;
 	}
 	
 	interface OutgoingMessage extends MsgStruct {
 		msgId?: string;
 		attachments?: AttachmentsContainer;
-		attachmentsFS?: storage.FS;
 	}
 	
+	/**
+	 * This container is for entities that will be present in attachments
+	 * fs/folder of recipient's incoming message.
+	 */
 	interface AttachmentsContainer {
-
-		/**
-		 * @param file is a file object that should be add to this container
-		 * @param newName is an optional new name for the file. If it is not
-		 * given, file's name will be used.
-		 */
-		addFile(file: storage.File, newName?: string): void;
-
-		/**
-		 * @param fs is a file system object, representing folder that should be
-		 * add to this container
-		 * @param newName is an optional new name for the folder. If it is not
-		 * given, folder's name will be used.
-		 */
-		addFolder(fs: storage.FS, newName?: string): void;
-
-		/**
-		 * @param initName is an initial name of file or folder in this container.
-		 * An error is thrown, if given name does not correspond to any entity in
-		 * this container.
-		 * @param newName is a new name for an indicated file/folder. An error is
-		 * thrown, if this name is already used by one of entities in this
-		 * container.
-		 */
-		rename(initName: string, newName: string): void;
-
-		/**
-		 * @return a map with all attached files as values, and attachment
-		 * names as keys.
-		 */
-		getAllFiles(): Map<string, storage.File>;
-
-		/**
-		 * @return a map with all attached folders as values, and attachment
-		 * names as keys.
-		 */
-		getAllFolders(): Map<string, storage.FS>;
-
+		files?: {
+			[name: string]: files.File;
+		};
+		folders?: {
+			[name: string]: files.FS;
+		};
 	}
 	
 	interface InboxException extends RuntimeException {
-		msgId: string;
-		msgNotFound?: boolean;
-		objNotFound?: boolean;
+		type: "inbox";
+		msgId?: string;
+		msgNotFound?: true;
+		objNotFound?: true;
 		objId?: string;
-		msgIsBroken?: boolean;
+		msgIsBroken?: true;
 	}
 	
 	interface ServLocException extends RuntimeException {
+		type: 'service-locating';
 		address: string;
-		domainNotFound?: boolean;
-		noServiceRecord?: boolean;
+		domainNotFound?: true;
+		noServiceRecord?: true;
 	}
 	
 	interface ASMailSendException extends RuntimeException {
-		address: string;
-		unknownRecipient?: boolean;
-		senderNotAllowed?: boolean;
-		inboxIsFull?: boolean;
-		badRedirect?: boolean;
-		authFailedOnDelivery?: boolean;
-		msgTooBig?: boolean;
+		type: 'asmail-delivery';
+		address?: string;
+		
+		// errors that are due to remote side,
+		// these will be placed into ProgressDelivery object
+		unknownRecipient?: true;
+		senderNotAllowed?: true;
+		inboxIsFull?: true;
+		badRedirect?: true;
+		authFailedOnDelivery?: true;
+		msgTooBig?: true;
 		allowedSize?: number;
-		recipientHasNoPubKey?: boolean;
-		recipientPubKeyFailsValidation?: boolean;
+		recipientHasNoPubKey?: true;
+		recipientPubKeyFailsValidation?: true;
+		
+		// errors that are due to this side
+		msgCancelled?: true;
 	}
-	
-	interface Exception extends InboxException, ServLocException,
-		ASMailSendException {}
 	
 }

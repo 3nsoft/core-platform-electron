@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,7 +21,7 @@
 import { box, secret_box as sbox } from 'ecma-nacl';
 import { utf8, base64 } from '../../../lib-common/buffer-utils';
 import { JsonKey, JsonKeyShort } from '../../../lib-common/jwkeys';
-import * as random from '../../random-node';
+import * as random from '../../../lib-common/random-node';
 
 export const KID_LENGTH = 16;
 export const PID_LENGTH = 2;
@@ -56,21 +56,21 @@ export type MsgKeyRole = 'suggested' | 'in_use' | 'old' |
 	'published_intro' | 'prev_published_intro' | 'introductory';
 
 /**
- * @return an object with two fields: skey & pkey, holding JWK form of secret and
- * public keys respectively.
+ * This returns an object with two fields: skey & pkey, holding JWK form of
+ * secret and public keys respectively.
  * These are to be used with NaCl's box (Curve+XSalsa+Poly encryption).
  * Key ids are the same in this intimate pair.
  */
 export function generateKeyPair(): JWKeyPair {
-	let skeyBytes = random.bytes(box.KEY_LENGTH);
-	let pkeyBytes = box.generate_pubkey(skeyBytes);
-	let kid = random.stringOfB64Chars(KID_LENGTH);
-	let alg = box.JWK_ALG_NAME;
-	let skey: JsonKey = {
+	const skeyBytes = random.bytesSync(box.KEY_LENGTH);
+	const pkeyBytes = box.generate_pubkey(skeyBytes);
+	const kid = random.stringOfB64CharsSync(KID_LENGTH);
+	const alg = box.JWK_ALG_NAME;
+	const skey: JsonKey = {
 		use: KEY_USE.SECRET, alg: alg, kid: kid,
 		k: base64.pack(skeyBytes),
 	};
-	let pkey: JsonKey = {
+	const pkey: JsonKey = {
 		use: KEY_USE.PUBLIC, alg: alg, kid: kid,
 		k: base64.pack(pkeyBytes)
 	};
@@ -81,14 +81,15 @@ export function generateKeyPair(): JWKeyPair {
  * We have this function for future use by a keyring, that takes symmetric key.
  * This keyring, is specifically tailored to handle short-lived public keys.
  * Therefore, this function is not used at the moment.
- * @return a JWK form of a key for NaCl's secret box (XSalsa+Poly encryption).
+ * This returns a JWK form of a key for NaCl's secret box (XSalsa+Poly
+ * encryption).
  */
 export function generateSymmetricKey(): JsonKey {
 	return {
 		use: KEY_USE.SYMMETRIC,
-		k: base64.pack(random.bytes(sbox.KEY_LENGTH)),
+		k: base64.pack(random.bytesSync(sbox.KEY_LENGTH)),
 		alg: sbox.JWK_ALG_NAME,
-		kid: random.stringOfB64Chars(KID_LENGTH)
+		kid: random.stringOfB64CharsSync(KID_LENGTH)
 	};
 };
 
@@ -96,7 +97,7 @@ function getKeyBytesFrom(key: JsonKey, use: string, alg: string, klen: number):
 		Uint8Array {
 	if (key.use === use) {
 		if (key.alg === alg) {
-			let bytes = base64.open(key.k);
+			const bytes = base64.open(key.k);
 			if (bytes.length !== klen) { throw new Error(
 					"Key "+key.kid+" has a wrong number of bytes"); }
 			return bytes;
@@ -112,9 +113,8 @@ function getKeyBytesFrom(key: JsonKey, use: string, alg: string, klen: number):
 }
 
 /**
- * This extracts bytes from a given secret key's JWK form
+ * This returns bytes of from a given secret key's JWK form
  * @param key is a JWK form of a key
- * @return Uint8Array with key's bytes.
  */
 export function extractSKeyBytes(key: JsonKey): Uint8Array {
 	return getKeyBytesFrom(key, KEY_USE.SECRET,
@@ -122,9 +122,8 @@ export function extractSKeyBytes(key: JsonKey): Uint8Array {
 }
 
 /**
- * This extracts bytes from a given public key's JWK form
+ * This returns bytes of from a given public key's JWK form
  * @param key is a JWK form of a key
- * @return Uint8Array with key's bytes.
  */
 export function extractPKeyBytes(key: JsonKey): Uint8Array {
 	return getKeyBytesFrom(key, KEY_USE.PUBLIC,
@@ -132,15 +131,27 @@ export function extractPKeyBytes(key: JsonKey): Uint8Array {
 }
 
 /**
- * This extracts bytes from a given public key's short JWK form
+ * This returns bytes of a given public key's short JWK form
  * @param key is a short JWK form of a key
- * @return Uint8Array with key's bytes.
  */
 export function extractKeyBytes(key: JsonKeyShort): Uint8Array {
-	let bytes = base64.open(key.k);
+	const bytes = base64.open(key.k);
 	if (bytes.length !== box.KEY_LENGTH) { throw new Error(
 		"Key "+key.kid+" has a wrong number of bytes"); }
 	return bytes;
+}
+
+/**
+ * This returns a length of a message key pack, used with a given public key
+ * crypt-algorithms assembly.
+ * @param alg 
+ */
+export function msgKeyPackSizeFor(alg: string): number {
+	if (alg === box.JWK_ALG_NAME) {
+		return 72;
+	} else {
+		throw new Error(`Encryption algorithm ${alg} is not known.`);
+	}
 }
 
 Object.freeze(exports);

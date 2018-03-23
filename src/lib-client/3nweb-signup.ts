@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015, 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,15 +14,15 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { doJsonRequest, makeException } from './xhr-utils';
+import { NetClient, makeException } from './electron/net';
 import * as api from '../lib-common/user-admin-api/signup';
 
-export async function sendAvailabilityRequest(
+export async function sendAvailabilityRequest(client: NetClient,
 		serviceUrl: string, userId: string): Promise<boolean> {
-	let reqData: api.isAvailable.Request = {
+	const reqData: api.isAvailable.Request = {
 		userId: userId
 	};
-	let rep = await doJsonRequest<void>({
+	const rep = await client.doJsonRequest<void>({
 		method: 'POST',
 		url: serviceUrl + api.isAvailable.URL_END
 	}, reqData);
@@ -35,12 +35,12 @@ export async function sendAvailabilityRequest(
 	}
 }
 
-export async function checkAvailableAddressesForName(serviceUrl: string,
-		name: string): Promise<string[]> {
-	let reqData: api.availableAddressesForName.Request = {
+export async function checkAvailableAddressesForName(client: NetClient,
+		serviceUrl: string, name: string): Promise<string[]> {
+	const reqData: api.availableAddressesForName.Request = {
 		name: name
 	};
-	let rep = await doJsonRequest<string[]>({
+	const rep = await client.doJsonRequest<string[]>({
 		method: 'POST',
 		url: serviceUrl + api.availableAddressesForName.URL_END,
 		responseType: 'json'
@@ -56,9 +56,9 @@ export async function checkAvailableAddressesForName(serviceUrl: string,
 	}
 }
 
-export async function addUser(serviceUrl: string,
+export async function addUser(client: NetClient, serviceUrl: string,
 		userParams: api.addUser.Request): Promise<boolean> {
-	let rep = await doJsonRequest<string[]>({
+	const rep = await client.doJsonRequest<string[]>({
 		method: 'POST',
 		url: serviceUrl + api.addUser.URL_END,
 		responseType: 'json'
@@ -72,12 +72,12 @@ export async function addUser(serviceUrl: string,
 	}
 }
 
-export async function sendActivationCheckRequest(serviceUrl: string,
-		userId: string): Promise<boolean> {
-	let reqData: api.isActivated.Request = {
+export async function sendActivationCheckRequest(client: NetClient,
+		serviceUrl: string, userId: string): Promise<boolean> {
+	const reqData: api.isActivated.Request = {
 		userId: userId
 	};
-	let rep = await doJsonRequest<string[]>({
+	const rep = await client.doJsonRequest<string[]>({
 		method: 'POST',
 		url: serviceUrl + api.isActivated.URL_END,
 		responseType: 'json'

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,25 +15,25 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import * as fs from '../../lib-common/async-fs-node';
+import * as pathMod from 'path';
+import { watch } from 'fs';
 import { makeFileException, FileException, Code as excCode, maskPathInExc }
 	from '../../lib-common/exceptions/file';
 import { ByteSource, ByteSink } from '../../lib-common/byte-streaming/common';
 import { syncWrapByteSink, syncWrapByteSource }
 	from '../../lib-common/byte-streaming/concurrent';
 import { toBuffer } from '../../lib-common/buffer-utils';
-import { splitPathIntoParts, AbstractFS, wrapFSImplementation, LinkParameters,
-	File, Linkable, wrapFileImplementation, FS }
+import { wrapWritableFS, wrapReadonlyFS, LinkParameters, Linkable,
+	wrapWritableFile, wrapReadonlyFile }
 	from '../files';
-import { basename, dirname } from 'path';
+import { selectInFS } from '../files-select';
 import { utf8 } from '../../lib-common/buffer-utils';
 import { pipe } from '../../lib-common/byte-streaming/pipe';
-
-export { pathStaysWithinItsRoot } from '../files';
 
 class FileByteSource implements ByteSource {
 	
 	private offset = 0;
-	private size: number|undefined = undefined;
+	private size: number;
 	
 	constructor(
 			private path: string,
@@ -43,7 +43,7 @@ class FileByteSource implements ByteSource {
 		Object.seal(this);
 	}
 	
-	async getSize(): Promise<number|undefined> {
+	async getSize(): Promise<number> {
 		return this.size;
 	}
 	
@@ -86,7 +86,7 @@ Object.freeze(FileByteSource);
 class FileByteSink implements ByteSink {
 
 	private offset = 0;
-	private size: number|undefined = undefined;
+	private size: number;
 	private path: string|undefined;
 	
 	constructor(
@@ -94,8 +94,8 @@ class FileByteSink implements ByteSink {
 			private pathPrefixMaskLen: number,
 			stat: fs.Stats) {
 		this.path = path;
-		this.seek(0);
 		this.size = stat.size;
+		this.seek(0);
 		Object.seal(this);
 	}
 	
@@ -109,9 +109,9 @@ class FileByteSink implements ByteSink {
 		let fd: number|undefined = undefined;
 		try {
 			fd = await fs.open(this.path, 'r+');
-			let bytesWritten = 0;
-			let buf = ((bytes instanceof Buffer) ? bytes : Buffer.from(
-				bytes.buffer, bytes.byteOffset, bytes.length));
+			const bytesWritten = 0;
+			const buf = ((bytes instanceof Buffer) ? bytes : Buffer.from(
+				bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.length));
 			await fs.writeFromBuf(fd, this.offset, buf);
 			this.offset += buf.length;
 			if (this.size < this.offset) {
@@ -165,10 +165,10 @@ async function makeFolder(root: string, path: string[], exclusive = false):
 		Promise<void> {
 	if (path.length === 0) { throw new Error('Invalid file path'); }
 	let pathStr = root;
-	let lastIndex = path.length-1;
+	const lastIndex = path.length-1;
 	for (let i=0; i < path.length; i+=1) {
 		pathStr += '/'+path[i];
-		let stats = await fs.stat(pathStr).catch((exc: FileException) => {
+		const stats = await fs.lstat(pathStr).catch((exc: FileException) => {
 			if (exc.code !== excCode.notFound) {
 				throw maskPathInExc(root.length, exc); }
 			return fs.mkdir(pathStr)
@@ -186,11 +186,32 @@ async function makeFolder(root: string, path: string[], exclusive = false):
 	}
 }
 
-async function checkPresence(ofFolder: boolean, root: string, path: string[],
-		throwIfMissing: boolean): Promise<boolean> {
+async function checkPresence(type: 'folder'|'file'|'link', root: string,
+		path: string[], throwIfMissing: boolean): Promise<boolean> {
 	try {
-		let stats = await fs.stat(root+'/'+path.join('/'));
-		return (ofFolder ? stats.isDirectory() : stats.isFile());
+		const pathStr = pathMod.join(root, ...path);
+		if (type === 'file') {
+			const stats = await fs.lstat(pathStr);
+			return stats.isFile();
+		} else if (type === 'folder') {
+			const stats = await fs.lstat(pathStr);
+			return stats.isDirectory();
+		} else if (type === 'link') {
+			const pathsOnDisk = [ linkPath.make(pathStr, false),
+				linkPath.make(pathStr, true), pathStr ];
+			for (const p of pathsOnDisk) {
+				try {
+					const stats = await fs.lstat(p);
+					return stats.isSymbolicLink();
+				} catch (e) {
+					if (p === pathStr) { throw e; }
+					if ((e as FileException).notFound) { continue; }
+				}
+			}
+			throw new Error(`Options for link's paths should be such that this line is not accessable.`);
+		} else {
+			throw new Error(`Unknown type ${type}`);
+		}
 	} catch (exc) {
 		if (!throwIfMissing && (exc.code === excCode.notFound)) {
 			return false;
@@ -199,128 +220,219 @@ async function checkPresence(ofFolder: boolean, root: string, path: string[],
 	}
 }
 
+const sep = pathMod.sep;
+
+/**
+ * This function returns path split into sections. Implementation uses node's
+ * path normalization. This allows to accept windows path on windows platform
+ * as well as a posix path, which is what 3NStorage uses.
+ * @param path
+ */
+function splitPathIntoParts(path: string): string[] {
+	return pathMod.join(sep, path).split(sep).filter(part => (part.length > 0));
+}
+
 export type FileStats = web3n.files.FileStats;
 export type FS = web3n.files.FS;
+export type WritableFS = web3n.files.WritableFS;
+export type ReadonlyFS = web3n.files.ReadonlyFS;
+export type File = web3n.files.File;
+export type WritableFile = web3n.files.WritableFile;
+export type ReadonlyFile = web3n.files.ReadonlyFile;
+export type FSType = web3n.files.FSType;
 export type ListingEntry = web3n.files.ListingEntry;
+export type SymLink = web3n.files.SymLink;
+export type FolderEvent = web3n.files.FolderEvent;
+export type EntryAdditionEvent = web3n.files.EntryAdditionEvent;
+export type EntryRemovalEvent = web3n.files.EntryRemovalEvent;
+export type Observer<T> = web3n.Observer<T>;
+type SelectCriteria = web3n.files.SelectCriteria;
+type FSCollection = web3n.files.FSCollection;
 
 interface FolderLinkParams {
-	folderName: string;
 	path: string;
 }
 
 interface FileLinkParams {
-	fileName: string;
 	path: string;
 }
 
-type SymLink = web3n.storage.SymLink;
+namespace linkPath {
 
-export class DeviceFS extends AbstractFS implements FS {
-	
-	constructor(
+	const wrExt = '.$writable-link$';
+	const roExt = '.$readonly-link$';
+
+	export function read(lName: string): { writable: boolean; lName: string; } {
+		if (lName.endsWith(wrExt) && (lName.length > wrExt.length)) {
+			return {
+				lName: lName.substring(0, lName.length - wrExt.length),
+				writable: true
+			};
+		} else if (lName.endsWith(roExt) && (lName.length > roExt.length)) {
+			return {
+				lName: lName.substring(0, lName.length - roExt.length),
+				writable: false
+			};
+		} else {
+			return { lName, writable: false };
+		}
+	}
+
+	export function make(lName: string, writable: boolean): string {
+		return `${lName}${writable ? wrExt : roExt }`;
+	}
+
+}
+Object.freeze(linkPath);
+
+type Transferable = web3n.implementation.Transferable;
+
+export class DeviceFS implements WritableFS, Linkable {
+
+	versioned: false = false;
+	type: FSType = 'device';
+
+	private constructor(
 			private root: string,
-			writable: boolean,
-			folderName?: string) {
-		super(folderName!, writable, false);
+			public writable: boolean,
+			public name = '') {
 		Object.freeze(this);
 	}
 
+	async close(): Promise<void> {}
+
 	async getLinkParams(): Promise<LinkParameters<FolderLinkParams>> {
-		let params: FolderLinkParams = {
-			folderName: this.name,
+		const params: FolderLinkParams = {
 			path: this.root
 		};
-		let linkParams: LinkParameters<FolderLinkParams> = {
+		const linkParams: LinkParameters<FolderLinkParams> = {
 			storageType: 'device',
 			isFolder: true,
 			params
 		};
+		if (!this.writable) {
+			linkParams.readonly = true;
+		}
 		return linkParams;
 	}
 
-	async getLinkParamsForFile(path: string, fileName: string,
-			writable: boolean): Promise<LinkParameters<FileLinkParams>> {
-		let params: FileLinkParams = {
-			fileName: fileName,
+	async getLinkParamsForFile(path: string, writable: boolean): Promise<LinkParameters<FileLinkParams>> {
+		const params: FileLinkParams = {
 			path: this.fullPath(path)
 		};
-		let linkParams: LinkParameters<FileLinkParams> = {
+		const linkParams: LinkParameters<FileLinkParams> = {
 			storageType: 'device',
 			isFile: true,
 			params
 		};
+		if (!writable) {
+			linkParams.readonly = true;
+		}
 		return linkParams;
 	}
 	
 	static makeFolderSymLink(fp: LinkParameters<FolderLinkParams>): SymLink {
-		let path = fp.params.folderName;
-		let readonly = fp.readonly;
-		let sl: SymLink = {
+		const path = fp.params.path;
+		const readonly = !!fp.readonly;
+		const sl: SymLink = {
 			isFolder: true,
-			readonly: !!readonly,
-			target: () => DeviceFS.make(path, !readonly)
+			readonly,
+			target: () => (readonly ?
+				DeviceFS.makeReadonly(path) : DeviceFS.makeWritable(path))
 		};
+		(sl as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 		return Object.freeze(sl);
 	}
 	
 	static makeFileSymLink(fp: LinkParameters<FileLinkParams>): SymLink {
-		let path = fp.params.fileName;
-		let readonly = !!fp.readonly;
-		let fName = basename(path);
-		let parentPath = dirname(path);
-		let sl: SymLink = {
-			isFolder: true,
+		const path = fp.params.path;
+		const readonly = !!fp.readonly;
+		const fName = pathMod.basename(path);
+		const parentPath = pathMod.dirname(path);
+		const sl: SymLink = {
+			isFile: true,
 			readonly,
-			target: async (): Promise<File> => {
-				let fs = await DeviceFS.make(parentPath, !readonly);
-				return (readonly ?
-					fs.readonlyFile(fName) : fs.writableFile(fName));
+			target: async () => {
+				if (readonly) {
+					const fs = await DeviceFS.makeReadonly(parentPath);
+					return fs.readonlyFile(fName);
+				} else {
+					const fs = await DeviceFS.makeWritable(parentPath);
+					return fs.writableFile(fName);
+				}
 			}
 		};
+		(sl as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 		return Object.freeze(sl);
 	}
 
-	static async make(root: string, writable = true): Promise<FS> {
-		let stat = await fs.stat(root).catch((e) => {
-			throw maskPathInExc(0, e);
+	static async makeWritable(root: string, create = false,
+			exclusive = false): Promise<WritableFS> {
+		await fs.lstat(root)
+		.then(stat => {
+			if (create && exclusive) { throw makeFileException(
+				excCode.alreadyExists, root); }
+			if (!stat.isDirectory()) { throw makeFileException(
+				excCode.notDirectory, root); }
+		}, async (e: FileException) => {
+			if (!e.notFound || !create) { throw maskPathInExc(0, e); }
+			await fs.mkdir(root);
 		});
-		if (!stat.isDirectory()) {
-			throw makeFileException(excCode.notDirectory, root);
-		}
-		return Object.freeze(wrapFSImplementation(new DeviceFS(root, writable)));
+		const folderName = pathMod.basename(root);
+		return DeviceFS.makeAndWrapWrFS(root, folderName);
+	}
+
+	private static makeAndWrapWrFS(root: string, name: string): WritableFS {
+		const wrFS = wrapWritableFS(new DeviceFS(root, true, name));
+		DeviceFS.itemToPathMap.set(wrFS, root);
+		return wrFS;
+	}
+
+	private static makeAndWrapRoFS(root: string, name: string): ReadonlyFS {
+		const roFS = wrapReadonlyFS(new DeviceFS(root, false, name));
+		DeviceFS.itemToPathMap.set(roFS, root);
+		return roFS;
+	}
+
+	static async makeReadonly(root: string): Promise<ReadonlyFS> {
+		await checkFolderPresence(root);
+		const folderName = pathMod.basename(root);
+		return DeviceFS.makeAndWrapRoFS(root, folderName);
 	}
 	
-	private async makeSubRoot(writable: boolean, folder: string,
-			folderName?: string): Promise<FS> {
-		if (writable) {
-			await this.makeFolder(folder);
+	async readonlySubRoot(folder: string): Promise<ReadonlyFS> {
+		await this.checkFolderPresence(folder, true);
+		const folderName = pathMod.basename(folder);
+		const subRootPath = this.fullPath(folder, true);
+		return DeviceFS.makeAndWrapRoFS(subRootPath, folderName);
+	}
+
+	async writableSubRoot(folder: string, create = true, exclusive = false):
+			Promise<WritableFS> {
+		if (create) {
+			await this.makeFolder(folder, exclusive);
 		} else {
 			await this.checkFolderPresence(folder, true);
 		}
-		if (folderName === undefined) {
-			let slashInd = folder.lastIndexOf('/');
-			folderName = ((slashInd < 0) ?
-				(undefined as any) : folder.substring(slashInd+1));
-		}
-		let subRoot = new DeviceFS(this.fullPath(folder, true),
-			writable, folderName);
-		return Object.freeze(wrapFSImplementation(subRoot));
-	}
-
-	readonlySubRoot(folder: string, folderName?: string): Promise<FS> {
-		return this.makeSubRoot(false, folder, folderName);
-	}
-
-	writableSubRoot(folder: string, folderName?: string): Promise<FS> {
-		return this.makeSubRoot(true, folder, folderName);
+		const folderName = pathMod.basename(folder);
+		const subRootPath = this.fullPath(folder, true);
+		return DeviceFS.makeAndWrapWrFS(subRootPath, folderName);
 	}
 	
+	/**
+	 * This returns a full path on device. If it is windows (non-posix),
+	 * windows path is returned.
+	 * @param path is what used in 3NWeb, i.e. posix path. When on windows, path
+	 * can also be a windows path, and this method adjusts accordingly to join
+	 * given path to root path.
+	 * @param canBeRoot 
+	 */
 	private fullPath(path: string, canBeRoot = false): string {
-		return this.root + '/' + splitPathIntoParts(path, canBeRoot).join('/');
+		return pathUnderRoot(this.root, path, canBeRoot);
 	}
 	
 	async statFile(path: string): Promise<FileStats> {
-		let stats = await fs.stat(this.fullPath(path)).catch((e) => {
+		const stats = await fs.lstat(this.fullPath(path)).catch((e) => {
 			throw maskPathInExc(this.root.length, e);
 		});
 		if (!stats.isFile()) { throw makeFileException(excCode.notFound, path); }
@@ -328,6 +440,11 @@ export class DeviceFS extends AbstractFS implements FS {
 			mtime: stats.atime,
 			size: stats.size
 		};
+	}
+
+	select(path: string, criteria: SelectCriteria):
+			Promise<{ items: FSCollection; completion: Promise<void>; }> {
+		return selectInFS(this, path, criteria);
 	}
 	
 	async readBytes(path: string, start?: number, end?: number):
@@ -339,7 +456,7 @@ export class DeviceFS extends AbstractFS implements FS {
 		let fd: number|undefined = undefined;
 		try {
 			fd = await fs.open(this.fullPath(path), 'r');
-			let size = (await fs.fstat(fd)).size;
+			const size = (await fs.fstat(fd)).size;
 			if (size === 0) { return; }
 			if (typeof start !== 'number') {
 				start = 0;
@@ -348,7 +465,7 @@ export class DeviceFS extends AbstractFS implements FS {
 				end = size;
 			}
 			if ((end - start) < 1) { return; }
-			let bytes = new Buffer(end - start);
+			const bytes = new Buffer(end - start);
 			await fs.readToBuf(fd, start, bytes);
 			return bytes;
 		} catch (e) {
@@ -360,13 +477,13 @@ export class DeviceFS extends AbstractFS implements FS {
 	
 	async getByteSink(path: string, create = true, exclusive = false):
 			Promise<web3n.ByteSink> {
-		let pathSections = splitPathIntoParts(path);
-		let pathStr = this.fullPath(path);
+		const pathSections = splitPathIntoParts(path);
+		const pathStr = this.fullPath(path);
 		let fd: number|undefined = undefined;
 		try {
 			if (create) {
 				if (pathSections.length > 1) {
-					let enclosingFolder = pathSections.slice(
+					const enclosingFolder = pathSections.slice(
 						0, pathSections.length-1).join('/');
 					await this.makeFolder(enclosingFolder);
 				}
@@ -382,7 +499,7 @@ export class DeviceFS extends AbstractFS implements FS {
 			} else {
 				fd = await fs.open(pathStr, 'r+');
 			}
-			let sink = syncWrapByteSink(new FileByteSink(
+			const sink = syncWrapByteSink(new FileByteSink(
 				pathStr, this.root.length, await fs.fstat(fd)));
 			Object.freeze(sink);
 			return sink;
@@ -394,11 +511,11 @@ export class DeviceFS extends AbstractFS implements FS {
 	}
 	
 	async getByteSource(path: string): Promise<web3n.ByteSource> {
-		let pathStr = this.fullPath(path);
-		let stats = await fs.stat(pathStr).catch((e) => {
+		const pathStr = this.fullPath(path);
+		const stats = await fs.lstat(pathStr).catch((e) => {
 			throw maskPathInExc(this.root.length, e);
 		});
-		let src = syncWrapByteSource(new FileByteSource(
+		const src = syncWrapByteSource(new FileByteSource(
 			pathStr, this.root.length, stats));
 		Object.freeze(src);
 		return src;
@@ -406,16 +523,16 @@ export class DeviceFS extends AbstractFS implements FS {
 	
 	async writeBytes(path: string, bytes: Uint8Array, create = true,
 			exclusive = false): Promise<void> {
-		let pathSections = splitPathIntoParts(path);
-		let pathStr = this.fullPath(path);
+		const pathSections = splitPathIntoParts(path);
+		const pathStr = this.fullPath(path);
 		let fd: number|undefined = undefined;
 		try {
 			if (create) {
 				if (pathSections.length > 1) {
-					let enclosingFolder = pathSections.slice(
+					const enclosingFolder = pathSections.slice(
 						0, pathSections.length-1).join('/');
 					await this.makeFolder(enclosingFolder);
-				} 
+				}
 				fd = await fs.open(pathStr, (exclusive ? 'wx' : 'w'));
 			} else {
 				fd = await fs.open(pathStr, 'r+');
@@ -428,9 +545,41 @@ export class DeviceFS extends AbstractFS implements FS {
 			if (fd !== undefined) { await fs.close(fd); }
 		}
 	}
+
+	writeTxtFile(path: string, txt: string, create = true, exclusive = false):
+			Promise<void> {
+		const bytes = utf8.pack(txt);
+		return this.writeBytes(path, bytes, create, exclusive);
+	}
+	
+	async readTxtFile(path: string): Promise<string> {
+		const bytes = await this.readBytes(path);
+		try {
+			const txt = (bytes ? utf8.open(bytes) : '');
+			return txt;
+		} catch (err) {
+			throw makeFileException(excCode.parsingError, path, err);
+		}
+	}
+	
+	writeJSONFile(path: string, json: any, create = true, exclusive = false):
+			Promise<void> {
+		const txt = JSON.stringify(json);
+		return this.writeTxtFile(path, txt, create, exclusive);
+	}
+
+	async readJSONFile<T>(path: string): Promise<T> {
+		const txt = await this.readTxtFile(path);
+		try {
+			const json = JSON.parse(txt);
+			return json;
+		} catch (err) {
+			throw makeFileException(excCode.parsingError, path, err);
+		}
+	}
 	
 	async deleteFile(path: string): Promise<void> {
-		let pathStr = this.fullPath(path);
+		const pathStr = this.fullPath(path);
 		await fs.unlink(pathStr)
 		.catch((e: FileException) => {
 			if (e.isDirectory) {
@@ -441,22 +590,22 @@ export class DeviceFS extends AbstractFS implements FS {
 	}
 	
 	makeFolder(path: string, exclusive = false): Promise<void> {
-		let pathSections = splitPathIntoParts(path);
+		const pathSections = splitPathIntoParts(path);
 		return makeFolder(this.root, pathSections, exclusive);
 	}
 	
 	checkFolderPresence(path: string, throwIfMissing = false): Promise<boolean> {
-		return checkPresence(true, this.root,
+		return checkPresence('folder', this.root,
 			splitPathIntoParts(path), throwIfMissing);
 	}
 	
 	checkFilePresence(path: string, throwIfMissing = false): Promise<boolean> {
-		return checkPresence(false, this.root,
+		return checkPresence('file', this.root,
 			splitPathIntoParts(path), throwIfMissing);
 	}
 	
 	async deleteFolder(path: string, removeContent = false): Promise<void> {
-		let pathStr = this.fullPath(path);
+		const pathStr = this.fullPath(path);
 		try {
 			if (removeContent) {
 				await fs.rmDirWithContent(pathStr);
@@ -470,10 +619,10 @@ export class DeviceFS extends AbstractFS implements FS {
 	
 	async listFolder(folder: string): Promise<ListingEntry[]> {
 		try {
-			let pathStr = this.fullPath(folder, true);
-			let lst: ListingEntry[] = [];
-			for (let fName of await fs.readdir(pathStr)) {
-				let stats = await fs.stat(pathStr+'/'+fName).catch((exc) => {});
+			const pathStr = this.fullPath(folder, true);
+			const lst: ListingEntry[] = [];
+			for (const fName of await fs.readdir(pathStr)) {
+				const stats = await fs.lstat(pathStr+'/'+fName).catch((exc) => {});
 				if (!stats) { continue; }
 				if (stats.isFile()) {
 					lst.push({
@@ -485,6 +634,11 @@ export class DeviceFS extends AbstractFS implements FS {
 						name: fName,
 						isFolder: true
 					});
+				} else if (stats.isSymbolicLink()) {
+					lst.push({
+						name: linkPath.read(fName).lName,
+						isLink: true
+					});
 				}
 			}
 			return lst;
@@ -494,17 +648,17 @@ export class DeviceFS extends AbstractFS implements FS {
 	}
 	
 	async move(initPath: string, newPath: string): Promise<void> {
-		let src = splitPathIntoParts(initPath);
-		let dst = splitPathIntoParts(newPath);
+		const src = splitPathIntoParts(initPath);
+		const dst = splitPathIntoParts(newPath);
 		if (src.length === 0) { throw new Error('Invalid source path'); }
 		if (dst.length === 0) { throw new Error('Invalid destination path'); }
 		try {
 			// check existence of source
-			let srcPath = this.root+'/'+src.join('/');
-			await fs.stat(srcPath);
+			const srcPath = this.root+'/'+src.join('/');
+			await fs.lstat(srcPath);
 			//ensure non-existence of destination
-			let dstPath = this.root+'/'+dst.join('/');
-			await fs.stat(dstPath)
+			const dstPath = this.root+'/'+dst.join('/');
+			await fs.lstat(dstPath)
 			.then(() => {
 				throw makeFileException(excCode.alreadyExists, newPath);
 			}, (exc: FileException) => {
@@ -519,20 +673,305 @@ export class DeviceFS extends AbstractFS implements FS {
 			throw maskPathInExc(this.root.length, e);
 		}
 	}
-	
-	protected async makeFileObject(path: string, exists: boolean,
-			writable: boolean): Promise<File> {
-		let f = new FileObject(this, path, exists, writable);
-		return wrapFileImplementation(f);
+
+	checkLinkPresence(path: string, throwIfMissing = true): Promise<boolean> {
+		return checkPresence('link', this.root,
+			splitPathIntoParts(path), throwIfMissing);
 	}
 	
+	async deleteLink(path: string): Promise<void> {
+		path = this.fullPath(path);
+		const pathsOnDisk = [ linkPath.make(path, false),
+			linkPath.make(path, true), path ];
+		let err: FileException|undefined = undefined;
+		for (const p of pathsOnDisk) {
+			try {
+				await fs.unlink(p);
+				err = undefined;
+				break;
+			} catch (e) {
+				err = e;
+			}
+		}
+		if (err) {
+			if (err.isDirectory) {
+				err.notLink = true;
+			}
+			throw maskPathInExc(this.root.length, err);
+		}
+	}
+
+	async readLink(path: string): Promise<SymLink> {
+		try {
+			path = this.fullPath(path);
+			const pathsOnDisk = [ linkPath.make(path, false),
+				linkPath.make(path, true), path ];
+			let targetPath: string|undefined = undefined;
+			let writable = false;
+			for (const p of pathsOnDisk) {
+				try {
+					targetPath = await fs.readlink(p);
+					writable = linkPath.read(p).writable;
+					break;
+				} catch (e) {
+					if (p === path) { throw e; }
+					if ((e as FileException).notFound) { continue; }
+				}
+			}
+			if (!targetPath) { throw new Error(
+				`Options for link's paths should be such that this line is not accessable.`); }
+			const stat = await fs.lstat(targetPath);
+			if (stat.isFile()) {
+				const fp: LinkParameters<FileLinkParams> = {
+					isFile: true,
+					storageType: 'device',
+					readonly: !writable,
+					params: {
+						path: targetPath,
+					}
+				};
+				return DeviceFS.makeFileSymLink(fp);
+			} else if (stat.isDirectory()) {
+				const fp: LinkParameters<FolderLinkParams> = {
+					isFolder: true,
+					storageType: 'device',
+					readonly: !writable,
+					params: {
+						path: targetPath,
+					}
+				};
+				return DeviceFS.makeFolderSymLink(fp);
+			} else {
+				throw new Error(`Link points to neither file, nor folder`);
+			}
+		} catch (e) {
+			throw maskPathInExc(this.root.length, e);
+		}
+	}
+	
+	async link(path: string, target: File | FS): Promise<void> {
+		// do sanity checks
+		if (!target ||
+				(typeof (<Linkable> <any> target).getLinkParams !== 'function')) {
+			throw new Error('Given target is not-linkable');
+		}
+		const params = await (target as any as Linkable).getLinkParams();
+		// note, we could check (params.storageType !== 'device'), but, since we
+		// also use this implementation for mocking, we do params matching instead
+		if (typeof params.params.path !== 'string') {
+			throw new Error(`Cannot create link to ${params.storageType} from ${this.type} storage.`);
+		}
+
+		// ensure presence of folder in which link is made
+		const pathSections = splitPathIntoParts(path);
+		if (pathSections.length > 1) {
+			const enclosingFolder = pathSections.slice(
+				0, pathSections.length-1).join('/');
+			await this.makeFolder(enclosingFolder);
+		}
+
+		// create native symlink
+		if (params.isFile) {
+			const p = (params as LinkParameters<FileLinkParams>).params;
+			await fs.symlink(p.path,
+				linkPath.make(this.fullPath(path), !params.readonly));
+		} else if (params.isFolder) {
+			const p = (params as LinkParameters<FolderLinkParams>).params;
+			await fs.symlink(p.path,
+				linkPath.make(this.fullPath(path), !params.readonly));
+		} else {
+			throw new Error('Generated link params are for neither file, nor folder');
+		}
+	}
+
+	private static itemToPathMap = new WeakMap<FS|File, string>();
+	
+	static getPath(pathOrFile: File|string, fs?: FS): string|undefined {
+		if (!fs) { return this.itemToPathMap.get(pathOrFile as File); }
+		const fsPath = this.itemToPathMap.get(fs);
+		if (fsPath === undefined) { return; }
+		return ((typeof fsPath === 'string') ?
+			pathUnderRoot(fsPath, pathOrFile as string, true) : undefined);
+	}
+
+	async readonlyFile(path: string): Promise<ReadonlyFile> {
+		await this.checkFilePresence(path, true);
+		const filePath = this.fullPath(path);
+		const roF = wrapReadonlyFile(new FileObject(this, path, true, false));
+		DeviceFS.itemToPathMap.set(roF, filePath);
+		return roF;
+	}
+
+	async writableFile(path: string, create = true, exclusive = false):
+			Promise<WritableFile> {
+		const exists = await this.checkFilePresence(path);
+		if (exists && create && exclusive) { throw makeFileException(
+			excCode.alreadyExists, path); }
+		if (!exists && !create) { throw makeFileException(
+			excCode.notFound, path); }
+		const filePath = this.fullPath(path);
+		const wrF = wrapWritableFile(new FileObject(this, path, exists, true));
+		DeviceFS.itemToPathMap.set(wrF, filePath);
+		return wrF;
+	}
+
+	watchFolder(path: string, observer: Observer<FolderEvent>): () => void {
+		const fullFolderPath = this.fullPath(path, true);
+		let watcher = watch(fullFolderPath);
+		if (observer.next) {
+			watcher.on('change', (fsEvent, name: string) => {
+				if (fsEvent !== 'rename') { return; }
+				fs.stat(`${fullFolderPath}/${name}`).then(stat => {
+					if (!observer) { return; }
+					let entry: ListingEntry;
+					if (stat.isFile()) {
+						entry = { name, isFile: true };
+					} else if (stat.isDirectory()) {
+						entry = { name, isFolder: true };
+					} else if (stat.isSymbolicLink()) {
+						entry = { name, isLink: true };
+					} else {
+						return;
+					}
+					const folderEvent: EntryAdditionEvent = {
+						type: 'entry-addition',
+						path,
+						entry
+					};
+					observer.next!(folderEvent);
+				}, (err: FileException) => {
+					if (!observer) { return; }
+					if (err.notFound) {
+						const folderEvent: EntryRemovalEvent = {
+							type: 'entry-removal',
+							path,
+							name
+						};
+						observer.next!(folderEvent);
+						return;
+					}
+					try {
+						if (observer.error) {
+							observer.error(maskPathInExc(this.root.length, err));
+						} else if (observer.complete) {
+							observer.complete();
+						}
+					} finally {
+						detach();
+					}
+				});
+			});
+		}
+		watcher.on('error', (code, sig) => {
+			if (!observer) { return; }
+			try {
+				if (observer.error) {
+					observer.error(makeFileException(sig, path, { code, sig }));
+				} else if (observer.complete) {
+					observer.complete();
+				}
+			} finally {
+				detach();
+			}
+		});
+		const detach = () => {
+			if (!watcher) { return; }
+			watcher.close();
+			watcher = undefined as any;
+			observer = undefined as any;
+		}
+		return detach;
+	}
+
+	watchFile(): never {
+		throw new Error('Not implemented, yet');
+	}
+
+	watchTree(): never {
+		throw new Error('Not implemented, yet');
+	}
+
+	async copyFile(src: string, dst: string, overwrite = false): Promise<void> {
+		const srcBytes = await this.getByteSource(src);
+		const sink = await this.getByteSink(dst, true, !overwrite);
+		await pipe(srcBytes, sink);
+	}
+
+	async copyFolder(src: string, dst: string, mergeAndOverwrite = false):
+			Promise<void> {
+		const list = await this.listFolder(src);
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (const f of list) {
+			if (f.isFile) {
+				await this.copyFile(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isFolder) {
+				await this.copyFolder(`${src}/${f.name}`, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				throw new Error('This implementation cannot copy links');
+			}
+		}
+	}
+
+	async saveFile(file: File, dst: string, overwrite = false): Promise<void> {
+		const src = await file.getByteSource();
+		const sink = await this.getByteSink(dst, true, !overwrite);
+		await pipe(src, sink);
+	}
+
+	async saveFolder(folder: FS, dst: string, mergeAndOverwrite = false):
+			Promise<void> {
+		const lst = await folder.listFolder('/');
+		await this.makeFolder(dst, !mergeAndOverwrite);
+		for (const f of lst) {
+			if (f.isFile) {
+				const src = await folder.getByteSource(f.name);
+				const sink = await this.getByteSink(
+					`${dst}/${f.name}`, true, !mergeAndOverwrite);
+				await pipe(src, sink);
+			} else if (f.isFolder) {
+				const subFolder = await folder.readonlySubRoot(f.name);
+				await this.saveFolder(subFolder, `${dst}/${f.name}`,
+					mergeAndOverwrite);
+			} else if (f.isLink) {
+				throw new Error('This implementation cannot copy links');
+			}
+		}
+	}
+
 }
 Object.freeze(DeviceFS.prototype);
 Object.freeze(DeviceFS);
 
-class FileObject implements File, Linkable {
+/**
+ * This returns a full path on device. If it is windows (non-posix),
+ * windows path is returned.
+ * @param root
+ * @param path is what used in 3NWeb, i.e. posix path. When on windows, path
+ * can also be a windows path, and this method adjusts accordingly to join
+ * given path to root path.
+ * @param canBeRoot 
+ */
+function pathUnderRoot(root: string, path: string, canBeRoot = false): string {
+	path = pathMod.join(sep, path);
+	if ((path === sep) && !canBeRoot) { throw new Error(
+		`Given path incorrectly points to root: ${path}`); }
+	return pathMod.join(root, path);
+}
 
-	public versioned = false;
+async function checkFolderPresence(path: string): Promise<void> {
+	const stat = await fs.lstat(path).catch((e) => {
+		throw maskPathInExc(0, e);
+	});
+	if (!stat.isDirectory()) {
+		throw makeFileException(excCode.notDirectory, path);
+	}
+}
+
+class FileObject implements WritableFile, Linkable {
+
+	public versioned: false = false;
 
 	public name: string;
 
@@ -544,15 +983,16 @@ class FileObject implements File, Linkable {
 			private path: string,
 			private exists: boolean,
 			public writable: boolean) {
-		this.name = basename(this.path);
+		this.name = pathMod.basename(this.path);
 		this.isNew = !exists;
 		this.pathPrefixMaskLen = this.path.length - this.name.length;
+		if (this.writable && !this.fs.writable) { throw new Error(
+			`Cannot create writable file in a readonly file system.`); }
 		Object.seal(this);
 	}
 
 	async getLinkParams(): Promise<LinkParameters<FileLinkParams>> {
-		return this.fs.getLinkParamsForFile(
-			this.path, this.name, this.writable);
+		return this.fs.getLinkParamsForFile(this.path, this.writable);
 	}
 
 	async writeBytes(bytes: Uint8Array): Promise<void> {
@@ -633,8 +1073,8 @@ class FileObject implements File, Linkable {
 	}
 
 	async copy(file: web3n.files.File): Promise<void> {
-		let sink = await this.getByteSink();
-		let src = await file.getByteSource();
+		const sink = await this.getByteSink();
+		const src = await file.getByteSource();
 		await pipe(src, sink);
 	}
 

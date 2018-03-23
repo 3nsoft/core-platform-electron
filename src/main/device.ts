@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -20,15 +20,179 @@ import { stat as fsStat } from '../lib-common/async-fs-node';
 import { DeviceFS } from '../lib-client/local-files/device-fs';
 import { FileException } from '../lib-common/exceptions/file';
 import { bind } from '../lib-common/binding';
-import { Duplex, RequestEnvelope } from '../lib-common/ipc/electron-ipc';
-import { ProxiedObjGetter } from './proxied-objs/fs';
-import { device, FileDetails } from '../renderer/common';
+import { AppInstance } from '../ui/app-instance';
 
-function makeFileFor(path: string, exists: boolean, isWritable: boolean):
-		Promise<web3n.files.File> {
-	let fName = basename(path);
-	let folder = dirname(path);
-	let fs = new DeviceFS(folder, true);
+export interface Device {
+	openFileDialog: web3n.device.files.OpenFileDialog;
+	openFolderDialog: web3n.device.files.OpenFolderDialog;
+	saveFileDialog: web3n.device.files.SaveFileDialog;
+	saveFolderDialog: web3n.device.files.SaveFolderDialog;
+}
+
+export interface DeviceFileOpener {
+	remotedCAP: Device;
+	setAppInstance(app: AppInstance): void;
+	close(): void;
+}
+
+export function makeDeviceFileOpener(): DeviceFileOpener {
+	return (new DevFileOpener()).wrap();
+}
+
+type BrowserWindow = Electron.BrowserWindow;
+type FileTypeFilter = web3n.device.files.FileTypeFilter;
+type WritableFile = web3n.files.WritableFile;
+type ReadonlyFile = web3n.files.ReadonlyFile;
+type WritableFS = web3n.files.WritableFS;
+type ReadonlyFS = web3n.files.ReadonlyFS;
+
+class DevFileOpener {
+
+	private win: BrowserWindow|undefined = undefined;
+
+	constructor() {
+		Object.seal(this);
+	}
+
+	wrap(): DeviceFileOpener {
+		const remotedCAP: Device = {
+			openFileDialog: bind(this, this.openFileDialog),
+			openFolderDialog: bind(this, this.openFolderDialog),
+			saveFileDialog: bind(this, this.saveFileDialog),
+			saveFolderDialog: bind(this, this.saveFolderDialog),
+		};
+		Object.freeze(remotedCAP);
+		
+		const w: DeviceFileOpener = {
+			setAppInstance: bind(this, this.setAppInstance),
+			close: (): void => {
+				this.win = undefined;
+			},
+			remotedCAP
+		};
+		return Object.freeze(w);
+	}
+
+	private setAppInstance(app: AppInstance): void {
+		if (this.win) { throw new Error(`Window instance is already set`); }
+		this.win = app.window;
+	}
+
+	async openFileDialog(title: string, buttonLabel: string,
+			multiSelections: boolean, filters?: FileTypeFilter[]):
+			Promise<ReadonlyFile[]|undefined> {
+		const paths = await this.openningDialog('file',
+			title, buttonLabel, multiSelections, filters);
+		if (!paths) { return; }
+		const files: ReadonlyFile[] = [];
+		for (const path of paths) {
+			files.push(await makeFileFor(path, true, false));
+		}
+		return files;
+	}
+
+	async openFolderDialog(title: string, buttonLabel: string,
+			multiSelections: boolean, filters?: FileTypeFilter[]):
+			Promise<WritableFS[]|undefined> {
+		const paths = await this.openningDialog('fs',
+			title, buttonLabel, multiSelections, filters);
+		if (!paths) { return; }
+		const folders: WritableFS[] = [];
+		for (const path of paths) {
+			folders.push(await makeFolderFor(path, true, true) as WritableFS);
+		}
+		return folders;
+	}
+
+	private async openningDialog(type: 'file'|'fs', title: string,
+			buttonLabel: string, multiSelections: boolean,
+			filters?: FileTypeFilter[]): Promise<string[]|undefined> {
+		const properties: any[] = ((type === 'fs') ?
+			[ 'openDirectory' ] : [ 'openFile' ]);
+		if (multiSelections) {
+			properties.push('multiSelections');
+		}
+		properties.push('createDirectory');
+		const paths = await new Promise<string[]>(resolve => {
+			if (!this.win || this.win.isDestroyed()) { throw new Error(
+				`Parent window is either not set, or is already gone`); }
+			this.win.focus();
+			dialog.showOpenDialog(
+				this.win,
+				{ title, buttonLabel, filters, properties },
+				resolve);
+		});
+		if (!Array.isArray(paths) || (paths.length === 0)) { return; }
+		return paths;
+	}
+
+	async saveFileDialog(title: string, buttonLabel: string,
+			defaultPath: string, filters?: FileTypeFilter[]):
+			Promise<WritableFile|undefined> {
+		const path = await this.savingDialog(
+			title, buttonLabel, defaultPath, filters);
+		if (!path) { return; }
+		const exists = !!(await fsStat(path).catch((exc: FileException) => {
+			if (exc.notFound) { return; }
+			else { throw exc; }
+		}));
+		return (await makeFileFor(path, exists, true)) as WritableFile;
+	}
+
+	async saveFolderDialog(title: string, buttonLabel: string,
+			defaultPath: string, filters?: FileTypeFilter[]):
+			Promise<WritableFS|undefined> {
+		const path = await this.savingDialog(
+			title, buttonLabel, defaultPath, filters);
+		if (!path) { return; }
+		const exists = !!(await fsStat(path).catch((exc: FileException) => {
+			if (exc.notFound) { return; }
+			else { throw exc; }
+		}));
+		return (await makeFolderFor(path, exists, true)) as WritableFS;
+	}
+
+	private savingDialog(title: string, buttonLabel: string, defaultPath: string,
+			filters?: FileTypeFilter[]): Promise<string|undefined> {
+		return new Promise<string|undefined>(resolve => {
+			if (!this.win || this.win.isDestroyed()) { throw new Error(
+				`Parent window is either not set, or is already gone`); }
+			this.win.focus();
+			dialog.showSaveDialog(
+				this.win,
+				{ title, buttonLabel, defaultPath, filters },
+				resolve);
+		});
+	}
+
+	getDevFS(path: string, writable = false, create = false,
+			exclusive = false): Promise<WritableFS|ReadonlyFS> {
+		if (writable) {
+			return DeviceFS.makeWritable(path, create, exclusive);
+		} else {
+			return DeviceFS.makeReadonly(path);
+		}
+	}
+
+	async getDevFile(path: string, writable = false, create = false,
+			exclusive = false): Promise<WritableFile|ReadonlyFile> {
+		const fName = basename(path);
+		const folder = dirname(path);
+		const fs = await DeviceFS.makeWritable(folder);
+		if (writable) {
+			return fs.writableFile(fName, create, exclusive);
+		} else {
+			return fs.readonlyFile(fName);
+		}
+	}
+
+}
+
+async function makeFileFor(path: string, exists: boolean, isWritable: boolean):
+		Promise<ReadonlyFile|WritableFile> {
+	const fName = basename(path);
+	const folder = dirname(path);
+	const fs = await DeviceFS.makeWritable(folder);
 	if (isWritable) {
 		return fs.writableFile(fName, !exists, !exists);
 	} else {
@@ -36,93 +200,16 @@ function makeFileFor(path: string, exists: boolean, isWritable: boolean):
 	}
 } 
 
-async function openFileDialog(title: string, buttonLabel: string,
-		multiSelections: boolean, filters?: web3n.device.files.FileTypeFilter[]):
-		Promise<web3n.files.File[] | undefined> {
-	let properties: any[] = [ 'openFile' ];
-	if (multiSelections) {
-		properties.push('multiSelections');
+async function makeFolderFor(path: string, exists: boolean,
+		isWritable: boolean): Promise<ReadonlyFS|WritableFS> {
+	const fName = basename(path);
+	const folder = dirname(path);
+	const fs = await DeviceFS.makeWritable(folder);
+	if (isWritable) {
+		return fs.writableSubRoot(fName, !exists, !exists);
+	} else {
+		return fs.readonlySubRoot(fName);
 	}
-	let paths = await new Promise<string[]>((resolve) => {
-		dialog.showOpenDialog(
-			{ title, buttonLabel, filters, properties },
-			resolve);
-	});
-	if (!Array.isArray(paths) || (paths.length === 0)) { return; }
-	let files: web3n.files.File[] = [];
-	for (let path of paths) {
-		files.push(await makeFileFor(path, true, false));
-	}
-	return files;
-}
-
-async function saveFileDialog(title: string, buttonLabel: string,
-		defaultPath: string, filters?: web3n.device.files.FileTypeFilter[]):
-		Promise<web3n.files.File | undefined> {
-	let path = await new Promise<string>((resolve) => {
-		dialog.showSaveDialog(
-			{ title, buttonLabel, defaultPath, filters },
-			resolve);
-	});
-	if (!path) { return; }
-	let exists = !!(await fsStat(path).catch((exc: FileException) => {
-		if (exc.notFound) { return; }
-		else { throw exc; }
-	}));
-	return makeFileFor(path, exists, true);
-}
-
-export class Device {
-	
-	private uiSide: Duplex = (undefined as any);
-	private proxiedObjs: ProxiedObjGetter = (undefined as any);
-	
-	constructor() {
-		Object.seal(this);
-	}
-	
-	attachTo(uiSide: Duplex, proxiedObjs: ProxiedObjGetter): void {
-		this.uiSide = uiSide;
-		this.proxiedObjs = proxiedObjs;
-		this.attachHandlersToUI();
-	}
-	
-	private attachHandlersToUI(): void {
-		let uiReqNames = device.uiReqNames.files;
-		this.uiSide.addHandler(uiReqNames.openFileDialog,
-			bind(this, this.handleOpenFileDialog));
-		this.uiSide.addHandler(uiReqNames.saveFileDialog,
-			bind(this, this.handleSaveFileDialog));
-	}
-	
-	private async handleOpenFileDialog(
-			env: RequestEnvelope<device.OpenFileDialogRequest>):
-			Promise<FileDetails[]|undefined> {
-		let { title, btnLabel, multiSelections, filters } = env.req;
-		let files = await openFileDialog(
-			title, btnLabel, multiSelections, filters);
-		if (!files) { return; }
-		let fInfos: FileDetails[] = [];
-		for (let file of files) {
-			let fInfo = this.proxiedObjs.addFile(file as web3n.storage.File);
-			fInfos.push(fInfo);
-		}
-		return fInfos;
-	}
-	
-	private async handleSaveFileDialog(
-			env: RequestEnvelope<device.SaveFileDialogRequest>):
-			Promise<FileDetails|undefined> {
-		let { title, btnLabel, defaultPath, filters } = env.req;
-		let file = await saveFileDialog(
-			title, btnLabel, defaultPath, filters);
-		if (!file) { return; }
-		let fInfo = this.proxiedObjs.addFile(file as web3n.storage.File);
-		return fInfo;
-	}
-
-}
-Object.freeze(Device.prototype);
-Object.freeze(Device);
+} 
 
 Object.freeze(exports);

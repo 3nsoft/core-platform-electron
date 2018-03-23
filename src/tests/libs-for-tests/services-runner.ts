@@ -15,10 +15,12 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { fork, ChildProcess } from 'child_process';
-import { Duplex, commToChild } from '../../lib-common/ipc/node-child-ipc';
+import { IPCToChild, commToChild }
+	from '../../lib-common/ipc/node-child-ipc';
 import { DnsTxtRecords } from './dns';
 import { sleep } from '../../lib-common/processes';
 import { readdirSync } from 'fs';
+import { normalize } from 'path';
 
 export interface ServiceUrls {
 	mailerId: string;
@@ -28,25 +30,15 @@ export interface ServiceUrls {
 	tlsCert: string;
 }
 
-function serverFolder(): string {
-	let path = `${__dirname}/../../../../home-server`;
-	try {
-		readdirSync(path);
-		return path;
-	} catch (err) {
-		return `${__dirname}/../../../../spec-server`;
-	}
-}
-
-const DEFAULT_SERVER_SCRIPT_PATH =
-	`${serverFolder()}/build/mock/mock-as-child-proc.js`;
+const DEFAULT_SERVER_SCRIPT_PATH = normalize(
+	`${__dirname}/../../../../../spec-server/build/mock/mock-as-child-proc.js`);
 
 const SERVER_MOCK_CHANNEL = 'server-mock';
 
 export class ServicesRunner {
 
 	private proc: ChildProcess = (undefined as any);
-	private comm: Duplex = (undefined as any);
+	private comm: IPCToChild = (undefined as any);
 	
 	constructor(private servScript = DEFAULT_SERVER_SCRIPT_PATH) {
 		Object.seal(this);

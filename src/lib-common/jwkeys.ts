@@ -165,7 +165,7 @@ export function keyFromJson(key: JsonKey,
 		use: string, alg: string, klen: number): Key {
 	if (key.use === use) {
 		if (key.alg === alg) {
-			let bytes = base64.open(key.k);
+			const bytes = base64.open(key.k);
 			if (bytes.length !== klen) { throw new Error(
 					"Key "+key.kid+" has a wrong number of bytes"); }
 			return {
@@ -208,7 +208,7 @@ export function getPrincipalAddress(signedCert: SignedLoad): string {
 
 export module use {
 	
-	export let MID_PKLOGIN = 'login-pub-key';
+	export const MID_PKLOGIN = 'login-pub-key';
 	
 }
 Object.freeze(use);

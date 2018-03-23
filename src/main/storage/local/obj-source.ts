@@ -21,12 +21,12 @@ import { syncWrapObjSource }
 	from '../../../lib-common/obj-streaming/concurrent';
 import { Files, DiffInfo } from './files';
 
-function addToDiffPrecomputedValues(diff: DiffInfo): void {
-	let sections = diff.sections;
+function addPrecomputedValuesToDiff(diff: DiffInfo): void {
+	const sections = diff.sections;
 	let totalLen = 0;
-	for (let i=0; i < sections.length; i+=1) {
-		let sec = sections[i];
-		let secLen = sec[2];
+	for (let i=0; i<sections.length; i+=1) {
+		const sec = sections[i];
+		const secLen = sec[2];
 		totalLen += secLen;
 		sec[3] = totalLen;
 	}
@@ -45,7 +45,7 @@ class ByteSrc implements ByteSource {
 			private segsSize: number,
 			private diff: DiffInfo|undefined) {
 		if (this.diff) {
-			addToDiffPrecomputedValues(this.diff);
+			addPrecomputedValuesToDiff(this.diff);
 		}
 		Object.seal(this);
 	}
@@ -59,7 +59,7 @@ class ByteSrc implements ByteSource {
 	}
 
 	private async getChunk(start, end): Promise<Uint8Array|undefined> {
-		let chunk = await this.files.readObjSegments(
+		const chunk = await this.files.readObjSegments(
 			this.objId, this.version, start, end);
 		if (!chunk) { return undefined; }
 		this.segsPointer += chunk.length;
@@ -67,50 +67,50 @@ class ByteSrc implements ByteSource {
 	}
 
 	private async nonDiffRead(len: number): Promise<Uint8Array|undefined> {
-		let start = this.segsPointer;
-		let end = ((typeof len === 'number') ? (start + len) : this.segsSize);
+		const start = this.segsPointer;
+		const end = ((typeof len === 'number') ? (start + len) : this.segsSize);
 		return this.getChunk(start, end);
 	}
 
 	private async diffRead(len: number): Promise<Uint8Array|undefined> {
 		if (!this.diff) { throw new Error(`Diff is not defined.`); }
-		let start = this.segsPointer;
-		let end = ((typeof len === 'number') ?
+		const start = this.segsPointer;
+		const end = ((typeof len === 'number') ?
 			(start + len) : this.diff.segsSize);
 
 		// find first and last diff sections
-		let fstSecInd = this.diff.sections.findIndex(s => (start < s[3]));
+		const fstSecInd = this.diff.sections.findIndex(s => (start < s[3]));
 		if (typeof fstSecInd !== 'number') { return undefined; }
 		let lastSecInd = this.diff.sections.findIndex(s => (end <= s[3]));
 		if (typeof lastSecInd !== 'number') {
 			lastSecInd = this.diff.sections.length - 1;
 		}
-		let fstSec = Array.from(this.diff.sections[fstSecInd]);
-		let lastSec = ((fstSecInd === lastSecInd) ?
+		const fstSec = Array.from(this.diff.sections[fstSecInd]);
+		const lastSec = ((fstSecInd === lastSecInd) ?
 			fstSec : Array.from(this.diff.sections[lastSecInd]));
 		
 		// adjust position of first sector to align with start
-		let fstSecStart = ((fstSecInd === 0) ?
+		const fstSecStart = ((fstSecInd === 0) ?
 			0 : this.diff.sections[fstSecInd-1][3]);
 		fstSec[1] = fstSec[1] + (start - fstSecStart);
 		// adjust length of last sector to align with end
 		lastSec[2] = lastSec[2] - (lastSec[3] - end);
 
-		let buf = new BytesFIFOBuffer();
-		for (let i=fstSecInd; i <= lastSecInd; i+=1) {
+		const buf = new BytesFIFOBuffer();
+		for (let i=fstSecInd; i<=lastSecInd; i+=1) {
 			let s: number[];
 			if (i === fstSecInd) { s = fstSec; }
 			else if (i === lastSecInd) { s = lastSec; }
 			else { s = this.diff.sections[i]; }
 			if (s[0] === 0) {
-				let baseSrc = await this.getBaseSrc();
+				const baseSrc = await this.getBaseSrc();
 				baseSrc.seek!(s[1]);
-				let bytes = await baseSrc.read(s[2]);
+				const bytes = await baseSrc.read(s[2]);
 				if (!bytes || (bytes.length < s[2])) { throw new Error(
 					`Base file is too short.`); }
 				buf.push(bytes);
 			} else {
-				let bytes = await this.getChunk(s[1], s[1]+s[2]);
+				const bytes = await this.getChunk(s[1], s[1]+s[2]);
 				if (!bytes || (bytes.length < s[2])) { throw new Error(
 					`Segments file is too short.`); }
 				buf.push(bytes);
@@ -153,18 +153,14 @@ class ObjSrc implements ObjSource {
 	constructor(
 			private files: Files,
 			private objId: string,
-			private version: number,
+			public version: number,
 			segsSize: number, diff: DiffInfo|undefined) {
 		this.segSrc = new ByteSrc(files, objId, version, segsSize, diff);
 		Object.seal(this);
 	}
 	
-	getObjVersion(): number {
-		return this.version;
-	}
-	
 	async readHeader(): Promise<Uint8Array> {
-		let h = await this.files.readObjHeader(this.objId, this.version);
+		const h = await this.files.readObjHeader(this.objId, this.version);
 		return h;
 	}
 	
@@ -180,9 +176,9 @@ Object.freeze(ObjSrc);
  */
 export async function makeObjSource(files: Files, objId: string,
 		version: number): Promise<ObjSource> {
-	let segsSize = await files.getSegsSize(objId, version, false);
-	let diff = await files.readObjDiff(objId, version);
-	let src = new ObjSrc(files, objId, version, segsSize, diff);
+	const segsSize = await files.getSegsSize(objId, version, false);
+	const diff = await files.readObjDiff(objId, version);
+	const src = new ObjSrc(files, objId, version, segsSize, diff);
 	return Object.freeze(syncWrapObjSource(src));
 }
 

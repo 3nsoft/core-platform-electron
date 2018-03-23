@@ -18,11 +18,13 @@ import { ByteSink, ByteSource } from './common';
 import { SingleProc } from '../processes';
 import { bind } from '../binding';
 
+type Transferable = web3n.implementation.Transferable;
+
 export function syncWrapByteSource(src: ByteSource,
-		readingProc = new SingleProc<any>()): ByteSource {
-	let synced: ByteSource = {
+		readingProc = new SingleProc()): ByteSource {
+	const synced: ByteSource = {
 		getSize: bind(src, src.getSize),
-		read: (len: number): Promise<Uint8Array> => {
+		read: (len: number): Promise<Uint8Array|undefined> => {
 			return readingProc.startOrChain(() => {
 				return src.read(len);
 			});
@@ -40,13 +42,14 @@ export function syncWrapByteSource(src: ByteSource,
 			});
 		};
 	}
+	(synced as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return synced;
 }
 
 export function syncWrapByteSink(sink: ByteSink,
-		writingProc = new SingleProc<any>()): ByteSink {
-	let synced: ByteSink = {
-		getSize: (): Promise<number> => {
+		writingProc = new SingleProc()): ByteSink {
+	const synced: ByteSink = {
+		getSize: (): Promise<number|undefined> => {
 			return writingProc.startOrChain(() => {
 				return sink.getSize();
 			});
@@ -74,6 +77,7 @@ export function syncWrapByteSink(sink: ByteSink,
 			});
 		};
 	}
+	(synced as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return synced;
 }
 

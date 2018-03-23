@@ -2,191 +2,188 @@ const gulp = require("gulp");
 const ts = require("gulp-typescript");
 const shell = require("gulp-shell");
 const fs = require('fs');
-const packager = require('electron-packager');
+const rename = require("gulp-rename");
+const delMod = require("del");
 
-const BUILD_FOLDER = 'build';
-const DIST_FOLDER = 'dist';
-const DIST_MOCK_FOLDER = 'dist-mock';
-const ignoreTheseInDists = [ `^/${DIST_FOLDER}`, `^/${DIST_MOCK_FOLDER}`, '^/src', '^/build/tests', '^/3NWeb', '^/3NWeb-mock', '^/.gitignore', '^/gulpfile.js', '^/tsconfig.json' ];
-
-// build task consists, at this moment, only of compilation stage
-gulp.task("tsc", function() {
-	var tsProject = ts.createProject("tsconfig.json");
-	var tsResult = tsProject.src().pipe(tsProject());
-	return tsResult.js.pipe(gulp.dest(BUILD_FOLDER));
-});
-gulp.task('build', gulp.series('tsc'));
-
-const APP_SCRIPT = 'build/main.js';
-const MOCK_APP_SCRIPT = 'build/mock/mock-for-client.js';
-
-// xxx-pack tasks change package.json's main, directing in to either
-// mock, or main production scripts. 
-const PACKAGE_FILE = 'package.json';
-gulp.task('mock-pack', (cb) => {
-	let packInfo = JSON.parse(fs.readFileSync(PACKAGE_FILE));
-	packInfo.main = MOCK_APP_SCRIPT;
-	fs.writeFileSync(PACKAGE_FILE, JSON.stringify(packInfo, null, '  '));
-	cb();
-});
-gulp.task('prod-pack', (cb) => {
-	let packInfo = JSON.parse(fs.readFileSync(PACKAGE_FILE));
-	packInfo.main = APP_SCRIPT;
-	fs.writeFileSync(PACKAGE_FILE, JSON.stringify(packInfo, null, '  '));
-	cb();
-});
-
-function checkAppProject(appProject) {
-	return (cb) => {
-		let stat = fs.statSync(`../${appProject}`);
-		if (stat.isDirectory()) {
-			cb();
-		} else {
-			cb(`${appProject} is not a folder`);
-		}
-	};
+function readJSONFile(path) {
+	return JSON.parse(fs.readFileSync(path, { encoding: 'utf8' }));
 }
 
+function writeJSONFile(path, json) {
+	fs.writeFileSync(path, JSON.stringify(json, null, '  '),
+		{ encoding: 'utf8', flag: 'wx' });
+}
+
+function folderExists(path) {
+	try {
+		return fs.statSync(path).isDirectory();
+	} catch (err) {
+		return false;
+	}
+}
+
+function copy(src, dst, renameArg) {
+	if (renameArg === undefined) {
+		return () => gulp.src(src).pipe(gulp.dest(dst));
+	} else {
+		return () => gulp.src(src).pipe(rename(renameArg)).pipe(gulp.dest(dst));
+	}
+}
+
+function del(paths) {
+	return () => delMod(paths, { force: true });
+}
+
+// put file and folder names into object so that ctrl+space becomes useful
+const f = {
+	build_all: 'build/all',
+	build_app: 'build/app',
+	tsconfig: 'tsconfig.json',
+	app_main: 'build/all/main.js',
+	mock_main: 'build/all/mock/main-for-client.js',
+	package_lock_json: 'package-lock.json',
+	package_json: 'package.json',
+	home_server: 'home-server',
+	spec_server: 'spec-server',
+}
+
+// put task names into object so that ctrl+space becomes useful
+const t = {
+	build_all: 'build-all',	// compiles platform and ui apps
+	run: 'run',		// starts electron platform app with all ui apps on it
+	run_fast: 'run-fast',	// same as run, but skips rebuilding ui apps
+	run_mock: 'run-mock',	// starts mock platform
+	prep_test: 'prep-test',
+	test: 'test',
+	prep_app_for_dist: 'prep-app-for-dist',
+}
+
+
+//============================================================================
+// 1. Compile code in this project (3NWeb platform), placing it into build/all
+//============================================================================
+function build_platform() {
+	const tsProject = ts.createProject(f.tsconfig);
+	const tsResult = tsProject.src().pipe(tsProject());
+	return tsResult.js.pipe(gulp.dest(f.build_all));
+}
+
+
+//============================================================================
+// 2. Build UI apps. They place themselves into build/all/apps
+//============================================================================
 function buildAppsTask(isMock = false) {
-	let tasks = [];
-	let apps = [ 'personal-client-desktop' ];
+	const tasks = [];
+	const apps = [ 'personal-client-desktop' ];
 	if (!isMock) {
 		apps.push('personal-client-start-app');
 	}
-	for (let appProject of apps) {
-		tasks.push(checkAppProject(appProject));
-		tasks.push(shell.task(`cd ../${appProject} ; npm run gulp build `));
+	for (const appProject of apps) {
+		tasks.push(done => (folderExists(`../${appProject}`) ?
+			done() : done(`${appProject} is not a folder`)));
+		tasks.push(shell.task(`cd ../${appProject} && npm run gulp build `));
 	}
 	return gulp.series.apply(gulp, tasks);
 }
+const build_apps = buildAppsTask();
+const build_apps_mock = buildAppsTask(true);
+gulp.task(t.build_all, gulp.series(build_platform, build_apps));
 
+
+//============================================================================
+// 3. Run or run as mock, after compilation build
+//============================================================================
 const dataDirLineParam = (() => {
-	for (let arg of process.argv) {
-		if (arg.startsWith('--data-dir=')) {
-			let path = arg.substring(11);
+	const param = '--data-dir';
+	for (const arg of process.argv) {
+		if (arg.startsWith(`${param}=`)) {
+			const path = arg.substring(11);
 			if (path.startsWith('/') || path.startsWith('.')) {
-				return `--data-dir="${path}"`;
+				return `${param}="${path}"`;
 			} else {
-				return `--data-dir="3NWeb ${path}"`;
+				return `${param}="3NWeb ${path}"`;
 			}
 		}
 	}
-	return '';
+	return `${param}=3NWeb`;
 })();
+const logHttpLineParam = '--console-log-http';
+const devToolsLineParam = '--devtools';
+const start_app = shell.task(
+	`electron ${f.app_main} ${logHttpLineParam} ${devToolsLineParam} ${dataDirLineParam}`);
+const start_mock = shell.task(`electron ${f.mock_main} ${devToolsLineParam}`);
+gulp.task(t.run, gulp.series(t.build_all, start_app));
+gulp.task(t.run_fast, gulp.series(build_platform, start_app));
+gulp.task(t.run_mock, gulp.series(build_platform, build_apps_mock, start_mock));
 
-// task to build core and apps
-gulp.task('build-all', gulp.series('build', buildAppsTask()));
 
-// tasks to run electron app, or a mock app
-gulp.task('run-mock', gulp.series('build', buildAppsTask(true),
-	shell.task(`electron ${MOCK_APP_SCRIPT}`)));
-gulp.task('run', gulp.series('build-all',
-	shell.task(`electron ${APP_SCRIPT} --console-log-http ${dataDirLineParam}`)));
-gulp.task('run-fast', gulp.series('build',
-	shell.task(`electron ${APP_SCRIPT} --console-log-http ${dataDirLineParam}`)));
+//============================================================================
+// 4. Run tests
+//============================================================================
+const build_server = shell.task(`
+	cd ../${folderExists(f.home_server) ? f.home_server : f.spec_server } && npm run build`);
+gulp.task(t.prep_test, gulp.series(t.build_all, build_server));
+gulp.task(t.test, gulp.series(build_platform,
+	shell.task(`node build/all/tests/jasmine.js`)));
 
-const SERVER_FOLDER = 'home-server';
-const PROPER_SERVER_FOLDER = 'spec-server';
 
-// tasks for testing
-gulp.task('test', gulp.series('build',
-	shell.task(`node build/tests/jasmine.js ; rm -f npm-debug.log`)));
-gulp.task('prep-test', gulp.series('build-all',
-	shell.task(`
-	if [ -d ../${SERVER_FOLDER} ]; then
-		cd ../${SERVER_FOLDER};
-	else
-		cd ../${PROPER_SERVER_FOLDER};
-	fi
-	npm run build`)));
-
-/**
- * @param outDir is an output directory for complete binaries
- * @param platform is a string that indicates platform(s). Possible values are
- * 'linux', 'windows', 'darwin', 'mas', combination of these, concatinated with
- * a comma, or 'all', for all platforms. 
- * @param arch is a string that indicate architecture(s). Possible values are
- * 'x64', 'ia32', combination of these, concatinated with a comma, or 'all',
- * for all architectures. 
- * @param isMock is a boolean flag, which true value tells that distribution
- * binaries are create for mock, and false value (default) marks it as a
- * complete production distribution.
- * @return shell task that runs electron packager for given arguments.
- */
-function distTask(outDir, platform, arch, isMock = false) {
-	let ignore = isMock ?
-		ignoreTheseInDists :
-		ignoreTheseInDists.concat([ 'build/mock' ]);
-	return (cb) => {
-		packager({
-			dir: '.',
-			out: outDir,
-			platform,
-			arch,
-			ignore,
-			overwrite: true,
-			prune: true
-		}, (err, appPaths) => {
-			if (err) {
-				cb(err);
-			} else {
-				cb();
-			}
-		});
-	};
+//============================================================================
+// 5. Prepare app for builder, placing code and package info into build/app
+//============================================================================
+const copy_app = gulp.series(del(f.build_app), gulp.parallel(
+	copy(`${f.build_all}/main.js`, f.build_app),
+	...([ 'lib-client', 'lib-common', 'main', 'ui', 'apps', 'main.js' ].map(
+		fold => copy(`${f.build_all}/${fold}/**/*`, `${f.build_app}/${fold}`)))
+));
+const packFieldsToCopy = [ 'name', 'version', 'description', 'author',
+	'license', 'dependencies' ];
+function prep_app_package_json(done) {
+	const originalPack = readJSONFile(f.package_json);
+	const appPack = {};
+	for (const f of packFieldsToCopy) {
+		appPack[f] = originalPack[f];
+	}
+	appPack.main = 'main.js';
+	writeJSONFile(`${f.build_app}/package.json`, appPack);
+	done();
 }
+function prep_app_package_lock_json(done) {
+	const originalLock = readJSONFile(f.package_lock_json);
+	const appLock = {};
+	for (const field of Object.keys(originalLock)) {
+		appLock[field] = (field === 'dependencies') ? {} : originalLock[field];
+	}
+	if (originalLock.dependencies) {
+		for (const packName of Object.keys(originalLock.dependencies)) {
+			const pack = originalLock.dependencies[packName];
+			if (pack.dev || packName.startsWith('@types/')) { continue; }
+			appLock.dependencies[packName] = pack;
+		}
+	}
+	writeJSONFile(`${f.build_app}/package-lock.json`, appLock);
+	done();
+}
+gulp.task(t.prep_app_for_dist, gulp.series(t.build_all, copy_app,
+	prep_app_package_json, prep_app_package_lock_json));
 
-// these tasks build mock distributions
-let mockDistChain = [ 'build', buildAppsTask(true), 'mock-pack' ];
-gulp.task('dist-mock-linux', gulp.series.apply(gulp, mockDistChain.concat(
-	distTask(DIST_MOCK_FOLDER, 'linux', 'x64', true)),
-	'prod-pack'));
-gulp.task('dist-mock-linux-ia32', gulp.series.apply(gulp, mockDistChain.concat(
-	distTask(DIST_MOCK_FOLDER, 'linux', 'ia32', true)),
-	'prod-pack'));
-gulp.task('dist-mock-windows', gulp.series.apply(gulp, mockDistChain.concat(
-	distTask(DIST_MOCK_FOLDER, 'win32', 'x64', true)),
-	'prod-pack'));
-gulp.task('dist-mock-windows-ia32', gulp.series.apply(gulp, mockDistChain.concat(
-	distTask(DIST_MOCK_FOLDER, 'win32', 'ia32', true)),
-	'prod-pack'));
-gulp.task('dist-mock-darwin', gulp.series.apply(gulp, mockDistChain.concat(
-	distTask(DIST_MOCK_FOLDER, 'darwin', 'all', true)),
-	'prod-pack'));
-gulp.task('dist-mock-all', gulp.series('dist-mock-linux',
-	'dist-mock-linux-ia32', 'dist-mock-windows', 'dist-mock-windows-ia32',
-	'dist-mock-darwin'));
+//	XXX Note that similar thing can be done to pack mock, with devtools.
 
-// these tasks build production distributions
-let distChain = [ 'build-all', 'prod-pack' ];
-gulp.task('dist-linux', gulp.series.apply(gulp, distChain.concat(
-	distTask(DIST_FOLDER, 'linux', 'x64'))));
-gulp.task('dist-linux-ia32', gulp.series.apply(gulp, distChain.concat(
-	distTask(DIST_FOLDER, 'linux', 'ia32'))));
-gulp.task('dist-windows', gulp.series.apply(gulp, distChain.concat(
-	distTask(DIST_FOLDER, 'win32', 'x64'))));
-gulp.task('dist-windows-ia32', gulp.series.apply(gulp, distChain.concat(
-	distTask(DIST_FOLDER, 'win32', 'ia32'))));
-gulp.task('dist-darwin', gulp.series.apply(gulp, distChain.concat(
-	distTask(DIST_FOLDER, 'darwin', 'all'))));
-gulp.task('dist-all', gulp.series('dist-linux', 'dist-linux-ia32',
-	'dist-windows', 'dist-windows-ia32', 'dist-darwin'));
+
 
 gulp.task("help", (cb) => {
-	let h = `
+	const h = `
 Major tasks in this project:
 
  1) "run" - compiles this, startup app and client app projects, and runs the whole app.
  
  2) "run-mock" - compiles this and client app projects, and runs mock app.
 
- 3) "dist-xxx" - where xxx can be linux, windows, linux-ia32, windows-ia32, darwin, or all.
+ 3) "prep-test" - this builds all necessary code for tests, picking all required for testing projects like server. 
 
- 4) "dist-mock-xxx" - where xxx can be linux, windows, darwin, or all. Compiles and packs mock app x64 distribution files, while dist-mock-all makes packs for all architectures.
+ 4) "test" - runs spectron's tests on compiled code
 
- 5) "prep-test" - this builds all necessary code for tests, picking all required for testing projects like server. 
-
- 6) "test" - initial simple test. In time there will be a few different test sets
+For building distributables, use command:
+	npm run build [... electron-builder parameters]
 `;
 	console.log(h);
 	cb();

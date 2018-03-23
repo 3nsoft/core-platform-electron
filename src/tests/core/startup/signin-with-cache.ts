@@ -16,8 +16,7 @@
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
 import { setupWithUsers } from '../../libs-for-tests/setups';
-import { setAwaiterJS6InClient, setRemoteJasmineInClient,
-	checkRemoteExpectations }
+import { setRemoteJasmineInClient, checkRemoteExpectations }
 	from '../../libs-for-tests/remote-js-utils';
 import { AppRunner, User } from '../../libs-for-tests/app-runner';
 import { sleep } from '../../../lib-common/processes';
@@ -45,10 +44,9 @@ describe('signIn process (with cache)', () => {
 		app = s.apps.get(s.users[0].userId)!;
 		user = app.user;
 		await app.restart();
-		await setAwaiterJS6InClient(app.c);
 		await setRemoteJasmineInClient(app.c);
 		await setKeyDerivNotifsChecker(app.c);
-	});
+	}, 30000);
 
 	itAsync('identifies user on disk', async () => {
 		let exps = (await app.c.executeAsync(async function(
@@ -67,7 +65,7 @@ describe('signIn process (with cache)', () => {
 
 
 	itAsync(`won't startup with a wrong pass`, async () => {
-		(app.c as any).timeouts('script', 59000);
+		app.c.timeouts('script', 59000);
 		let exps = (await app.c.executeAsync(async function(
 				userId: string, pass: string, done: Function) {
 			let notifications: number[] = [];
@@ -81,12 +79,12 @@ describe('signIn process (with cache)', () => {
 			}
 			done(collectAllExpectations());
 		}, user.userId, 'wrong password')).value;
-		(app.c as any).timeouts('script', 5000);
+		app.c.timeouts('script', 5000);
 		checkRemoteExpectations(exps);
 	}, 60000);
 
 	itAsync('starts with correct pass', async () => {
-		(app.c as any).timeouts('script', 59000);
+		app.c.timeouts('script', 59000);
 		let exps = (await app.c.executeAsync(async function(
 					userId: string, pass: string, done: Function) {
 			let notifications: number[] = [];
@@ -100,7 +98,7 @@ describe('signIn process (with cache)', () => {
 			}
 			done(collectAllExpectations());
 		}, user.userId, user.pass)).value;
-		(app.c as any).timeouts('script', 5000);
+		app.c.timeouts('script', 5000);
 		checkRemoteExpectations(exps);
 		await sleep(500);	// for windows switch over
 	}, 60000);

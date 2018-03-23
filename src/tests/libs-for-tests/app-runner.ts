@@ -14,16 +14,17 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { commToServer, Duplex } from './socket-ipc';
+import { commToServer, RequestingClient } from './socket-ipc';
 import { DnsTxtRecords } from './dns';
 import { rmDirWithContent, FileException }
 	from '../../lib-common/async-fs-node';
 import { resolve } from 'path';
-import { stringOfB64Chars } from '../../lib-client/random-node';
+import { stringOfB64Chars } from '../../lib-common/random-node';
 import { sleep } from '../../lib-common/processes';
-import { setAwaiterJS6InClient, setRemoteJasmineInClient }
+import { setRemoteJasmineInClient, setStringifyErrInClient }
 	from './remote-js-utils';
-const Application = require('spectron').Application;
+import { displayBrowserLogs, displayStdOutLogs } from './spectron-logs';
+import { Application, SpectronClient } from 'spectron';
 
 const SETTINGS_PORT = 18088;
 const WEBDRIVER_PORT = 28088;
@@ -39,12 +40,14 @@ declare var w3n: {
 	signIn: web3n.startup.SignInService;
 }
 
+declare function stringifyErr(err: any): string;
+
 let numOfRunningApps = 0;
 
 export class AppRunner {
 
-	private spectron: any = undefined;
-	private appMocker: Duplex = (undefined as any);
+	private spectron: Application = (undefined as any);
+	private appMocker: RequestingClient = (undefined as any);
 	public user: User = (undefined as any);
 	private signupUrl: string = (undefined as any);
 	private tlsCert: string = (undefined as any);
@@ -58,17 +61,9 @@ export class AppRunner {
 	}
 
 	/**
-	 * This is a spectron appliaction object.
-	 * At this moment, type information is missing, thus "any" is used.
-	 */
-	get spectronApp(): any {
-		return this.spectron;
-	}
-
-	/**
 	 * This is a Webdriver Client, provided by spectron.
 	 */
-	get c(): WebdriverIO.Client<any> {
+	get c(): SpectronClient {
 		if (!this.spectron || !this.spectron.isRunning()) {
 			throw new Error('Spectron is not running'); }
 		return this.spectron.client;
@@ -97,7 +92,7 @@ export class AppRunner {
 		this.spectron = new Application({
 			port,
 			path: './node_modules/.bin/electron',
-			args: [ './build/tests/wrapped-app-scripts/main.js',
+			args: [ './build/all/tests/wrapped-app-scripts/main.js',
 				`--signup-url=${this.signupUrl}`, `--data-dir=${dataFolder}`,
 				`--wrap-settings-port=${settingsPort}` ]
 		});
@@ -114,7 +109,7 @@ export class AppRunner {
 	 */
 	removeDataFolder(): Promise<void> {
 		let dataFolder = `${DATA_FOLDER}-${this.appNum}`;
-		return rmDirWithContent(resolve(__dirname, `../../../${dataFolder}`))
+		return rmDirWithContent(resolve(__dirname, `../../../../${dataFolder}`))
 		.catch((exc: FileException) => { if (!exc.notFound) { throw exc; } });
 	}
 
@@ -130,7 +125,7 @@ export class AppRunner {
 				this.appMocker = (undefined as any);
 			} catch (err) {}
 			await this.spectron.stop();
-			this.spectron = undefined;
+			this.spectron = (undefined as any);
 		}
 	}
 
@@ -165,32 +160,41 @@ export class AppRunner {
 	 */
 	async createUser(userId: string): Promise<User> {
 		if (this.user) { throw new Error('App already has associated user.'); }
-		let pass = stringOfB64Chars(16);
-		(this.c as any).timeouts('script', 59000);
-		let err = (await this.c.executeAsync(function(userId: string,
+		const pass = await stringOfB64Chars(16);
+		this.c.timeouts('script', 59000);
+		await setStringifyErrInClient(this.c);
+		const err = (await this.c.executeAsync(async function(userId: string,
 				pass: string, done: Function) {
-			w3n.signUp.createUserParams(pass, (p) => {})
-			.then(() => {
-				return w3n.signUp.addUser(userId);
-			})
-			.then((isCreated) => {
+			try {
+				await w3n.signUp.createUserParams(pass, (p) => {});
+				const isCreated = await w3n.signUp.addUser(userId);
 				if (isCreated) { done(); }
 				else { throw new Error(`Cannot create user ${userId}. It may already exists.`); }
-			})
-			.catch(e => done(e));
+			} catch (err) {
+				done(stringifyErr(err));
+			}
 		}, userId, pass)).value;
 		if (err) {
 			console.error(`Error occured when creating user ${userId}`);
-			console.error(JSON.stringify(err, null, '  '));
+			console.error(err);
 			throw err;
 		}
-		(this.c as any).timeouts('script', 5000);
-		await sleep(200);
-		await (<any> this.c).windowByIndex(0);
+		this.c.timeouts('script', 5000);
+		await sleep(1000);
+
+		await this.c.windowByIndex(0);
 		await setRemoteJasmineInClient(this.c);
-		await setAwaiterJS6InClient(this.c);
+		await setStringifyErrInClient(this.c);
 		this.user = { userId, pass };
 		return this.user;
+	}
+
+	async displayBrowserLogs(): Promise<void> {
+		await displayBrowserLogs(this);
+	}
+
+	async displayStdOutLogs(): Promise<void> {
+		await displayStdOutLogs(this);
 	}
 
 }

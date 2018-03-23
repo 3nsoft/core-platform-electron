@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,12 +14,12 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { FS, ListingEntry } from './device-fs';
-import { RuntimeException } from '../../lib-common/exceptions/runtime';
+import { WritableFS, ListingEntry } from './device-fs';
 import { ByteSource } from '../../lib-common/byte-streaming/common';
 import { ObjSource } from '../../lib-common/obj-streaming/common';
 import { NamedProcs } from '../../lib-common/processes';
 import { FileException } from '../../lib-common/exceptions/file';
+import { logWarning } from '../logging/log-to-file';
 
 const CACHE_ROTATIONS_FILE_NAME = 'rotations.json';
 
@@ -45,7 +45,7 @@ function nowInHours(): number {
 }
 
 function makeNewInfo(): RotationsInfo {
-	let now = nowInHours();
+	const now = nowInHours();
 	return {
 		yesterday: now,
 		week: now,
@@ -54,40 +54,40 @@ function makeNewInfo(): RotationsInfo {
 	};
 }
 
-export const ExceptionType = 'cache';
 
-export interface Exception extends RuntimeException {
+export interface Exception extends web3n.RuntimeException {
+	type: 'cache';
 	name: string;
-	notFound?: boolean;
-	alreadyExist?: boolean;
-	concurrentTransaction?: boolean;
-}
-
-function makeException(name: string): Exception {
-	let exc: Exception = {
-		runtimeException: true,
-		type: ExceptionType,
-		name: name
-	};
-	return exc;
+	notFound?: true;
+	alreadyExist?: true;
+	concurrentTransaction?: true;
 }
 
 export function makeNotFoundExc(name: string): Exception {
-	let exc = makeException(name);
-	exc.notFound = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'cache',
+		name: name,
+		notFound: true
+	};
 }
 
 export function makeConcurrentTransExc(name: string): Exception {
-	let exc = makeException(name);
-	exc.concurrentTransaction = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'cache',
+		name: name,
+		concurrentTransaction: true
+	};
 }
 
 export function makeAlreadyExistExc(name: string): Exception {
-	let exc = makeException(name);
-	exc.alreadyExist = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'cache',
+		name: name,
+		alreadyExist: true
+	};
 }
 
 export function makeObjSourceFromByteSources(
@@ -96,12 +96,10 @@ export function makeObjSourceFromByteSources(
 	let headerSize: number|undefined = undefined;
 	return {
 		
-		getObjVersion(): number {
-			return version;
-		},
+		version,
 
 		readHeader: async (): Promise<Uint8Array> => {
-			let header = await headGetter();
+			const header = await headGetter();
 			if (typeof headerSize !== 'number') {
 				headerSize = header.length;
 			}
@@ -128,12 +126,12 @@ export class CacheOfFolders {
 	folderProcs = new NamedProcs();
 	
 	constructor(
-			private fs: FS,
+			private fs: WritableFS,
 			private canMove?: (folderLst: ListingEntry[]) => boolean) {
 		Object.freeze(this);
 	}
 	
-	async init(rotationHours?: number): Promise<void> {
+	async init(rotationHours: number): Promise<void> {
 		await this.fs.makeFolder(TODAY_DIR);
 		try {
 			await this.fs.readJSONFile(CACHE_ROTATIONS_FILE_NAME);
@@ -141,51 +139,51 @@ export class CacheOfFolders {
 			await this.fs.writeJSONFile(
 				CACHE_ROTATIONS_FILE_NAME, makeNewInfo());
 		}
-		await this.rotate();
-		if (rotationHours !== undefined) {
-			this.setNextCacheRotation(rotationHours);
-		}
+		// set scheduled rotations
+		this.setNextCacheRotation(rotationHours);
+		// do rotation now, on a startup
+		this.rotate();
 	}
 	
 	private setNextCacheRotation(hours: number): void {
 		setTimeout(async () => {
 			await this.rotate();
 			this.setNextCacheRotation(hours);
-		}, hours*60*60*1000);
+		}, hours*60*60*1000).unref();
 	}
 	
 	private async moveBacketContent(src: string, dst: string,
 			canMove?: (folderLst: ListingEntry[]) => boolean):
 			Promise<void> {
 		try {
-			let thingsToMove = await this.fs.listFolder(src);
-			for (let entry of thingsToMove) {
+			const thingsToMove = await this.fs.listFolder(src);
+			for (const entry of thingsToMove) {
+				if (this.folderProcs.getP(entry.name)) { return; }
 				await this.folderProcs.start(entry.name, async () => {
-					let entryPath = `${src}/${entry.name}`;
+					const entryPath = `${src}/${entry.name}`;
 					if (canMove) {
-						let folderLst = await this.fs.listFolder(
+						const folderLst = await this.fs.listFolder(
 							`${src}/${entry.name}`);
 						if (!canMove(folderLst)) { return; }
 					}
 					if (entry.isFolder) {
 						await this.fs.move(entryPath, `${dst}/${entry.name}`);
 					} else if (entry.isFile) {
-						console.warn('Removing an unexpected file in cache of folders: '+
-							entryPath);
+						logWarning(`Removing an unexpected file in cache of folders: ${entryPath}`);
 						await this.fs.deleteFile(entryPath);
 					} else {
-						console.warn('Unexpected entry in cache of folders: '+entryPath);
+						logWarning(`Unexpected entry in cache of folders: ${entryPath}`);
 					}
 				}).catch(() => {});
 			}
-		} catch (exc ) {
+		} catch (exc) {
 			notFoundOrReThrow(exc);
 		}
 	}
 	
 	private async rotate(): Promise<void> {
-		let now = nowInHours();
-		let info = await this.fs.readJSONFile<RotationsInfo>(
+		const now = nowInHours();
+		const info = await this.fs.readJSONFile<RotationsInfo>(
 			CACHE_ROTATIONS_FILE_NAME);
 		if ((now - info.older) >= 30*24) {
 			await this.moveBacketContent(MOTNH_DIR, OLDER_DIR);
@@ -207,12 +205,12 @@ export class CacheOfFolders {
 	}
 
 	async listFolders(): Promise<string[][]> {
-		let backets: string[][] = [];
-		for (let bName of ALL_BACKETS) {
+		const backets: string[][] = [];
+		for (const bName of ALL_BACKETS) {
 			try {
-				let lst = await this.fs.listFolder(bName);
-				let paths = new Array<string>(lst.length);
-				for (let i=0; i < lst.length; i+=1) {
+				const lst = await this.fs.listFolder(bName);
+				const paths = new Array<string>(lst.length);
+				for (let i=0; i<lst.length; i+=1) {
 					paths[i] = `${bName}/${lst[i].name}`;
 				}
 				backets.push(paths);
@@ -223,41 +221,53 @@ export class CacheOfFolders {
 		return backets;
 	}
 
+	/**
+	 * This method promises to return paths of all recent folders.
+	 */
+	async listRecent(): Promise<string[]> {
+		const lst = await this.fs.listFolder(TODAY_DIR);
+		const folderPaths: string[] = [];
+		for (const entry of lst) {
+			folderPaths.push(`${TODAY_DIR}/${entry.name}`);
+		}
+		return folderPaths;
+	}
+
 	private async findFolder(fName: string):
 			Promise<{ path: string; isRecent: boolean; } | undefined> {
 		let isRecent = true;
-		for (let backet of ALL_BACKETS) {
-			let path = backet+'/'+fName;
-			let found = await this.fs.checkFolderPresence(path);
+		for (const backet of ALL_BACKETS) {
+			const path = backet+'/'+fName;
+			const found = await this.fs.checkFolderPresence(path);
 			if (found) { return { path, isRecent }; }
 			isRecent = false;
 		}
 	}
 	
 	async getOrMakeFolder(fName: string): Promise<string> {
-		let folder = await this.findFolder(fName);
+		const folder = await this.findFolder(fName);
 		if (folder) {
 			if (folder.isRecent) {
 				return folder.path;
 			} else {
-				let pathInRecent = `${TODAY_DIR}/${fName}`;
+				const pathInRecent = `${TODAY_DIR}/${fName}`;
 				await this.fs.move(folder.path, pathInRecent);
 				return pathInRecent;
 			}
 		} else {
-			let pathInRecent = `${TODAY_DIR}/${fName}`;
+			const pathInRecent = `${TODAY_DIR}/${fName}`;
 			await this.fs.makeFolder(pathInRecent);
 			return pathInRecent;
 		}
 	}
 	
 	async getFolder(fName: string): Promise<string> {
-		let folder = await this.findFolder(fName);
+		const folder = await this.findFolder(fName);
 		if (!folder) { throw makeNotFoundExc(fName); }
 		if (folder.isRecent) {
 			return folder.path;
 		} else {
-			let pathInRecent = `${TODAY_DIR}/${fName}`;
+			const pathInRecent = `${TODAY_DIR}/${fName}`;
 			await this.fs.move(folder.path, pathInRecent);
 			return pathInRecent;
 		}
@@ -267,13 +277,13 @@ export class CacheOfFolders {
 		if (await this.findFolder(fName)) {
 			throw makeAlreadyExistExc(fName);
 		}
-		let pathInRecent = `${TODAY_DIR}/${fName}`;
+		const pathInRecent = `${TODAY_DIR}/${fName}`;
 		await this.fs.makeFolder(pathInRecent);
 		return pathInRecent;
 	}
 	
 	async removeFolder(fName: string): Promise<void> {
-		let folder = await this.findFolder(fName);
+		const folder = await this.findFolder(fName);
 		if (folder) {
 			await this.fs.deleteFolder(folder.path, true);
 		}

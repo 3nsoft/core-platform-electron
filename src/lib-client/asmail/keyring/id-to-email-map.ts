@@ -21,7 +21,8 @@
 import { Ring } from './ring';
 
 /**
- * This is a one-to-many, one way map from string ids to string emails.
+ * This is a one-to-many, one way map from string ids to string emails in a
+ * canonical form.
  */
 export class IdToEmailMap {
 	
@@ -38,7 +39,7 @@ export class IdToEmailMap {
 	 * more than one email registered for a given id. 
 	 */
 	getEmails(id: string): string[] | undefined {
-		let emails = this.idToEmail.get(id);
+		const emails = this.idToEmail.get(id);
 		if (emails) { return emails; }
 		if (Array.isArray(emails)) { return emails.concat([]); }
 		return;	// undefined in explicit statement
@@ -51,7 +52,7 @@ export class IdToEmailMap {
 	 * and false, if such registration already existed.
 	 */
 	addPair(id: string, email: string): boolean {
-		let emails = this.idToEmail.get(id);
+		const emails = this.idToEmail.get(id);
 		if (emails) {
 			if (emails.indexOf(email) >= 0) { return false; }
 			emails.push(email);
@@ -80,7 +81,7 @@ export class IdToEmailMap {
 	removePair(id: string, email: string): boolean {
 		let emails = this.idToEmail.get(id);
 		if (!emails) { return false; }
-		let emailInd = emails.indexOf(email);
+		const emailInd = emails.indexOf(email);
 		if (emailInd < 0) { return false; }
 		emails = emails.splice(emailInd, 1);
 		if (emails.length === 0) {

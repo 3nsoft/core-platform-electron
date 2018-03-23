@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -73,7 +73,7 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 				return;
 			}
 			if (typeof len === 'number') {
-				let bufferedBytes = this.buf.getBytes(len);
+				const bufferedBytes = this.buf.getBytes(len);
 				if (bufferedBytes) {
 					resolve(bufferedBytes);
 					return;
@@ -120,7 +120,7 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 		} else {
 			if (bytes.length === 0) { return; }
 			if (this.totalSize !== undefined) {
-				let maxBytesExpectation = this.totalSize - this.collectedBytes;
+				const maxBytesExpectation = this.totalSize - this.collectedBytes;
 				if (bytes.length >= maxBytesExpectation) {
 					this.isComplete = true;
 					if (bytes.length > maxBytesExpectation) {
@@ -140,7 +140,7 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 				this.buf.getBytes(this.deferredRead.len, true));
 			this.deferredRead = undefined;
 		} else {
-			let bufferedBytes = this.buf.getBytes(this.deferredRead.len);
+			const bufferedBytes = this.buf.getBytes(this.deferredRead.len);
 			if (bufferedBytes) {
 				this.deferredRead.deferred.resolve(bufferedBytes);
 				this.deferredRead = undefined;
@@ -152,24 +152,37 @@ export class SinkBackedByteSource implements ByteSource, ByteSink {
 }
 
 /**
+ * This function pipes bytes from a given source to a given sink. Returned
+ * promise resolves to a total number of piped bytes.
  * @param src
  * @param sink
+ * @param progressCB is an optional progress callback that
  * @param closeSink is an optional parameter, which true (default) value closes
  * sink, when piping is done, while false value keeps sink open.
  * @param bufSize is an optional parameter for buffer, used for byte transfer.
  * Default value is 64K.
- * @return a promise, resolvable when all bytes are moved from given source to
- * given sink.
  */
 export async function pipe(src: ByteSource, sink: ByteSink,
-		closeSink = true, bufSize = 64*1024): Promise<void> {
-	let buf = await src.read(bufSize);
-	while (buf) {
-		await sink.write(buf);
-		buf = await src.read(bufSize);
-	}
-	if (closeSink) {
-		await sink.write(null);
+		progressCB: ((bytesPiped: number) => void)|undefined = undefined,
+		closeSink = true, bufSize = 64*1024): Promise<number> {
+	try {
+		let buf = await src.read(bufSize);
+		let bytesPiped = 0;
+		while (buf) {
+			await sink.write(buf);
+			bytesPiped += buf.length;
+			if (progressCB) { progressCB(bytesPiped); }
+			buf = await src.read(bufSize);
+		}
+		if (closeSink) {
+			await sink.write(null);
+		}
+		return bytesPiped;
+	} catch (err) {
+		if (closeSink) {
+			await sink.write(null, err);
+		}
+		throw err;
 	}
 }
 

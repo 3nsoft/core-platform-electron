@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,82 +19,60 @@
  * reliance set.
  */
 
-import * as random from '../../random-node';
-import { arrays, secret_box as sbox } from 'ecma-nacl';
-import { FileKeyHolder, makeFileKeyHolder, makeNewFileKeyHolder }
-	from 'xsp-files';
+import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { makeDecryptedByteSource, makeObjByteSourceFromArrays }
+import { makeDecryptedByteSource, idToHeaderNonce }
 	from '../../../lib-common/obj-streaming/crypto';
 import { utf8 } from '../../../lib-common/buffer-utils';
-import { NodeInFS, NodeCrypto, SEG_SIZE, SymLink } from './node-in-fs';
-import { LinkParameters, File } from '../../files';
+import { errWithCause } from '../../../lib-common/exceptions/error';
+import { LinkParameters } from '../../files';
 import { DeviceFS } from '../../local-files/device-fs';
 import { FileLinkParams } from './file-node';
 import { FolderLinkParams } from './folder-node';
-import { Storage } from './common';
+import { Storage, AsyncSBoxCryptor } from './common';
 import { FileObject } from './file';
-import { FS } from './fs';
+import { XspFS } from './fs';
 
 class LinkCrypto extends NodeCrypto {
 	
-	constructor(keyHolder: FileKeyHolder) {
-		super(keyHolder);
+	constructor(zNonce: Uint8Array, key: Uint8Array, cryptor: AsyncSBoxCryptor) {
+		super(zNonce, key, cryptor);
 		Object.seal(this);
 	}
 	
-	static makeForNewLink(parentEnc: sbox.Encryptor,
-			arrFactory: arrays.Factory): LinkCrypto {
-		let keyHolder = makeNewFileKeyHolder(parentEnc, random.bytes, arrFactory);
-		let fc = new LinkCrypto(keyHolder);
-		return fc;
-	}
-	
-	/**
-	 * @param parentDecr
-	 * @param src for the whole xsp object
-	 * @param arrFactory
-	 * @return link crypto object.
-	 */
-	static async makeForExistingLink(parentDecr: sbox.Decryptor,
-			header: Uint8Array, arrFactory: arrays.Factory): Promise<LinkCrypto> {
-		let keyHolder = makeFileKeyHolder(parentDecr, header, arrFactory);
-		return new LinkCrypto(keyHolder);
-	}
-	
 	async readLinkParams(src: ObjSource): Promise<LinkParameters<any>> {
-		if (!this.keyHolder) { throw new Error("Cannot use wiped object."); }
-		let decSrc = await makeDecryptedByteSource(src, this.keyHolder.segReader);
-		let bytes = await decSrc.read(undefined);
-		if (!bytes) { throw new Error(`Expected object ${src.getObjVersion()} to non-empty`); }
-		return JSON.parse(utf8.open(bytes));
+		try {
+			return JSON.parse(utf8.open(await this.openBytes(src)));
+		} catch (exc) {
+			throw errWithCause(exc, `Cannot open link object`);
+		}
 	}
-	
 }
 Object.freeze(LinkCrypto.prototype);
 Object.freeze(LinkCrypto);
 
+type Transferable = web3n.implementation.Transferable;
+type SymLink = web3n.files.SymLink;
+
 function makeFileSymLink(storage: Storage,
 		params: LinkParameters<FileLinkParams>): SymLink {
-	let sl: SymLink = {
+	const sl: SymLink = {
 		isFile: true,
 		readonly: !!params.readonly,
-		target: async (): Promise<File> => {
-			return FileObject.makeFileFromLinkParams(storage, params);
-		}
+		target: () => FileObject.makeFileFromLinkParams(storage, params)
 	};
+	(sl as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return Object.freeze(sl);
 }
 
 function makeFolderSymLink(storage: Storage,
 		params: LinkParameters<FolderLinkParams>): SymLink {
-	let sl: SymLink = {
+	const sl: SymLink = {
 		isFolder: true,
 		readonly: !!params.readonly,
-		target: async (): Promise<web3n.storage.FS> => {
-			return FS.makeFolderFromLinkParams(storage, params);
-		}
+		target: () => XspFS.makeFolderFromLinkParams(storage, params)
 	};
+	(sl as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return Object.freeze(sl);
 }
 
@@ -114,55 +92,55 @@ export class LinkNode extends NodeInFS<LinkCrypto> {
 	private linkParams: any = (undefined as any);
 	
 	constructor(storage: Storage, name: string,
-			objId: string, version: number|undefined, parentId: string) {
+			objId: string, version: number, parentId: string|undefined,
+			key: Uint8Array) {
 		super(storage, 'link', name, objId, version, parentId);
 		if (!name || !objId || !parentId) { throw new Error(
 			"Bad link parameter(s) given"); }
+		this.crypto = new LinkCrypto(
+			idToHeaderNonce(this.objId), key, this.storage.cryptor);
 		Object.seal(this);
 	}
 
 	static makeForNew(storage: Storage, parentId: string, name: string,
-			masterEncr: sbox.Encryptor): LinkNode {
-		let objId = storage.generateNewObjId();
-		let l = new LinkNode(storage, name, objId, undefined, parentId);
-		let kh = makeNewFileKeyHolder(masterEncr, random.bytes);
-		l.crypto = new LinkCrypto(kh);
-		return l;
+			key: Uint8Array): LinkNode {
+		const objId = storage.generateNewObjId();
+		return new LinkNode(storage, name, objId, 0, parentId, key);
 	}
 
 	static async makeForExisting(storage: Storage, parentId: string,
-			name: string, masterDecr: sbox.Decryptor, objId: string):
+			name: string, objId: string, key: Uint8Array):
 			Promise<LinkNode> {
-		let src = await storage.getObj(objId);
-		let fileHeader = await src.readHeader();
-		let keyHolder = makeFileKeyHolder(masterDecr, fileHeader);
-		let l = new LinkNode(storage, name, objId, src.getObjVersion(), parentId);
-		l.crypto = new LinkCrypto(keyHolder);
-		return l;
+		const src = await storage.getObj(objId);
+		return  new LinkNode(storage, name, objId, src.version, parentId, key);
 	}
 
 	async setLinkParams(params: LinkParameters<any>): Promise<void> {
 		if (this.linkParams) { throw new Error(
 			'Cannot set link parameters second time'); }
-		this.linkParams = params;
-		let bytes = utf8.pack(JSON.stringify(params));
-		await this.saveBytes(bytes).completion;
+		return this.doChange(false, async () => {
+			const newVersion = this.version + 1;
+			this.linkParams = params;
+			const bytes = utf8.pack(JSON.stringify(params));
+			const src = await this.crypto.packBytes(bytes, newVersion);
+			await this.storage.saveObj(this.objId, src);
+			this.setCurrentVersion(newVersion);
+		});
 	}
 
 	private async getLinkParams(): Promise<LinkParameters<any>> {
 		if (!this.linkParams) {
-			let objSrc = await this.storage.getObj(this.objId);
-			let ver = objSrc.getObjVersion();
-			if (typeof ver === 'number') {
-				this.version = ver;
-			}
-			this.linkParams = await this.crypto.readLinkParams(objSrc);
+			await this.doChange(false, async () => {
+				const objSrc = await this.storage.getObj(this.objId);
+				this.linkParams = await this.crypto.readLinkParams(objSrc);
+				this.setCurrentVersion(objSrc.version);
+			});
 		}
 		return this.linkParams;
 	}
 
 	async read(): Promise<SymLink> {
-		let params = await this.getLinkParams();
+		const params = await this.getLinkParams();
 		if (params.storageType === 'synced') {
 			return this.makeLinkToSyncedStorage(params);
 		} else if (params.storageType === 'local') {
@@ -181,7 +159,7 @@ export class LinkNode extends NodeInFS<LinkCrypto> {
 			return makeLinkToStorage(this.storage, params);
 		} else if ((this.storage.type === 'local') ||
 				(this.storage.type === 'synced')) {
-			let storage = this.storage.storageForLinking('share');
+			const storage = this.storage.storageForLinking('share');
 			return makeLinkToStorage(storage, params);
 		} else {
 			throw new Error(`Link to ${params.storageType} storage is not supposed to be present in ${this.storage.type} storage.`);
@@ -200,7 +178,7 @@ export class LinkNode extends NodeInFS<LinkCrypto> {
 		if (params.storageType === this.storage.type) {
 			return makeLinkToStorage(this.storage, params);
 		} else if (this.storage.type === 'local') {
-			let storage = this.storage.storageForLinking('synced');
+			const storage = this.storage.storageForLinking('synced');
 			return makeLinkToStorage(storage, params);
 		} else {
 			throw new Error(`Link to ${params.storageType} storage is not supposed to be present in ${this.storage.type} storage.`);

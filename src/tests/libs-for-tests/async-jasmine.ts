@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,15 +15,12 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 export function itAsync(expectation: string,
-		assertion?: (done?: DoneFn) => Promise<void>, timeout?: number): void {
+		assertion?: () => Promise<void>, timeout?: number): void {
 	if (assertion) {
-		it(expectation, async (done) => {
-			try {
-				await assertion(done);
-				done();
-			} catch (err) {
-				done.fail(err);
-			}
+		it(expectation, done => {
+			assertion().then(
+				() => done(),
+				err => done.fail(err));
 		}, timeout);
 	} else {
 		it(expectation);
@@ -31,15 +28,12 @@ export function itAsync(expectation: string,
 }
 
 export function xitAsync(expectation: string,
-		assertion?: (done?: DoneFn) => Promise<void>, timeout?: number): void {
+		assertion?: () => Promise<void>, timeout?: number): void {
 	if (assertion) {
-		xit(expectation, async (done) => {
-			try {
-				await assertion(done);
-				done();
-			} catch (err) {
-				done.fail(err);
-			}
+		xit(expectation, done => {
+			assertion().then(
+				() => done(),
+				err => done.fail(err));
 		}, timeout);
 	} else {
 		xit(expectation);
@@ -47,15 +41,12 @@ export function xitAsync(expectation: string,
 }
 
 export function fitAsync(expectation: string,
-		assertion?: (done?: DoneFn) => Promise<void>, timeout?: number): void {
+		assertion?: () => Promise<void>, timeout?: number): void {
 	if (assertion) {
-		fit(expectation, async (done) => {
-			try {
-				await assertion(done);
-				done();
-			} catch (err) {
-				done.fail(err);
-			}
+		fit(expectation, done => {
+			assertion().then(
+				() => done(),
+				err => done.fail(err));
 		}, timeout);
 	} else {
 		fit(expectation);
@@ -63,46 +54,34 @@ export function fitAsync(expectation: string,
 }
 
 export function beforeAllAsync(action: () => Promise<void>, timeout?: number) {
-	beforeAll(async (done) => {
-		try {
-			await action();
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
+	beforeAll(done => {
+		action().then(
+			() => done(),
+			err => done.fail(err));
 	}, timeout);
 }
 
 export function afterAllAsync(action: () => Promise<void>, timeout?: number) {
-	afterAll(async (done) => {
-		try {
-			await action();
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
+	afterAll(done => {
+		action().then(
+			() => done(),
+			err => done.fail(err));
 	}, timeout);
 }
 
 export function beforeEachAsync(action: () => Promise<void>, timeout?: number) {
-	beforeEach(async (done) => {
-		try {
-			await action();
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
+	beforeEach(done => {
+		action().then(
+			() => done(),
+			err => done.fail(err));
 	}, timeout);
 }
 
 export function afterEachAsync(action: () => Promise<void>, timeout?: number) {
-	afterEach(async (done) => {
-		try {
-			await action();
-			done();
-		} catch (err) {
-			done.fail(err);
-		}
+	afterEach(done => {
+		action().then(
+			() => done(),
+			err => done.fail(err));
 	}, timeout);
 }
 

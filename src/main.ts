@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,46 +18,88 @@
  * This is main script, which electron framework starts.
  */
 
-import { app } from 'electron';
-import { OpenWindows } from './ui/open-windows';
-import { StartupWin } from './ui/startup';
+import { app, dialog } from 'electron';
+import { InitProc } from './ui/init-proc';
+import { CLIENT_APP_DOMAIN, STARTUP_APP_DOMAIN } from './ui/app-settings';
 import { Core } from './main/core';
+import { registerAllProtocolShemas } from "./lib-client/electron/protocols";
+import { logError, logWarning } from './lib-client/logging/log-to-file';
+import { Observable } from 'rxjs';
+import { bind } from './lib-common/binding';
+import { removeUsersIfAppVersionIncreases } from './lib-client/local-files/app-files';
 
 const DEFAULT_SIGNUP_URL = 'https://3nweb.net/signup/';
 
-let signupUrl: string = (undefined as any);
-for (let arg of process.argv) {
-	if (arg.startsWith('--signup-url=')) {
-		signupUrl = `https://${arg.substring(13)}`;
-		break;
+const signupUrl = (() => {
+	const arg = process.argv.find(arg => arg.startsWith('--signup-url='));
+	if (arg) { return `https://${arg.substring(13)}`; }
+	else { return DEFAULT_SIGNUP_URL; }
+})();
+
+const devTools = (() => {
+	if (process.argv.indexOf('--devtools') > 0) {
+		const toolsMod = require('./ui/devtools');
+		return {
+			add: toolsMod.addDevExtensions.bind(toolsMod),
+			remove: toolsMod.removeDevExtensions.bind(toolsMod)
+		};
 	}
-}
+})();
 
-let openedWins = new OpenWindows();
-let core = new Core(
-	(signupUrl ? signupUrl : DEFAULT_SIGNUP_URL),
-	switchAppsAfterInit);
+registerAllProtocolShemas();
 
-let closeAppWhenNoWindows = true;
-function switchAppsAfterInit() {
-	closeAppWhenNoWindows = false;
-	let startupWin = openedWins.getWin<StartupWin>(StartupWin.APP_NAME);
-	startupWin.win.close();
-	let clientWin = openedWins.openClientWin();
-	core.attachServicesToClientApp(clientWin);
-	clientWin.win.webContents.once('did-stop-loading', () => {
-		closeAppWhenNoWindows = true;
-	});
-}
+(global as any).getW3N = function(webContent: Electron.WebContents) {
+	return init.getRemotedW3N(webContent);
+};
 
-app.on('ready', () => {
-	let w = openedWins.openStartupWin();
-	core.initServicesWith(w.win);
+const init = new InitProc();
+const core = new Core(bind(init, init.openViewer));
+
+// Opening process
+Observable.fromEvent<void>(app, 'ready')
+.take(1)
+.flatMap(removeUsersIfAppVersionIncreases)
+.flatMap(async () => {
+	// open startup app, that initializes core, based on user inputs
+	if (devTools) { await devTools.add(); }
+	const { caps, coreInit$ } = await core.start(signupUrl);
+	await init.openStartupApp(caps);
+	return coreInit$;
+})
+.flatMap(coreInit$ => coreInit$)
+.flatMap(async () => {
+	// open main window
+	await init.openInbuiltApp(CLIENT_APP_DOMAIN, core.makeCAPs);
+
+	// close startup window
+	const startupApp = init.findOpenedApp(STARTUP_APP_DOMAIN);
+	if (startupApp) {
+		startupApp.window.close();
+	}
+})
+.subscribe(undefined, async err => {
+	await logError(err);
+	dialog.showErrorBox(`Restart 3NWeb application`, `Error occured on 3NWeb core's initialization. Please restart application.`);
+	await core.close();
 });
 
-app.on('window-all-closed', async () => {
-	if (closeAppWhenNoWindows) {
-		await core.close();
-		app.quit();
-	}
+// Closing process
+Observable.fromEvent<void>(app, 'window-all-closed')
+.flatMap(() => core.close(), 1)
+.merge(core.close$)
+.take(1)
+.subscribe(() => {
+	if (devTools) { devTools.remove(); }
+	app.quit();
+});
+
+const unhandledRejections = new WeakMap();
+process.on('unhandledRejection', async (reason, p) => {
+	unhandledRejections.set(p, reason);
+	await logError(reason, 'Unhandled exception');
+});
+process.on('rejectionHandled', async (p) => {
+	const reason = unhandledRejections.get(p);
+	await logWarning('Handling previously unhandled rejection', reason);
+	unhandledRejections.delete(p);
 });

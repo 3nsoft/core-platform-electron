@@ -18,8 +18,10 @@ import { bind } from '../binding';
 
 export type ByteSource = web3n.ByteSource;
 
+type Transferable = web3n.implementation.Transferable;
+
 export function wrapByteSourceImplementation(src: ByteSource): ByteSource {
-	let wrap: ByteSource = {
+	const wrap: ByteSource = {
 		read: bind(src, src.read),
 		getSize: bind(src, src.getSize)
 	};
@@ -27,13 +29,14 @@ export function wrapByteSourceImplementation(src: ByteSource): ByteSource {
 		wrap.seek = bind(src, src.seek);
 		wrap.getPosition = bind(src, src.getPosition!);
 	}
+	(wrap as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return wrap;
 }
 
 export type ByteSink = web3n.ByteSink; 
 
 export function wrapByteSinkImplementation(sink: ByteSink): ByteSink {
-	let wrap: ByteSink = {
+	const wrap: ByteSink = {
 		setSize: bind(sink, sink.setSize),
 		write: bind(sink, sink.write),
 		getSize: bind(sink, sink.getSize)
@@ -42,6 +45,7 @@ export function wrapByteSinkImplementation(sink: ByteSink): ByteSink {
 		wrap.seek = bind(sink, sink.seek);
 		wrap.getPosition = bind(sink, sink.getPosition!);
 	}
+	(wrap as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 	return wrap;
 }
 
@@ -75,10 +79,10 @@ export class BytesFIFOBuffer {
 	 */
 	private extractSomeBytesFrom(extractLen: number): Uint8Array|undefined {
 		if (this.queue.length === 0) { return undefined; }
-		let extract = new Uint8Array(extractLen);
+		const extract = new Uint8Array(extractLen);
 		let offset = 0;
 		while (offset < extractLen) {
-			let chunk = this.queue[0];
+			const chunk = this.queue[0];
 			if ((offset + chunk.length) <= extractLen) {
 				extract.set(chunk, offset);
 				offset += chunk.length;
@@ -102,12 +106,12 @@ export class BytesFIFOBuffer {
 	 * @return an array of bytes, or undefined, if there are not enough bytes.
 	 */
 	getBytes(len: number|undefined, canBeLess = false): Uint8Array|undefined {
-		if (this.queue.length === 0) { return undefined; }
 		let extract: Uint8Array|undefined;
 		if (typeof len !== 'number') {
 			extract = this.extractAllBytesFrom();
 		} else {
 			if (len < 1) { throw new Error('Length parameter is illegal: '+len); }
+			if (this.queue.length === 0) { return undefined; }
 			if (this.queueLen < len) {
 				if (canBeLess) {
 					extract = this.extractAllBytesFrom();
@@ -134,16 +138,16 @@ Object.freeze(BytesFIFOBuffer);
  */
 export function sourceFromArray(bytes: Uint8Array): ByteSource {
 	let pos = 0;
-	let src: ByteSource = {
+	const src: ByteSource = {
 		getPosition: async (): Promise<number> => { return pos; },
 		getSize: async (): Promise<number> => { return bytes.length; },
-		read: async (len: number|undefined): Promise<Uint8Array> => {
+		read: async (len: number|undefined): Promise<Uint8Array|undefined> => {
 			if (len === undefined) { return bytes.subarray(pos); }
 			if ((typeof len !== 'number') || (len < 0)) { throw new TypeError(
 				`Illegal length parameter given: ${len}`); }
-			let chunk = bytes.subarray(pos, pos+len);
+			const chunk = bytes.subarray(pos, pos+len);
 			pos += chunk.length;
-			return chunk;
+			return ((chunk.length === 0) ? undefined : chunk);
 		},
 		seek: async (newPos: number): Promise<void> => {
 			if ((typeof newPos !== 'number') || (newPos < 0)) {

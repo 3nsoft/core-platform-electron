@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015, 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -22,6 +22,15 @@ import * as midApi from '../mailer-id/login';
 import * as deliveryApi from './delivery';
 import { stringify as stringifyOpts } from 'querystring';
 
+export const BIN_TYPE = 'application/octet-stream';
+
+export const HTTP_HEADER = {
+	contentType: 'Content-Type',
+	contentLength: 'Content-Length',
+	objHeaderLength: 'X-Obj-Header-Length',
+	objSegmentsLength: 'X-Obj-Segments-Length',
+}
+Object.freeze(HTTP_HEADER);
 export const ERR_SC = {
 	malformed: 400,
 	needAuth: midApi.ERR_SC.needAuth,
@@ -78,15 +87,23 @@ Object.freeze(rmMsg);
 
 export interface ObjSize {
 	header: number;
-	segments: number;
+	segments: number|undefined;
+}
+
+export interface ObjStatus {
+	completed?: boolean;
+	size: ObjSize;
 }
 
 export interface MsgMeta  {
+	recipient: string;
 	extMeta: deliveryApi.msgMeta.Request;
 	deliveryStart: number;
-	authSender: string;
+	authSender: string|undefined;
+	invite: string|undefined;
+	maxMsgLength: number;
 	deliveryCompletion?: number;
-	objSizes?: { [objId: string]: ObjSize; };
+	objs: { [objId: string]: ObjStatus; };
 }
 
 export namespace msgMetadata {
@@ -108,25 +125,52 @@ export namespace msgMetadata {
 }
 Object.freeze(msgMetadata);
 
-export interface BlobQueryOpts {
-	/**
-	 * Offset in a blob. It must be present with length parameter.
-	 */
-	ofs?: number;
-	/**
-	 * Length in a blob's chunk. It must be present with offset parameter.
-	 */
-	len?: number;
+/**
+ * This function returns either a checked version of given meta object, if it
+ * passes as message meta, or undefined, otherwise.
+ * @param meta is an object that is expected to be message meta
+ */
+export function sanitizedMeta(meta: MsgMeta): MsgMeta|undefined {
+	if (typeof meta !== 'object') { return; }
+	if (typeof meta.objs !== 'object') { return; }
+	for (const objId of Object.keys(meta.objs)) {
+		const st = meta.objs[objId];
+		if (typeof st.size.header !== 'number') { return; }
+		if (st.completed &&
+				(st.size.segments === undefined)) { return; }
+	}
+	// TODO add more checks and return new object instead of a given one
+	return meta;
 }
 
-export namespace msgObjHeader {
+export interface GetObjQueryOpts {
+	/**
+	 * This is a boolean flag, which true value indicates that header should be
+	 * present in a response. If it is false, or is not present, header is not
+	 * included in a reply.
+	 */
+	header?: boolean;
 	
-	export const EXPRESS_URL_END = 'msg/:msgId/obj/:objId/header';
+	/**
+	 * This is an offset into segments. If it is not present, zero is assumed.
+	 * This field must be zero or missing, when header is true.
+	 */
+	ofs?: number;
+
+	/**
+	 * This is a limit on number of segment bytes to be returned.
+	 */
+	limit?: number;
+}
+
+export namespace msgObj {
+	
+	export const EXPRESS_URL_END = 'msg/:msgId/obj/:objId';
 	
 	export function genUrlEnd(msgId: string, objId: string,
-			opts?: BlobQueryOpts): string {
+			opts?: GetObjQueryOpts): string {
 		let optStr = (opts ? '?'+stringifyOpts(opts) : '');
-		return `msg/${msgId}/obj/${objId}/header${optStr}`;
+		return `msg/${msgId}/obj/${objId}${optStr}`;
 	}
 	
 	export const SC = {
@@ -136,25 +180,45 @@ export namespace msgObjHeader {
 	Object.freeze(SC);
 	
 }
-Object.freeze(msgObjHeader);
-
-export namespace msgObjSegs {
-	
-	export const EXPRESS_URL_END = 'msg/:msgId/obj/:objId/segments';
-	
-	export function genUrlEnd(msgId: string, objId: string,
-			opts?: BlobQueryOpts): string {
-		let optStr = (opts ? '?'+stringifyOpts(opts) : '');
-		return `msg/${msgId}/obj/${objId}/segments${optStr}`;
-	}
-	
-	export const SC = msgObjHeader.SC;
-	
-}
-Object.freeze(msgObjSegs);
+Object.freeze(msgObj);
 
 export interface ErrorReply {
 	error: string;
 }
 
+export namespace wsEventChannel {
+
+	export const URL_END = 'events';
+	
+	export const SC = {
+		ok: 200,
+	};
+	Object.freeze(SC);
+
+}
+Object.freeze(wsEventChannel);
+
+export namespace msgRecievedCompletely {
+
+	export const EVENT_NAME = 'msg-received-completely';
+
+	export interface Event {
+		msgId: string;
+	}
+
+}
+Object.freeze(msgRecievedCompletely);
+
+// XXX this event should be triggered by big messages with more than one obj
+export namespace msgMainObjRecieved {
+	
+	export const EVENT_NAME = 'msg-main-obj-received';
+
+	export interface Event {
+		msgId: string;
+	}
+	
+}
+Object.freeze(msgMainObjRecieved);
+	
 Object.freeze(exports);

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -28,7 +28,9 @@ declare namespace web3n.device.files {
 	}
 
 	/**
-	 * This opens native user dialog for saving file or folder.
+	 * This opens native user dialog for saving file, returning a promise,
+	 * resolvable to file object, which should be used to write file's content.
+	 * Undefined is returned, when user chose nothing.
 	 * @param title is a dialog's title
 	 * @param btnLabel is a custom label for the confirmation button. If null is
 	 * given, then default label will be used.
@@ -36,16 +38,32 @@ declare namespace web3n.device.files {
 	 * @param filters is an optional parameter, that provides an array of file
 	 * types that can be displayed when you want to limit the user to a specific
 	 * type.
-	 * @return a promise, resolvable to file object, which should be used to
-	 * write file's content.
-	 * Undefined is returned, when user chose nothing.
 	 */
-	function saveFileDialog(title: string, btnLabel: string,
-		defaultPath: string, filters?: FileTypeFilter[]):
-		Promise<web3n.files.File | undefined>;
+	type SaveFileDialog = (title: string, btnLabel: string,
+		defaultPath: string, filters?: FileTypeFilter[]) =>
+		Promise<web3n.files.WritableFile | undefined>;
+
+	/**
+	 * This opens native user dialog for saving folder, returning a promise,
+	 * resolvable to folder object, which should be used to write folder's
+	 * content.
+	 * Undefined is returned, when user chose nothing.
+	 * @param title is a dialog's title
+	 * @param btnLabel is a custom label for the confirmation button. If null is
+	 * given, then default label will be used.
+	 * @param defaultPath
+	 * @param filters is an optional parameter, that provides an array of file
+	 * types that can be displayed when you want to limit the user to a specific
+	 * type.
+	 */
+	type SaveFolderDialog = (title: string, btnLabel: string,
+		defaultPath: string, filters?: FileTypeFilter[]) =>
+		Promise<web3n.files.WritableFS | undefined>;
 	
 	/**
-	 * This opens native user dialog for selecting existing file(s) or folder(s).
+	 * This opens native user dialog for selecting existing file(s), returning
+	 * a promise, resolvable when to file objects selected by user.
+	 * Undefined is returned, when user chose nothing.
 	 * @param title is a dialog's title
 	 * @param btnLabel is a custom label for the confirmation button. If null is
 	 * given, then default label will be used.
@@ -54,12 +72,26 @@ declare namespace web3n.device.files {
 	 * @param filters is an optional parameter, that provides an array of file
 	 * types that can be displayed or selected when you want to limit the user
 	 * to a specific type.
-	 * @return a promise, resolvable when user closes dialog, returning
-	 * file objects, for files selected by user.
-	 * Undefined is returned, when user chose nothing.
 	 */
-	function openFileDialog(title: string, btnLabel: string,
-		multiSelections: boolean, filters?: FileTypeFilter[]):
-		Promise<web3n.files.File[] | undefined>;
+	type OpenFileDialog = (title: string, btnLabel: string,
+		multiSelections: boolean, filters?: FileTypeFilter[]) =>
+		Promise<web3n.files.ReadonlyFile[] | undefined>;
 	
+	/**
+	 * This opens native user dialog for selecting existing folder(s), returning
+	 * a promise, resolvable when to folder objects selected by user.
+	 * Undefined is returned, when user chose nothing.
+	 * @param title is a dialog's title
+	 * @param btnLabel is a custom label for the confirmation button. If null is
+	 * given, then default label will be used.
+	 * @param multiSelections if true, multiple items can be selected. If false,
+	 * only one item can be selected.
+	 * @param filters is an optional parameter, that provides an array of file
+	 * types that can be displayed or selected when you want to limit the user
+	 * to a specific type.
+	 */
+	type OpenFolderDialog = (title: string, btnLabel: string,
+		multiSelections: boolean, filters?: FileTypeFilter[]) =>
+		Promise<web3n.files.WritableFS[] | undefined>;
+
 }

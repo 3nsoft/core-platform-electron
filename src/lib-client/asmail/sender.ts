@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015, 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,20 +18,31 @@
  * This defines functions that implement ASMail delivery protocol.
  */
 
-import { doBodylessRequest, doJsonRequest, doBinaryRequest, makeException }
-	from '../xhr-utils';
+import { NetClient, makeNetClient, makeException }
+	from '../electron/net';
 import * as api from '../../lib-common/service-api/asmail/delivery';
 import { user as mid } from '../../lib-common/mid-sigs-NaCl-Ed';
 import { asmailInfoAt } from '../service-locator';
-import { RuntimeException, makeRuntimeException }
-	from '../../lib-common/exceptions/runtime';
-let Uri = require('jsuri');
+import { parse as parseUrl } from 'url';
 
 const LIMIT_ON_MAX_CHUNK = 1024*1024;
 
-export const EXCEPTION_TYPE = 'asmail-delivery';
+const TOO_EARLY_RESTART_PERIOD = 5*60*1000;
 
 type ASMailSendException = web3n.asmail.ASMailSendException;
+
+export type FirstSaveReqOpts = api.PutObjFirstQueryOpts;
+export type FollowingSaveReqOpts = api.PutObjSecondQueryOpts;
+
+export type ServiceUrlGetter = (address: string) => Promise<string>;
+
+export interface SessionInfo {
+	uri: string;
+	sessionId: string;
+	msgId: string;
+	maxMsgLength: number;
+	maxChunkSize: number;
+}
 
 export class MailSender {
 	
@@ -41,6 +52,7 @@ export class MailSender {
 	recipientPubKeyCerts: api.initPubKey.Reply = (undefined as any);
 	msgId: string = (undefined as any);
 	maxChunkSize = LIMIT_ON_MAX_CHUNK;
+	private sessionRestartTimeStamp: number|undefined = undefined;
 	
 	private uri: string = (undefined as any);
 	get deliveryURI(): string {
@@ -49,59 +61,113 @@ export class MailSender {
 		return this.uri;
 	}
 	private get serviceDomain(): string {
-		return (new Uri(this.uri)).host();
+		return parseUrl(this.uri).hostname!;
 	}
+
+	net = makeNetClient();
 	
-	/**
-	 * @param sender is a string with sender's mail address, or undefined,
-	 * for anonymous sending (non-authenticated).
-	 * @param recipient is a required string with recipient's mail address.
-	 * @param invitation is an optional string token, used with either anonymous
-	 * (non-authenticated) delivery, or in a more strict delivery control in
-	 * authenticated setting.
-	 */
-	constructor(
+	private constructor(
 			public sender: string|undefined,
 			public recipient: string,
 			public invitation?: string) {
 		Object.seal(this);
 	}
 
-	async setDeliveryUrl(serviceUrl: string): Promise<void> {
-		let info = await asmailInfoAt(serviceUrl);
+	/**
+	 * This static method creates a fresh, as apposed to restarted, sender.
+	 * Returned promise resolves to it.
+	 * @param sender is a string with sender's mail address, or undefined,
+	 * for anonymous sending (non-authenticated).
+	 * @param recipient is a required string with recipient's mail address.
+	 * @param getDeliveryURL is a function that produces recipient's service url
+	 * @param invitation is an optional string token, used with either anonymous
+	 * (non-authenticated) delivery, or in a more strict delivery control in
+	 * authenticated setting.
+	 */
+	static async fresh(sender: string|undefined, recipient: string,
+			getDeliveryURL: ServiceUrlGetter, invitation?: string):
+			Promise<MailSender> {
+		const ms = new MailSender(sender, recipient, invitation);
+		const deliveryURL = await getDeliveryURL(recipient);
+		await ms.setDeliveryUrl(deliveryURL);
+		return ms;
+	}
+
+	/**
+	 * This static method creates a resumed sender that can continue sending
+	 * message objects.
+	 * @param recipient is a required string with recipient's mail address.
+	 * @param session
+	 */
+	static async resume(recipient: string, session: SessionInfo):
+			Promise<MailSender> {
+		const ms = new MailSender(undefined, recipient);
+		ms.uri = session.uri;
+		ms.msgId = session.msgId;
+		ms.sessionId = session.sessionId;
+		ms.maxMsgLength = session.maxMsgLength;
+		ms.maxChunkSize = session.maxChunkSize;
+		return ms;
+	}
+
+	private async setDeliveryUrl(serviceUrl: string): Promise<void> {
+		const info = await asmailInfoAt(this.net, serviceUrl);
 		if (!info.delivery) { throw new Error(`Missing delivery service url in ASMail information at ${serviceUrl}`); }
 		this.uri = info.delivery;
 	}
 	
-	private makeException(flag: string): ASMailSendException {
-		let exc = <ASMailSendException> makeRuntimeException(
-			flag, EXCEPTION_TYPE);
-		exc.address = this.recipient;
-		return exc;
-	}
-	
 	private badRedirectExc(): ASMailSendException {
-		return this.makeException('badRedirect');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			badRedirect: true
+		};
 	}
 	
 	private unknownRecipientExc(): ASMailSendException {
-		return this.makeException('unknownRecipient');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			unknownRecipient: true
+		};
 	}
 	
 	private senderNotAllowedExc(): ASMailSendException {
-		return this.makeException('senderNotAllowed');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			senderNotAllowed: true
+		};
 	}
 	
 	private inboxIsFullExc(): ASMailSendException {
-		return this.makeException('inboxIsFull');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			inboxIsFull: true
+		};
 	}
 	
 	private authFailedOnDeliveryExc(): ASMailSendException {
-		return this.makeException('authFailedOnDelivery');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			authFailedOnDelivery: true
+		};
 	}
 
 	private recipientHasNoPubKeyExc(): ASMailSendException {
-		return this.makeException('recipientHasNoPubKey');
+		return {
+			runtimeException: true,
+			type: 'asmail-delivery',
+			address: this.recipient,
+			recipientHasNoPubKey: true
+		};
 	}
 
 	/**
@@ -112,8 +178,13 @@ export class MailSender {
 	ensureMsgFitsLimits(msgSize: number): void {
 		if (typeof this.maxMsgLength !== 'number') { throw new Error(`Premature call to ensure size fit: maximum message length isn't set.`); }
 		if (msgSize > this.maxMsgLength) {
-			let exc: ASMailSendException = this.makeException('msgTooBig');
-			exc.allowedSize = this.maxMsgLength;
+				const exc: ASMailSendException =  {
+				runtimeException: true,
+				type: 'asmail-delivery',
+				address: this.recipient,
+				msgTooBig: true,
+				allowedSize: this.maxMsgLength
+			};
 			throw exc;
 		}
 	}
@@ -121,11 +192,11 @@ export class MailSender {
 	private prepareRedirectOrThrowUp(rep: api.sessionStart.RedirectReply): void {
 		if (("string" !== typeof rep.redirect) ||
 				(rep.redirect.length === 0) ||
-				((new Uri(rep.redirect)).protocol() !== 'https')) {
+				(parseUrl(rep.redirect).protocol !== 'https:')) {
 			throw this.badRedirectExc();
 		}
 		// refuse second redirect
-		if (this.redirectedFrom !== null) {
+		if (this.redirectedFrom !== undefined) {
 			throw this.badRedirectExc();
 		}
 		// set params
@@ -144,12 +215,12 @@ export class MailSender {
 	 *  480 tells that recipient's mailbox full.
 	 */
 	async performPreFlight(): Promise<api.preFlight.Reply> {
-		let reqData: api.preFlight.Request = {
+		const reqData: api.preFlight.Request = {
 			sender: this.sender,
 			recipient: this.recipient,
 			invitation: this.invitation
 		};
-		let rep = await doJsonRequest<api.preFlight.Reply>({
+		const rep = await this.net.doJsonRequest<api.preFlight.Reply>({
 			url: this.deliveryURI + api.preFlight.URL_END,
 			method: 'POST',
 			responseType: 'json'
@@ -192,12 +263,12 @@ export class MailSender {
 	 *  480 tells that recipient's mailbox full.
 	 */
 	async startSession(): Promise<api.sessionStart.Reply> {
-		let reqData: api.sessionStart.Request = {
+		const reqData: api.sessionStart.Request = {
 			sender: this.sender,
 			recipient: this.recipient,
 			invitation: this.invitation
 		};
-		let rep = await doJsonRequest<api.sessionStart.Reply>({
+		const rep = await this.net.doJsonRequest<api.sessionStart.Reply>({
 			url: this.deliveryURI + api.sessionStart.URL_END,
 			method: 'POST',
 			responseType: 'json'
@@ -222,12 +293,54 @@ export class MailSender {
 		} else if (rep.status == api.sessionStart.SC.redirect) {
 			this.prepareRedirectOrThrowUp(<any> rep.data);
 			return this.startSession();
-		} else if (rep.status == api.preFlight.SC.unknownRecipient) {
+		} else if (rep.status == api.sessionStart.SC.unknownRecipient) {
 			throw this.unknownRecipientExc();
-		} else if (rep.status == api.preFlight.SC.senderNotAllowed) {
+		} else if (rep.status == api.sessionStart.SC.senderNotAllowed) {
 			throw this.senderNotAllowedExc();
-		} else if (rep.status == api.preFlight.SC.inboxFull) {
+		} else if (rep.status == api.sessionStart.SC.inboxFull) {
 			throw this.inboxIsFullExc();
+		} else {
+			throw makeException(rep, 'Unexpected status');
+		}
+	}
+
+	private async restartSession(): Promise<void> {
+		if (this.sessionId || !this.msgId || !this.recipient) { throw new Error(
+			`Invalid state for session restart.`); }
+		const reqData: api.sessionRestart.Request = {
+			recipient: this.recipient,
+			msgId: this.msgId
+		};
+		const rep = await this.net.doJsonRequest<api.sessionRestart.Reply>({
+			url: this.deliveryURI + api.sessionRestart.URL_END,
+			method: 'POST',
+			responseType: 'json'
+		}, reqData);
+		if (rep.status == api.sessionRestart.SC.ok) {
+			if (typeof rep.data.maxMsgLength !== 'number') {
+				throw makeException(rep,
+					'Malformed reply: missing number maxMsgLength');
+			}
+			if (rep.data.maxMsgLength < 500) {
+				throw makeException(rep,
+					'Malformed reply: maxMsgLength is too short');
+			}
+			this.maxMsgLength = rep.data.maxMsgLength;
+			if (typeof rep.data.sessionId !== 'string') {
+				throw makeException(rep,
+					'Malformed reply: missing sessionId string');
+			}
+			this.sessionId = rep.data.sessionId;
+			if ((typeof rep.data.maxChunkSize === 'number') &&
+					(rep.data.maxChunkSize < this.maxChunkSize)) {
+				this.maxChunkSize = rep.data.maxChunkSize!;
+			}
+			return;
+		} else if (rep.status == api.sessionRestart.SC.redirect) {
+			this.prepareRedirectOrThrowUp(<any> rep.data);
+			return this.restartSession();
+		} else if (rep.status == api.sessionRestart.SC.unknownRecipient) {
+			throw this.unknownRecipientExc();
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
@@ -241,14 +354,14 @@ export class MailSender {
 	 * status field.
 	 */
 	async authorizeSender(assertionSigner: mid.MailerIdSigner): Promise<void> {
-		let assertion = assertionSigner.generateAssertionFor(
+		const assertion = assertionSigner.generateAssertionFor(
 			this.serviceDomain, this.sessionId);
-		let reqData: api.authSender.Request = {
+		const reqData: api.authSender.Request = {
 			assertion: assertion,
 			userCert: assertionSigner.userCert,
 			provCert: assertionSigner.providerCert
 		};
-		let rep = await doJsonRequest<void>({
+		const rep = await this.net.doJsonRequest<void>({
 			url: this.deliveryURI.toString() + api.authSender.URL_END,
 			method: 'POST',
 			sessionId: this.sessionId
@@ -270,7 +383,7 @@ export class MailSender {
 	 * status field.
 	 */
 	async getRecipientsInitPubKey(): Promise<api.initPubKey.Reply> {
-		let rep = await doBodylessRequest<api.initPubKey.Reply>({
+		const rep = await this.net.doBodylessRequest<api.initPubKey.Reply>({
 			url: this.deliveryURI + api.initPubKey.URL_END,
 			method: 'GET',
 			sessionId: this.sessionId,
@@ -287,15 +400,16 @@ export class MailSender {
 	}
 
 	/**
-	 * This method sends message metadata.
+	 * This method sends message metadata. Returned promise resolves to
+	 * session info, which can be used for delivery resumption/restart.
 	 * @param md is a json-shaped message metadata, to be send to server
 	 * @return a promise, resolvable on 201-OK response to json with msgId,
 	 * and optional min and max limits on object chunks.
 	 * These values are also set in the fields of this sender.
 	 * Not-OK responses reject promises.
 	 */
-	async sendMetadata(meta: api.msgMeta.Request): Promise<api.msgMeta.Reply> {
-		let rep = await doJsonRequest<api.msgMeta.Reply>({
+	async sendMetadata(meta: api.msgMeta.Request): Promise<SessionInfo> {
+		const rep = await this.net.doJsonRequest<api.msgMeta.Reply>({
 			url: this.deliveryURI + api.msgMeta.URL_END,
 			method: 'PUT',
 			sessionId: this.sessionId,
@@ -312,84 +426,76 @@ export class MailSender {
 				if (rep.data.maxChunkSize < 64*1024) {
 					throw makeException(rep,
 						'Malformed reply: maxChunkSize is too small');
-				} else if (rep.data.maxChunkSize > LIMIT_ON_MAX_CHUNK) {
-					this.maxChunkSize = LIMIT_ON_MAX_CHUNK;
-				} else {
+				} else if (rep.data.maxChunkSize < this.maxChunkSize) {
 					this.maxChunkSize = rep.data.maxChunkSize;
 				}
 			}
-			return rep.data;
+			return {
+				uri: this.uri,
+				msgId: this.msgId,
+				sessionId: this.sessionId,
+				maxChunkSize: this.maxChunkSize,
+				maxMsgLength: this.maxMsgLength
+			};
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
 	
-	private async sendBytes(url: string, bytes: Uint8Array): Promise<void> {
-		let rep = await doBinaryRequest<void>({
+	private async trySessionRestart(): Promise<boolean> {
+
+		// check and set timestamp for session restarts
+		const now = Date.now();
+		if ((typeof this.sessionRestartTimeStamp === 'number') &&
+				(now <= (this.sessionRestartTimeStamp+TOO_EARLY_RESTART_PERIOD))) {
+			return false;
+		}
+		this.sessionRestartTimeStamp = now;
+
+		// do restart
+		await this.restartSession();
+		return true;
+	}
+
+	async sendObj(objId: string, bytes: Uint8Array|Uint8Array[],
+			fstReq: FirstSaveReqOpts|undefined,
+			followReq: FollowingSaveReqOpts|undefined): Promise<void> {
+		// prepare request url
+		let url = (fstReq ? api.msgObj.firstPutReqUrlEnd(objId, fstReq) :
+			(followReq ? api.msgObj.secondPutReqUrlEnd(objId, followReq) :
+			undefined));
+		if (!url) { throw new Error(`Missing request options`); }
+		url = this.deliveryURI + url;
+
+		// make request
+		const rep = await this.net.doBinaryRequest<void>({
 			url,
 			method: 'PUT',
 			sessionId: this.sessionId
 		}, bytes);
-		if (rep.status !== api.msgObjSegs.SC.ok) {
+
+		if (rep.status === api.ERR_SC.needSession) {
+			// restart session, and call this method again
+			this.sessionId = (undefined as any);
+			const restart = await this.trySessionRestart();
+			if (restart) {
+				return this.sendObj(objId, bytes, fstReq, followReq);
+			} else {
+				throw makeException(rep, 'Unexpected status, when session restart is not expected to happen');
+			}
+		} else if (rep.status === api.msgObj.SC.ok) {
+			// normal return
+			return;
+		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
 	}
 	
-	sendObjHeadChunk(objId: string, offset: number, chunk: Uint8Array,
-			totalHeadLen?: number): Promise<void> {
-		let opts: api.BlobQueryOpts = {
-			append: false,
-			ofs: offset
-		};
-		if (typeof totalHeadLen === 'number') {
-			opts.total = totalHeadLen;
-		}
-		let url = this.deliveryURI + api.msgObjHeader.genUrlEnd(objId, opts);
-		return this.sendBytes(url, chunk);
-	}
-	
-	sendObjSegsChunk(objId: string, offset: number, chunk: Uint8Array,
-			totalSegsLen?: number): Promise<void> {
-		let opts: api.BlobQueryOpts = {
-			append: false,
-			ofs: offset
-		};
-		if ('number' === typeof totalSegsLen) {
-			opts.total = totalSegsLen;
-		}
-		let url = this.deliveryURI + api.msgObjSegs.genUrlEnd(objId, opts);
-		return this.sendBytes(url, chunk);
-	}
-	
-	appendObjHead(objId: string, chunk: Uint8Array, isFirst?: boolean):
-			Promise<void> {
-		let opts: api.BlobQueryOpts = {
-			append: true
-		};
-		if (isFirst) {
-			opts.total = -1;
-		}
-		let url = this.deliveryURI + api.msgObjHeader.genUrlEnd(objId, opts);
-		return this.sendBytes(url, chunk);
-	}
-	
-	appendObjSegs(objId: string, chunk: Uint8Array, isFirst?: boolean):
-			Promise<void> {
-		let opts: api.BlobQueryOpts = {
-			append: true
-		};
-		if (isFirst) {
-			opts.total = -1;
-		}
-		let url = this.deliveryURI + api.msgObjSegs.genUrlEnd(objId, opts);
-		return this.sendBytes(url, chunk);
-	}
-
 	/**
 	 * @return a promise, resolvable when message delivery closing.
 	 */
 	async completeDelivery(): Promise<void> {
-		let rep = await doBodylessRequest<void>({
+		const rep = await this.net.doBodylessRequest<void>({
 			url: this.deliveryURI.toString() + api.completion.URL_END,
 			method: 'POST',
 			sessionId: this.sessionId
@@ -399,6 +505,13 @@ export class MailSender {
 		} else {
 			throw makeException(rep, 'Unexpected status');
 		}
+	}
+
+	async cancelDelivery(): Promise<void> {
+		if (!this.sessionId) { throw new Error(`Delivery session is not opened, and cannot be cancelled.`); }
+
+		// XXX make delivery canceling request within session
+		
 	}
 	
 }

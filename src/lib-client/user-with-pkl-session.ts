@@ -19,8 +19,8 @@
  * Public Key Login process and uses respectively authenticated session.
  */
 
-import { doJsonRequest, doBinaryRequest, doBodylessRequest, makeException }
-	from './xhr-utils';
+import { makeException, makeNetClient }
+	from '../lib-client/electron/net';
 import { HTTPException } from '../lib-common/exceptions/http';
 import { base64 } from '../lib-common/buffer-utils';
 import { secret_box as sbox, box, nonce as nMod, arrays, compareVectors }
@@ -28,7 +28,7 @@ import { secret_box as sbox, box, nonce as nMod, arrays, compareVectors }
 import { SessionEncryptor, makeSessionEncryptor }
 	from '../lib-common/session-encryptor';
 import * as loginApi from '../lib-common/service-api/pub-key-login';
-let Uri = require('jsuri');
+import { parse as parseUrl } from 'url';
 
 export interface ICalcDHSharedKey {
 	(): Uint8Array;
@@ -56,18 +56,17 @@ export abstract class ServiceUser {
 		return this.uri;
 	}
 	set serviceURI(uriString: string) {
-		let uriObj = new Uri(uriString);
-		if (uriObj.protocol() !== 'https') {
+		const u = parseUrl(uriString);
+		if (u.protocol !== 'https:') {
 			throw new Error("Url protocol must be https.");
 		}
-		if (!uriObj.host()) {
+		if (!u.host) {
 			throw new Error("Host name is missing.");
 		}
-		let p: string = uriObj.path();
-		if (p[p.length-1] !== '/') {
-			uriObj.setPath(p+'/');
+		this.uri = `${u.protocol}//${u.host}${u.pathname}`;
+		if (!this.uri.endsWith('/')) {
+			this.uri += '/';
 		}
-		this.uri = uriObj.toString();
 	}
 	
 	private loginUrlPart: string;
@@ -85,6 +84,8 @@ export abstract class ServiceUser {
 	 * default key. For non-default keys this field stays undefined.
 	 */
 	private keyDerivationParams: any = undefined;
+
+	protected net = makeNetClient();
 	
 	constructor(userId: string, opts: {
 			login: string; logout: string; canBeRedirected?: boolean; }) {
@@ -99,14 +100,14 @@ export abstract class ServiceUser {
 	}
 	
 	private async startSession(keyId: string|undefined): Promise<void> {
-		let reqData: loginApi.start.Request = {
+		const reqData: loginApi.start.Request = {
 			userId: this.userId,
 		};
 		if (keyId !== undefined) {
 			reqData.kid = keyId;
 		}
-		let rep = await doJsonRequest<loginApi.start.Reply>({
-			url: this.serviceURI + this.loginUrlPart + loginApi.start.URL_END,
+		const rep = await this.net.doJsonRequest<loginApi.start.Reply>({
+			url: `${this.serviceURI}${this.loginUrlPart}${loginApi.start.URL_END}`,
 			method: 'POST',
 			responseType: 'json'
 		}, reqData);
@@ -151,17 +152,14 @@ export abstract class ServiceUser {
 			}
 		} else if (this.canBeRedirected &&
 				(rep.status === loginApi.start.SC.redirect)) {
-			let rd: loginApi.start.RedirectReply = <any> rep.data;
+			const rd: loginApi.start.RedirectReply = <any> rep.data;
 			if (!rd || ('string' !== typeof rd.redirect)) {
 				throw makeException(rep, 'Malformed reply');
 			}
 			// refuse second redirect
-			if (this.redirectedFrom !== null) {
+			if (this.redirectedFrom !== undefined) {
 				throw makeException(rep,
-					"Redirected too many times. First redirect "+
-					"was from "+this.redirectedFrom+" to "+
-					this.serviceURI+". Second and forbidden "+
-					"redirect is to "+rd.redirect);
+					`Redirected too many times. First redirect was from ${this.redirectedFrom} to ${this.serviceURI}. Second and forbidden redirect is to ${rd.redirect}`);
 			}
 			// set params
 			this.redirectedFrom = this.serviceURI;
@@ -169,7 +167,7 @@ export abstract class ServiceUser {
 			// start redirect call
 			return this.startSession(keyId);
 		} else if (rep.status === loginApi.start.SC.unknownUser) {
-			let exc = <PKLoginException> makeException(rep);
+			const exc = <PKLoginException> makeException(rep);
 			exc.unknownUser = true;
 			throw exc;
 		} else {
@@ -178,17 +176,17 @@ export abstract class ServiceUser {
 	}
 	
 	private openSessionKey(dhsharedKeyCalc: ICalcDHSharedKey): void {
-		let dhsharedKey = dhsharedKeyCalc();
-		let nonce = new Uint8Array(
+		const dhsharedKey = dhsharedKeyCalc();
+		const nonce = new Uint8Array(
 			this.encChallenge.subarray(0, sbox.NONCE_LENGTH));
-		let sessionKey = new Uint8Array(
+		const sessionKey = new Uint8Array(
 			this.encChallenge.subarray(sbox.NONCE_LENGTH));
 		// encrypted challenge has session key packaged into WN format, with
 		// poly part cut out. Therefore, usual open method will not do as it
 		// does poly check. We should recall that cipher is a stream with data
 		// xor-ed into it. Encrypting zeros gives us stream bytes, which can
 		// be xor-ed into the data part of challenge bytes to produce a key.
-		let zeros = new Uint8Array(sbox.KEY_LENGTH);
+		const zeros = new Uint8Array(sbox.KEY_LENGTH);
 		let streamBytes = sbox.pack(zeros, nonce, dhsharedKey);
 		streamBytes = streamBytes.subarray(streamBytes.length - sbox.KEY_LENGTH);
 		for (let i=0; i < sbox.KEY_LENGTH; i+=1) {
@@ -209,8 +207,8 @@ export abstract class ServiceUser {
 	}
 	
 	private async completeLoginExchange(): Promise<void> {
-		let rep = await doBinaryRequest<Uint8Array>({
-			url: this.serviceURI + this.loginUrlPart + loginApi.complete.URL_END,
+		const rep = await this.net.doBinaryRequest<Uint8Array>({
+			url: `${this.serviceURI}${this.loginUrlPart}${loginApi.complete.URL_END}`,
 			method: 'POST',
 			sessionId: this.sessionId,
 			responseType: 'arraybuffer'
@@ -222,12 +220,12 @@ export abstract class ServiceUser {
 					rep.data, this.serverVerificationBytes)) {
 				this.serverVerificationBytes = (undefined as any);
 			} else {
-				let exc = <PKLoginException> makeException(rep);
+				const exc = <PKLoginException> makeException(rep);
 				exc.serverNotTrusted = true;
 				throw exc;
 			}
 		} else if (rep.status === loginApi.complete.SC.authFailed) {
-				let exc = <PKLoginException> makeException(rep);
+				const exc = <PKLoginException> makeException(rep);
 				exc.cryptoResponseNotAccepted = true;
 				throw exc;
 		} else {
@@ -247,7 +245,7 @@ export abstract class ServiceUser {
 	 */
 	async login(keyId: string|undefined): Promise<LoginCompletion> {
 		await this.startSession(keyId);
-		let thisPKL = this;
+		const thisPKL = this;
 		async function complete(dhsharedKeyCalc: ICalcDHSharedKey) {
 			thisPKL.openSessionKey(dhsharedKeyCalc)
 			await thisPKL.completeLoginExchange();
@@ -264,8 +262,8 @@ export abstract class ServiceUser {
 	 * @return a promise for request completion.
 	 */
 	async logout(): Promise<void> {
-		let rep = await doBodylessRequest<void>({
-			url: this.serviceURI + this.logoutUrlEnd,
+		const rep = await this.net.doBodylessRequest<void>({
+			url: `${this.serviceURI}${this.logoutUrlEnd}`,
 			method: 'POST',
 			sessionId: this.sessionId
 		})

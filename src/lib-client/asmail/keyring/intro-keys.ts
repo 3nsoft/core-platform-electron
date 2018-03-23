@@ -53,7 +53,7 @@ export class IntroKeysContainer {
 			private keyring: Ring,
 			serialForm: string|null = null) {
 		if (serialForm) {
-			let data = JSON.parse(serialForm);
+			const data = JSON.parse(serialForm);
 			// TODO checks of deserialized json data
 			
 			this.keys = data;
@@ -79,7 +79,7 @@ export class IntroKeysContainer {
 	 * published key.
 	 */
 	updatePublishedKey(signer: mid.MailerIdSigner): void {
-		let pair = generateKeyPair();
+		const pair = generateKeyPair();
 		pair.createdAt = Date.now();
 		if (this.keys.publishedKey) {
 			this.keys.publishedKey.retiredAt = pair.createdAt;

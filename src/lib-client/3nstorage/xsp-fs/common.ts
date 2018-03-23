@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -17,96 +17,65 @@
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { ScryptGenParams } from '../../key-derivation';
 import { bind } from '../../../lib-common/binding';
-import { wrapFSImplementation as wrapFS, wrapFileImplementation as wrapFile,
-	throwFSReadonlyExc, throwFileReadonlyExc }
-	from '../../files';
+import { Observable } from 'rxjs';
+import { objChanged, objRemoved }
+	from '../../../lib-common/service-api/3nstorage/owner';
+import { AsyncSBoxCryptor } from 'xsp-files';
 
-export { FolderJson } from './folder-node'; 
+export { AsyncSBoxCryptor } from 'xsp-files';
+export { FolderInfo } from './folder-node'; 
 
-export type ListingEntry = web3n.storage.ListingEntry;
-export type FS = web3n.storage.FS;
-export type File = web3n.storage.File;
-export type SymLink = web3n.storage.SymLink;
-
-export function wrapFSImplementation(impl: FS): FS {
-	let fs = <FS> wrapFS(impl);
-	fs.readLink = bind(impl, impl.readLink);
-	fs.versionedListFolder = bind(impl, impl.versionedListFolder);
-	fs.versionedGetByteSource = bind(impl, impl.versionedGetByteSource);
-	fs.versionedReadBytes = bind(impl, impl.versionedReadBytes);
-	fs.versionedReadJSONFile = bind(impl, impl.versionedReadJSONFile);
-	fs.versionedReadTxtFile = bind(impl, impl.versionedReadTxtFile);
-	if (impl.writable) {
-		fs.link = bind(impl, impl.link);
-		fs.deleteLink = bind(impl, impl.deleteLink);
-		fs.versionedGetByteSink = bind(impl, impl.versionedGetByteSink);
-		fs.versionedWriteBytes = bind(impl, impl.versionedWriteBytes);
-		fs.versionedWriteJSONFile = bind(impl, impl.versionedWriteJSONFile);
-		fs.versionedWriteTxtFile = bind(impl, impl.versionedWriteTxtFile);
-	} else {
-		fs.link = throwFSReadonlyExc;
-		fs.deleteLink = throwFSReadonlyExc;
-		fs.versionedGetByteSink = throwFSReadonlyExc;
-		fs.versionedWriteBytes = throwFSReadonlyExc;
-		fs.versionedWriteJSONFile = throwFSReadonlyExc;
-		fs.versionedWriteTxtFile = throwFSReadonlyExc;
-	}
-	return fs;
-}
-
-export function wrapFileImplementation(impl: File): File {
-	let f = <File> wrapFile(impl);
-	f.versionedGetByteSource = bind(impl, impl.versionedGetByteSource);
-	f.versionedReadBytes = bind(impl, impl.versionedReadBytes);
-	f.versionedReadJSON = bind(impl, impl.versionedReadJSON);
-	f.versionedReadTxt = bind(impl, impl.versionedReadTxt);
-	if (f.writable) {
-		f.versionedGetByteSink = bind(impl, impl.versionedGetByteSink);
-		f.versionedWriteBytes = bind(impl, impl.versionedWriteBytes);
-		f.versionedWriteJSON = bind(impl, impl.versionedWriteJSON);
-		f.versionedWriteTxt = bind(impl, impl.versionedWriteTxt);
-		f.versionedCopy = bind(impl, impl.versionedCopy);
-	} else {
-		f.versionedGetByteSink = throwFileReadonlyExc;
-		f.versionedWriteBytes = throwFileReadonlyExc;
-		f.versionedWriteJSON = throwFileReadonlyExc;
-		f.versionedWriteTxt = throwFileReadonlyExc;
-		f.versionedCopy = throwFileReadonlyExc;
-	}
-	return f;
-}
-
-export type StorageType = 'synced' | 'local' | 'share' | 'asmail-msg';
+type StorageType = web3n.files.FSType;
 
 export interface Node {
 	objId: string;
 	name: string;
+	type: NodeType;
+	delete(remoteEvent?: boolean): Promise<void>;
+	absorbExternalChange(): Promise<void>;
+	resolveConflict: (remoteVersion: number) => Promise<void>;
 }
 
+export type NodeType = 'file' | 'link' | 'folder';
+
+export type ObjId = string|null;
+
+/**
+ * This is a container for file system nodes.
+ * 
+ * Current implementation provides two functions: container for nodes, and a
+ * provider of node type, corresponding to given object.
+ * The later function, used by synced storage for conflict resolution, takes
+ * advantage of container not forgeting nodes, like cache may do.
+ * So, at least for local storage's sake, this container may be refactored to
+ * act more like cache, and even then we shouldn't forget about cascading keys
+ * and a need to keep parent nodes in memory, while child nodes are in
+ * use/cache.
+ */
 export class NodesContainer {
 
-	private nodes = new Map<string, Node|null>();
+	private nodes = new Map<ObjId, Node|null>();
 	private promises = new Map<string, Promise<Node>>();
 
 	constructor() {
 		Object.seal(this);
 	}
-	
-	get<T extends Node>(objId: string): T|undefined {
-		let node = this.nodes.get(objId);
+
+	get<T extends Node>(objId: ObjId): T|undefined {
+		const node = this.nodes.get(objId);
 		if (!node) { return; }
 		return node as T;
 	}
 
 	set(node: Node): void {
-		let existing = this.nodes.get(node.objId);
+		const existing = this.nodes.get(node.objId);
 		if (existing) { throw new Error(`Cannot add second node for the same id ${node.objId}`); }
 		this.nodes.set(node.objId, node);
 	}
 
 	getNodeOrPromise<T extends Node>(objId: string):
 			{ node?: T, nodePromise?: Promise<T> } {
-		let node = this.nodes.get(objId);
+		const node = this.nodes.get(objId);
 		if (node) { return { node: node as T }; }
 		return { nodePromise: this.promises.get(objId) as Promise<T> };
 	}
@@ -114,9 +83,9 @@ export class NodesContainer {
 	setPromise(objId: string, promise: Promise<Node>): void {
 		if (this.nodes.get(objId)) { throw new Error(
 			`Cannot set promise for an already set node, id ${objId}.`); }
-		let envelopedPromise = (async () => {
+		const envelopedPromise = (async () => {
 			try {
-				let node = await promise;
+				const node = await promise;
 				this.set(node);
 				return node;
 			} finally {
@@ -127,7 +96,7 @@ export class NodesContainer {
 	}
 
 	delete(node: Node): boolean {
-		let existing = this.get(node.objId);
+		const existing = this.get(node.objId);
 		if (existing !== node) { return false; }
 		this.nodes.delete(node.objId);
 		return true;
@@ -149,7 +118,11 @@ export class NodesContainer {
 export interface Storage {
 	
 	type: StorageType;
+
+	versioned: boolean;
 	
+	cryptor: AsyncSBoxCryptor;
+
 	nodes: NodesContainer;
 
 	/**
@@ -179,16 +152,6 @@ export interface Storage {
 	saveObj(objId: string, obj: ObjSource): Promise<void>;
 
 	/**
-	 * This asynchronously saves a new object version as diff, that has only a
-	 * different header.
-	 * @param objId
-	 * @param ver is a version number, under which this change is to be stored.
-	 * @param header is an object header, that should be recorded as a new object
-	 * version.
-	 */
-	saveNewHeader(objId: string, ver: number, header: Uint8Array): Promise<void>;
-	
-	/**
 	 * This asynchronously removes an object. Note that it does not remove
 	 * archived version, only current one.
 	 * @param objId
@@ -199,27 +162,26 @@ export interface Storage {
 	 * This asynchronously runs closing cleanup.
 	 */
 	close(): Promise<void>;
-	
+
 }
 
 export function wrapStorageImplementation(impl: Storage): Storage {
-	let wrap: Storage = {
+	const wrap: Storage = {
 		type: impl.type,
+		versioned: impl.versioned,
 		nodes: impl.nodes,
 		storageForLinking: bind(impl, impl.storageForLinking),
 		generateNewObjId: bind(impl, impl.generateNewObjId),
 		getObj: bind(impl, impl.getObj),
 		saveObj: bind(impl, impl.saveObj),
-		saveNewHeader: bind(impl, impl.saveNewHeader),
 		close: bind(impl, impl.close),
-		removeObj: bind(impl, impl.removeObj)
+		removeObj: bind(impl, impl.removeObj),
+		cryptor: impl.cryptor
 	};
-	return wrap;
+	return Object.freeze(wrap);
 }
 
-export interface StorageGetter {
-	(type: StorageType, location?: string): Storage;
-}
+export type StorageGetter = (type: StorageType, location?: string) => Storage;
 
 export interface SyncedStorage extends Storage {
 
@@ -228,19 +190,34 @@ export interface SyncedStorage extends Storage {
 	 */
 	getRootKeyDerivParamsFromServer(): Promise<ScryptGenParams>;
 
+	/**
+	 * This sets given object version as current and synchronized.
+	 */
+	setCurrentSyncedVersion(objId: string, syncedVersion: number): Promise<void>;
+
+	getSyncedObjVersion(objId: string, version: number): Promise<ObjSource>;
 }
 
 export function wrapSyncStorageImplementation(impl: SyncedStorage):
 		SyncedStorage {
-	let wrap = wrapStorageImplementation(impl) as SyncedStorage;
-	wrap.getRootKeyDerivParamsFromServer = bind(impl, impl.getRootKeyDerivParamsFromServer);
-	return wrap;
+	const storageWrap = wrapStorageImplementation(impl);
+	const wrap: SyncedStorage = {
+		type: storageWrap.type,
+		versioned: storageWrap.versioned,
+		close: storageWrap.close,
+		cryptor: storageWrap.cryptor,
+		generateNewObjId: storageWrap.generateNewObjId,
+		getObj: storageWrap.getObj,
+		nodes: storageWrap.nodes,
+		removeObj: storageWrap.removeObj,
+		saveObj: storageWrap.saveObj,
+		storageForLinking: storageWrap.storageForLinking,
+		getRootKeyDerivParamsFromServer: bind(impl,
+			impl.getRootKeyDerivParamsFromServer),
+		setCurrentSyncedVersion: bind(impl, impl.setCurrentSyncedVersion),
+		getSyncedObjVersion: bind(impl, impl.getSyncedObjVersion)
+	};
+	return Object.freeze(wrap);
 }
-
-export let sysFolders = {
-	appData: 'Apps Data',
-	userFiles: 'User Files'
-};
-Object.freeze(sysFolders);
 
 Object.freeze(exports);

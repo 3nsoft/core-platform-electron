@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,25 +16,49 @@
 
 
 import * as cProcs from 'child_process';
-import { Duplex, CommunicationPoint } from './generic-ipc';
-
-export { Duplex, RequestEnvelope, RequestHandler, EventEnvelope, EventListener }
+import { RawDuplex, RequestServer, makeRequestServer,
+	RequestingClient, makeRequestingClient, Envelope, Observer,
+	SingleObserverWrap }
 	from './generic-ipc';
 
+export { RequestEnvelope, RequestHandler } from './generic-ipc';
+
+export type IPCToChild = RequestingClient;
+export type IPCToParent = RequestServer;
+
+// XXX Current implementation uses postMessage, which goes through JSON.
+//		To pass binary without intermediate parsing, allowing to pass buffers,
+//		we may use streams. Specifically in and out streams of a child.
+//		Parent should get a ready message from child, after which buffer chunks
+//		can be send in both directions. Chunk being <chunk-len><chunk-bytes>.
+//		Chunk number can be added and used for QoS, but is it needed, due to
+//		local availability?
+//
+//		Beware of limit on buffer (check docs).
+//
+//		We'll use rxjs to implement this.
+//
+// Sample from docs:
+//
+// const child = child_process.spawn('ls', {
+// 	stdio: [
+// 	  0, // Use parents stdin for child
+// 	  'pipe', // Pipe child's stdout to parent
+// 	  fs.openSync('err.out', 'w') // Direct child's stderr to a file
+// 	]
+// });
+
 export function commToChild(channel: string, child: cProcs.ChildProcess):
-		Duplex {
-	let envListener: (r: any) => void;
-	let nodeListener = (r: any) => {
-		if (envListener) { envListener(r); }
-	};
-	let commPoint: CommunicationPoint = {
-		addListener(listener: (r: any) => void): () => void {
-			if (envListener) { throw new Error(
-				'Envelope listener has already been added.'); }
-			envListener = listener;
+		IPCToChild {
+	const observer = new SingleObserverWrap<Envelope>();
+	const nodeListener = (env: Envelope) => observer.next(env);
+	const rawDuplex: RawDuplex<Envelope> = {
+		subscribe(obs: Observer<Envelope>): () => void {
+			observer.set(obs);
 			child.on('message', nodeListener);
+			child.once('disconnet', () => observer.complete());
 			return () => {
-				envListener = (undefined as any);
+				observer.detach();
 				child.removeListener('message', nodeListener);
 			};
 		},
@@ -42,30 +66,30 @@ export function commToChild(channel: string, child: cProcs.ChildProcess):
 			child.send(env);
 		}
 	};
-	return new Duplex(channel, commPoint);
+	return makeRequestingClient(channel, rawDuplex);
 }
 
-export function commToParent(channel: string): Duplex {
-	let envListener: (r: any) => void;
-	let nodeListener = (r: any) => {
-		if (envListener) { envListener(r); }
+export function commToParent(channel: string): IPCToParent {
+	const observer = new SingleObserverWrap<Envelope>();
+	const nodeListener = (env: Envelope) => {
+		if (observer && observer.next) { observer.next(env); }
 	};
-	let commPoint: CommunicationPoint = {
-		addListener(listener: (r: any) => void): () => void {
-			if (envListener) { throw new Error(
-				'Envelope listener has already been added.'); }
-			envListener = listener;
+	const commPoint: RawDuplex<Envelope> = {
+		subscribe(obs: Observer<Envelope>): () => void {
+			observer.set(obs);
 			process.on('message', nodeListener);
 			return () => {
-				envListener = (undefined as any);
-				process.removeListener('message', nodeListener);
+				observer.detach();
+				// electron's definitions overshadows node's definition here
+				(process as NodeJS.EventEmitter).removeListener(
+					'message', nodeListener);
 			};
 		},
 		postMessage(env: any): void {
 			process.send!(env);
 		}
 	};
-	return new Duplex(channel, commPoint);
+	return makeRequestServer(channel, commPoint);
 }
 
 Object.freeze(exports);

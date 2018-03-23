@@ -18,13 +18,15 @@ import { itAsync, xitAsync } from './async-jasmine';
 import { checkRemoteExpectations } from './setups';
 import { resolve } from 'path';
 import { readdirSync } from 'fs';
+import { SpectronClient } from 'spectron';
 
 export interface SpecIt {
 	expectation: string;
 	disableIn?: string;
-	func?: Function;
+	func?: (...args: any[]) => void;
 	funcArgs?: string[];
 	numOfExpects?: number;
+	timeout?: number;
 }
 
 export interface SpecDescribe {
@@ -34,10 +36,10 @@ export interface SpecDescribe {
 }
 
 function readSpecs(folderWithModules: string): SpecDescribe[] {
-	let specs: SpecDescribe[] = [];
-	let modulesWithSpecs = readdirSync(folderWithModules);
-	for (let fName of modulesWithSpecs) {
-		let s: SpecDescribe = require(resolve(folderWithModules, fName)).specs;
+	const specs: SpecDescribe[] = [];
+	const modulesWithSpecs = readdirSync(folderWithModules);
+	for (const fName of modulesWithSpecs) {
+		const s: SpecDescribe = require(resolve(folderWithModules, fName)).specs;
 		if (s) {
 			specs.push(s);
 		} else {
@@ -47,23 +49,32 @@ function readSpecs(folderWithModules: string): SpecDescribe[] {
 	return specs;
 }
 
+function collectAllExpectations(): void {};
+
 export function fsSpecsForWebDrvCtx(
-		c: () => WebdriverIO.Client<any>,
+		c: () => SpectronClient,
 		folderWithModules: string,
 		disableFlag?: string): void {
-	let specs = readSpecs(folderWithModules);
+	const specs = readSpecs(folderWithModules);
 	specs.forEach((d) => {
-		let describeFn = (d.focused ? fdescribe : describe);
+		const describeFn = (d.focused ? fdescribe : describe);
 		describeFn(d.description, () => {
 			d.its.forEach((it) => {
-				let spec = ((!it.func || (disableFlag && it.disableIn &&
+				const spec = ((!it.func || (disableFlag && it.disableIn &&
 					it.disableIn.match(disableFlag))) ? xitAsync : itAsync);
 				spec(it.expectation, async function() {
 					if (!it.func) { return; }
-					let exec = c().executeAsync(it.func);
-					let exps = (await exec).value;
+					if (it.timeout) {
+						c().timeouts('script', it.timeout);
+					}
+					c().execute(function() { collectAllExpectations(); });
+					const exec = c().executeAsync(it.func);
+					if (it.timeout) {
+						c().timeouts('script', 5000);
+					}
+					const exps = (await exec).value;
 					checkRemoteExpectations(exps, it.numOfExpects);
-				});
+				}, it.timeout);
 			});
 		});
 	});
@@ -72,18 +83,18 @@ export function fsSpecsForWebDrvCtx(
 export function fsSpecsForCurrentCtx(
 		folderWithModules: string,
 		disableFlag?: string): void {
-	let specs = readSpecs(folderWithModules);
+	const specs = readSpecs(folderWithModules);
 	specs.forEach((d) => {
-		let describeFn = (d.focused ? fdescribe : describe);
+		const describeFn = (d.focused ? fdescribe : describe);
 		describeFn(d.description, () => {
 			d.its.forEach((it) => {
-				let spec = ((!it.func || (disableFlag && it.disableIn &&
+				const spec = ((!it.func || (disableFlag && it.disableIn &&
 					it.disableIn.match(disableFlag))) ? xitAsync : itAsync);
 				spec(it.expectation, async function() {
 					if (!it.func) { return; }
-					let done = () => {};
+					const done = () => {};
 					await it.func(done);
-				});
+				}, it.timeout);
 			});
 		});
 	});
@@ -91,24 +102,24 @@ export function fsSpecsForCurrentCtx(
 
 export function specsWithArgs(folderWithModules: string,
 		args: { [argName: string]: () => any; }): void {
-	let specs = readSpecs(folderWithModules);
+	const specs = readSpecs(folderWithModules);
 	specs.forEach((d) => {
-		let describeFn = (d.focused ? fdescribe : describe);
+		const describeFn = (d.focused ? fdescribe : describe);
 		describeFn(d.description, () => {
 			d.its.forEach((it) => {
-				let spec = (it.func  ? itAsync : xitAsync);
+				const spec = (it.func  ? itAsync : xitAsync);
 				spec(it.expectation, async function() {
 					if (!it.func) { return; }
 					if (it.funcArgs) {
-						let funcArgs: (() => any)[] = [];
-						for (let argName of it.funcArgs) {
+						const funcArgs: (() => any)[] = [];
+						for (const argName of it.funcArgs) {
 							funcArgs.push(args[argName]);
 						}
 						await it.func(...funcArgs);
 					} else {
 						await it.func();
 					}
-				});
+				}, it.timeout);
 			});
 		});
 	});

@@ -14,59 +14,63 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { RuntimeException, makeRuntimeException }
-	from '../../lib-common/exceptions/runtime';
-
-export const StorageExceptionType = 'storage';
-
-export interface StorageException extends RuntimeException {
+export interface StorageException extends web3n.RuntimeException {
+	type: 'storage';
 	objId?: string;
 	version?: number;
 	objNotFound?: boolean;
 	objExists?: boolean;
 	concurrentTransaction?: boolean;
-	unknownObjOrTransaction?: boolean;
-	wrongState?: boolean;
-}
-
-function makeException(objId: string, version?: number): StorageException {
-	let exc: StorageException = {
-		runtimeException: true,
-		type: StorageExceptionType,
-		objId,
-		version
-	};
-	return exc;
+	unknownTransaction?: boolean;
+	versionMismatch?: boolean;
+	currentVersion?: number;
 }
 
 export function makeObjNotFoundExc(objId: string, version?: number): StorageException {
-	let exc = makeException(objId, version);
-	exc.objNotFound = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'storage',
+		objId, version,
+		objNotFound: true
+	};
 }
 
 export function makeObjExistsExc(objId: string, version?: number): StorageException {
-	let exc = makeException(objId, version);
-	exc.objExists = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'storage',
+		objId, version,
+		objExists: true
+	};
 }
 
 export function makeConcurrentTransExc(objId: string): StorageException {
-	let exc = makeException(objId);
-	exc.concurrentTransaction = true;
-	return exc;
+	return {
+		runtimeException: true,
+		type: 'storage',
+		objId,
+		concurrentTransaction: true
+	};
 }
 
-export function makeUnknownObjOrTransExc(objId: string): StorageException {
-	let exc = makeException(objId);
-	exc.unknownObjOrTransaction = true;
-	return exc;
+export function makeUnknownTransactionExc(objId: string): StorageException {
+	return {
+		runtimeException: true,
+		type: 'storage',
+		objId,
+		unknownTransaction: true
+	};
 }
 
-export function makeWrongStateExc(objId: string): StorageException {
-	let exc = makeException(objId);
-	exc.wrongState = true;
-	return exc;
+export function makeVersionMismatchExc(objId: string, currentVersion: number):
+		StorageException {
+	return {
+		runtimeException: true,
+		type: 'storage',
+		objId,
+		versionMismatch: true,
+		currentVersion
+	};
 }
 
 Object.freeze(exports);

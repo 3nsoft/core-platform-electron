@@ -44,8 +44,8 @@ export function checkParams(params: ScryptGenParams): boolean {
 export function deriveStorageSKey(cryptor: Cryptor, pass: string,
 		derivParams: ScryptGenParams, progressCB: (p: number) => void):
 		Promise<Uint8Array> {
-	let passBytes = utf8.pack(pass);
-	let saltBytes = base64.open(derivParams.salt);
+	const passBytes = utf8.pack(pass);
+	const saltBytes = base64.open(derivParams.salt);
 	return cryptor.scrypt(passBytes, saltBytes,
 		derivParams.logN, derivParams.r, derivParams.p,
 		sbox.KEY_LENGTH, progressCB);
@@ -54,13 +54,13 @@ export function deriveStorageSKey(cryptor: Cryptor, pass: string,
 export async function deriveMidKeyPair(cryptor: Cryptor, pass: string,
 		derivParams: ScryptGenParams, progressCB: (p: number) => void,
 		use = '', kid = ''): Promise<{ skey: Uint8Array; pkey: JsonKey; }> {
-	let passBytes = utf8.pack(pass);
-	let saltBytes = base64.open(derivParams.salt);
-	let skey = await cryptor.scrypt(passBytes, saltBytes,
+	const passBytes = utf8.pack(pass);
+	const saltBytes = base64.open(derivParams.salt);
+	const skey = await cryptor.scrypt(passBytes, saltBytes,
 		derivParams.logN, derivParams.r, derivParams.p,
 		box.KEY_LENGTH, progressCB);
-	let pkey = box.generate_pubkey(skey);
-	let pkeyJSON = keyToJson({
+	const pkey = box.generate_pubkey(skey);
+	const pkeyJSON = keyToJson({
 		k: pkey,
 		alg: box.JWK_ALG_NAME,
 		use: use,

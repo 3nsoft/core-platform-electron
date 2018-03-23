@@ -14,6 +14,8 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
+import { logWarning } from '../logging/log-to-file';
+
 export interface Region {
 	start: number;
 	end: number;
@@ -21,9 +23,9 @@ export interface Region {
 
 function invertRegions(regs: Region[],
 		start: number, end: number): Region[] {
-	let inverted: Region[] = [];
+	const inverted: Region[] = [];
 	for (let i=0; i<regs.length; i+=1) {
-		let reg = regs[i];
+		const reg = regs[i];
 		if (start < reg.start) {
 			inverted.push({ start: start, end: reg.start });
 		}
@@ -32,7 +34,7 @@ function invertRegions(regs: Region[],
 	if (start < end) {
 		inverted.push({ start: start, end: end });
 	} else if (inverted.length > 0) {
-		let lastReg = inverted[inverted.length-1];
+		const lastReg = inverted[inverted.length-1];
 		if (lastReg.end > end) {
 			lastReg.end = end;
 		} 
@@ -45,7 +47,7 @@ export function missingRegionsIn(
 	let startInd: number|undefined = undefined;
 	let endInd: number|undefined = undefined;
 	for (let i=0; i<cached.length; i+=1) {
-		let reg = cached[i];
+		const reg = cached[i];
 		if ((startInd === undefined) &&
 				((start <= reg.start) || (start < reg.end))) {
 			if (end <= reg.start) { break; }
@@ -61,8 +63,8 @@ export function missingRegionsIn(
 	if (startInd === undefined) {
 		return [{ start, end }];
 	} else {
-		let cachedRegions = cached.slice(startInd, endInd+1);
-		let inverted = invertRegions(cachedRegions, start, end);
+		const cachedRegions = cached.slice(startInd, endInd! + 1);
+		const inverted = invertRegions(cachedRegions, start, end);
 		return inverted;
 	}
 }
@@ -76,12 +78,12 @@ export function missingRegionsIn(
 export function splitBigRegions(regs: Region[],
 		size: number): void {
 	for (let i=0; i<regs.length; i+=1) {
-		let reg = regs[i];
+		const reg = regs[i];
 		let regLen = reg.end - reg.start;
 		if (regLen <= size) { continue; }
 		while (regLen > size) {
-			let newRegLen = (regLen > 1.5*size) ? size : Math.round(regLen / 2);
-			let newReg = {
+			const newRegLen = (regLen > 1.5*size) ? size : Math.round(regLen / 2);
+			const newReg = {
 				start: reg.start,
 				end: reg.start + newRegLen
 			};
@@ -108,7 +110,7 @@ export function mergeRegions(regs: Region[], newReg: Region,
 		return;
 	}
 	for (let i=0; i < regs.length; i+=1) {
-		let seg = regs[i];
+		const seg = regs[i];
 		if (newReg.start > seg.end) {
 			// newSeg is to the right of seg
 			if ((i+1) < regs.length) {
@@ -134,7 +136,7 @@ export function mergeRegions(regs: Region[], newReg: Region,
 			}
 		} else {
 			// overlap situations
-			if (warnOnOverlap) { console.warn(
+			if (warnOnOverlap) { logWarning(
 				`There is an overlap in cache saving: original regions are ${JSON.stringify(regs)}, new region is ${JSON.stringify(newReg)}`); }
 			if (i+1 < regs.length) {
 				regs.splice(i, 1);

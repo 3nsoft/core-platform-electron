@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,20 +15,16 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { resolveTxt as resolveDnsTxt } from 'dns';
-import { doBodylessRequest, doJsonRequest, makeException, Reply }
-	from './xhr-utils';
 import { SignedLoad, isLikeSignedKeyCert } from '../lib-common/jwkeys';
-import { makeRuntimeException, RuntimeException }
-	from '../lib-common/exceptions/runtime';
-import { NamedProcs } from '../lib-common/processes';
-let Uri = require('jsuri');
+import { parse as parseUrl } from 'url';
+import { NetClient, Reply, makeException } from './electron/net';
 
-async function readJSONLocatedAt(url: string): Promise<Reply<any>> {
-	let uri = new Uri(url);
-	if (uri.protocol() !== 'https') {
+async function readJSONLocatedAt<T>(client: NetClient, url: string):
+		Promise<Reply<T>> {
+	if (parseUrl(url).protocol !== 'https:') {
 		throw new Error("Url protocol must be https.");
 	}
-	let rep = await doBodylessRequest<any>({
+	const rep = await client.doBodylessRequest<T>({
 		url,
 		method: 'GET',
 		responseType: 'json'
@@ -43,10 +39,19 @@ async function readJSONLocatedAt(url: string): Promise<Reply<any>> {
 	}
 }
 
-function transformPathToCompleteUri(url: string, path: string): string {
-	let u = new Uri(url);
-	u.path(path);
-	return u.toString();
+function transformPathToCompleteUri(url: string, path: string,
+		rep: Reply<any>): string {
+	const uInit = parseUrl(url);
+	const protoAndHost = `${uInit.protocol}//${uInit.host}`;
+	const uPath = parseUrl(path);
+	if (!uPath.path || !uPath.href || !uPath.href.startsWith(uPath.path)) {
+		throw makeException(rep, `Malformed path parameter ${path}`);
+	}
+	if (uPath.href.startsWith('/')) {
+		return `${protoAndHost}${uPath.href}`;
+	} else {
+		return `${protoAndHost}/${uPath.href}`;
+	}
 }
 
 export interface ASMailRoutes {
@@ -56,21 +61,23 @@ export interface ASMailRoutes {
 }
 
 /**
+ * This returns a promise, resolvable to ASMailRoutes object.
+ * @param client
  * @param url
- * @return a promise, resolvable to ASMailRoutes object.
  */
-export async function asmailInfoAt(url: string): Promise<ASMailRoutes> {
-	let rep = await readJSONLocatedAt(url);
-	let json = rep.data;
-	let transform = <ASMailRoutes> {};
+export async function asmailInfoAt(client: NetClient, url: string):
+		Promise<ASMailRoutes> {
+	const rep = await readJSONLocatedAt<ASMailRoutes>(client, url);
+	const json = rep.data;
+	const transform = <ASMailRoutes> {};
 	if ('string' === typeof json.delivery) {
-		transform.delivery = transformPathToCompleteUri(url, json.delivery);
+		transform.delivery = transformPathToCompleteUri(url, json.delivery, rep);
 	}
 	if ('string' === typeof json.retrieval) {
-		transform.retrieval = transformPathToCompleteUri(url, json.retrieval);
+		transform.retrieval = transformPathToCompleteUri(url, json.retrieval, rep);
 	}
 	if ('string' === typeof json.config) {
-		transform.config = transformPathToCompleteUri(url, json.config);
+		transform.config = transformPathToCompleteUri(url, json.config, rep);
 	}
 	Object.freeze(transform);
 	return transform;
@@ -83,16 +90,18 @@ export interface MailerIdServiceInfo {
 }
 
 /**
+ * This returns a promise, resolvable to MailerIdRoutes object.
+ * @param client
  * @param url
- * @return a promise, resolvable to MailerIdRoutes object.
  */
-export async function mailerIdInfoAt(url: string):
+export async function mailerIdInfoAt(client: NetClient, url: string):
 		Promise<MailerIdServiceInfo> {
-	let rep = await readJSONLocatedAt(url);
-	let json = rep.data;
-	let transform = <MailerIdServiceInfo> {};
+	const rep = await readJSONLocatedAt<MailerIdServiceInfo>(client, url);
+	const json = rep.data;
+	const transform = <MailerIdServiceInfo> {};
 	if ('string' === typeof json.provisioning) {
-		transform.provisioning = transformPathToCompleteUri(url, json.provisioning);
+		transform.provisioning = transformPathToCompleteUri(
+			url, json.provisioning, rep);
 	} else {
 		throw makeException(rep, 'Malformed reply');
 	}
@@ -114,21 +123,23 @@ export interface StorageRoutes {
 }
 
 /**
+ * This returns a promise, resolvable to StorageRoutes object.
+ * @param client
  * @param url
- * @return a promise, resolvable to StorageRoutes object.
  */
-export async function storageInfoAt(url: string): Promise<StorageRoutes> {
-	let rep = await readJSONLocatedAt(url);
-	let json = rep.data;
-	let transform = <StorageRoutes> {};
+export async function storageInfoAt(client: NetClient, url: string):
+		Promise<StorageRoutes> {
+	const rep = await readJSONLocatedAt<StorageRoutes>(client, url);
+	const json = rep.data;
+	const transform = <StorageRoutes> {};
 	if (typeof json.owner === 'string') {
-		transform.owner = transformPathToCompleteUri(url, json.owner);
+		transform.owner = transformPathToCompleteUri(url, json.owner, rep);
 	}
 	if (typeof json.shared === 'string') {
-		transform.shared = transformPathToCompleteUri(url, json.shared);
+		transform.shared = transformPathToCompleteUri(url, json.shared, rep);
 	}
 	if (typeof json.config === 'string') {
-		transform.config = transformPathToCompleteUri(url, json.config);
+		transform.config = transformPathToCompleteUri(url, json.config, rep);
 	}
 	return transform;
 }
@@ -139,7 +150,7 @@ export async function storageInfoAt(url: string): Promise<StorageRoutes> {
  */
 function domainOfAddress(address: string): string {
 	address = address.trim();
-	let indOfAt = address.lastIndexOf('@');
+	const indOfAt = address.lastIndexOf('@');
 	if (indOfAt < 0) {
 		return address;
 	} else {
@@ -153,23 +164,25 @@ function checkAndPrepareURL(value: string): string {
 	return 'https://'+value;
 }
 
-const EXCEPTION_TYPE = 'service-locating';
+type ServLocException = web3n.asmail.ServLocException;
 
-function domainNotFoundExc(address?: string): web3n.asmail.ServLocException {
-	let exc = <web3n.asmail.ServLocException> makeRuntimeException(
-		'domainNotFound', EXCEPTION_TYPE);
-	if (address) {
-		exc.address = address;
-	}
+function domainNotFoundExc(address: string): ServLocException {
+	const exc: ServLocException = {
+		runtimeException: true,
+		type: 'service-locating',
+		address,
+		domainNotFound: true
+	};
 	return exc;
 }
 
-function noServiceRecordExc(address?: string): web3n.asmail.ServLocException {
-	let exc = <web3n.asmail.ServLocException> makeRuntimeException(
-		'noServiceRecord', EXCEPTION_TYPE);
-	if (address) {
-		exc.address = address;
-	}
+function noServiceRecordExc(address: string): ServLocException {
+	const exc: ServLocException = {
+		runtimeException: true,
+		type: 'service-locating',
+		address,
+		noServiceRecord: true
+	};
 	return exc;
 }
 
@@ -186,13 +199,13 @@ function noServiceRecordExc(address?: string): web3n.asmail.ServLocException {
  */
 function extractPair(txtRecords: string[][], serviceLabel: string):
 		string|undefined {
-	for (let txtRecord of txtRecords) {
-		let txt = txtRecord.join(' ');
-		let eqPos = txt.indexOf('=');
+	for (const txtRecord of txtRecords) {
+		const txt = txtRecord.join(' ');
+		const eqPos = txt.indexOf('=');
 		if (eqPos < 0) { continue; }
-		let name = txt.substring(0, eqPos).trim();
+		const name = txt.substring(0, eqPos).trim();
 		if (name === serviceLabel) {
-			let value = txt.substring(eqPos+1).trim();
+			const value = txt.substring(eqPos+1).trim();
 			return value;
 		}
 	}
@@ -207,11 +220,14 @@ function extractPair(txtRecords: string[][], serviceLabel: string):
  */
 function resolveTxt(domain: string): Promise<string[][]> {
 	return new Promise<string[][]>((resolve, reject) => {
+		// As of March 2017, docs for node say that texts given in a callback
+		// are string[][], and node works this way, but definition is incorrect.
+		// Therefore, need to insert "as any" into resolve function.
 		resolveDnsTxt(domain, (err, texts) => {
 			if (err) {
 				reject(err);
 			} else {
-				resolve(texts);
+				resolve(texts as any);
 			}
 		});
 	});
@@ -231,17 +247,17 @@ Object.freeze(DNS_ERR_CODE);
 async function getServiceFor(address: string, serviceLabel: string):
 		Promise<string> {
 	try {
-		let domain = domainOfAddress(address);
-		let txtRecords = await resolveTxt(domain);
-		let recValue = extractPair(txtRecords, serviceLabel);
+		const domain = domainOfAddress(address);
+		const txtRecords = await resolveTxt(domain);
+		const recValue = extractPair(txtRecords, serviceLabel);
 		if (!recValue) { throw noServiceRecordExc(address); }
-		let url = checkAndPrepareURL(recValue);
+		const url = checkAndPrepareURL(recValue);
 		return url;
 	} catch (err) {
 		if ((<DnsError> err).code === DNS_ERR_CODE.NODATA) {
 			throw noServiceRecordExc(address);
 		} else if ((<DnsError> err).code === DNS_ERR_CODE.NOTFOUND) {
-			throw domainNotFoundExc()
+			throw domainNotFoundExc(address)
 		} else {
 			throw err;
 		}
@@ -279,11 +295,11 @@ export async function getStorageServiceFor(address: string): Promise<string> {
  * @param address
  * @return a promise, resolvable to ASMailRoutes object and mid root domain.
  */
-export async function getMailerIdInfoFor(address: string):
+export async function getMailerIdInfoFor(client: NetClient, address: string):
 		Promise<{ info: MailerIdServiceInfo; domain: string; }> {
-	let serviceURL = await getMailerIdServiceFor(address);
-	let rootAddr = (new Uri(serviceURL)).host();
-	let info = await mailerIdInfoAt(serviceURL);
+	const serviceURL = await getMailerIdServiceFor(address);
+	const rootAddr = parseUrl(serviceURL).hostname!;
+	const info = await mailerIdInfoAt(client, serviceURL);
 	return {
 		info: info,
 		domain: rootAddr

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,53 +14,46 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { FileException } from '../../lib-common/exceptions/file';
-import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
 import { Storage, KeyRing, makeKeyRing }
 	from '../../lib-client/asmail/keyring/index';
 import * as confApi from '../../lib-common/service-api/asmail/config';
 import { user as midUser } from '../../lib-common/mid-sigs-NaCl-Ed';
 import { utf8 } from '../../lib-common/buffer-utils';
-import { bind } from '../../lib-common/binding';
+import { SingleProc } from '../../lib-common/processes';
 
-export { KeyRing, MsgKeyRole, MsgDecrInfo }
+export { KeyRing, MsgKeyRole, MsgKeyInfo }
 	from '../../lib-client/asmail/keyring/index';
+
+type WritableFS = web3n.files.WritableFS;
+type FileException = web3n.files.FileException;
 
 const KEYRING_FNAME = 'keyring.json';
 
-class KeyRingStore implements Storage {
-	
-	constructor(
-			private fs: FS) {
-		if (!this.fs) { throw new Error("No file system given."); }
-		Object.seal(this);
-	}
-	
-	save(serialForm: string): Promise<void> {
-		if (!this.fs) { throw new Error("File system is not setup"); }
-		return this.fs.writeTxtFile(KEYRING_FNAME, serialForm);
-	}
-	
-	load(): Promise<string|undefined> {
-		if (!this.fs) { throw new Error("File system is not setup"); }
-		return this.fs.readTxtFile(KEYRING_FNAME).catch(
-			(exc: FileException) => {
-				if (!exc.notFound) { throw exc; }
-			});
-	}
-	
-	wrap(): Storage {
-		let wrap: Storage = {
-			load: bind(this, this.load),
-			save: bind(this, this.save)
-		};
-		Object.freeze(wrap);
-		return wrap;
-	}
-	
+function makeSyncedStorage(fs: WritableFS): Storage {
+	const proc = new SingleProc();
+	const storage: Storage = {
+		save: (serialForm: string) => proc.startOrChain(
+			() => fs.writeTxtFile(KEYRING_FNAME, serialForm)),
+		close: () => fs.close(),
+		start: async () => {
+			
+			// XXX start watching keyring file
+
+		},
+		load: () => proc.startOrChain(
+			() => fs.readTxtFile(KEYRING_FNAME).catch(notFoundOrReThrow))
+	};
+	return Object.freeze(storage);
 }
-Object.freeze(KeyRingStore);
-Object.freeze(KeyRingStore.prototype);
+
+/**
+ * This is a catch callback, which returns undefined on file(folder) not found
+ * exception, and re-throws all other exceptions/errors.
+ */
+function notFoundOrReThrow(exc: FileException): undefined {
+	if (!exc.notFound) { throw exc; }
+	return;
+}
 
 export class PublishedKeys {
 	
@@ -77,10 +70,10 @@ export class PublishedKeys {
 Object.freeze(PublishedKeys.prototype);
 Object.freeze(PublishedKeys);
 
-export async function makeKeyring(keyringFS: FS):
+export async function makeKeyring(fs: WritableFS):
 		Promise<KeyRing> {
-	let keyring = makeKeyRing();
-	let keyStore = (new KeyRingStore(keyringFS)).wrap();
+	const keyring = makeKeyRing();
+	const keyStore = makeSyncedStorage(fs);
 	await keyring.init(keyStore);
 	return keyring;
 }

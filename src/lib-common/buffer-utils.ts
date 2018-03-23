@@ -28,7 +28,7 @@ const EMPTY_BUFFER = new Buffer(0);
 export function toBuffer(bytes: Uint8Array): Buffer {
 	if (Buffer.isBuffer(bytes)) { return bytes; }
 	if (bytes.length === 0) { return EMPTY_BUFFER; }
-	return Buffer.from(bytes.buffer, bytes.byteOffset, bytes.length);
+	return Buffer.from(bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.length);
 }
 
 /**
@@ -46,7 +46,7 @@ export function bufFromJson(json: any): Buffer {
 export namespace base64 {
 	
 	export function pack(bytes: Uint8Array): string {
-		let buf = toBuffer(bytes);
+		const buf = toBuffer(bytes);
 		return buf.toString('base64');
 	}
 	
@@ -60,7 +60,7 @@ Object.freeze(base64);
 export namespace base64urlSafe {
 	
 	export function pack(bytes: Uint8Array): string {
-		let str = base64.pack(bytes)
+		const str = base64.pack(bytes);
 		return str
 			.replace(/\+/g, '-')
 			.replace(/\//g, '_');
@@ -83,7 +83,7 @@ export namespace utf8 {
 	}
 	
 	export function open(bytes: Uint8Array): string {
-		let buf = toBuffer(bytes);
+		const buf = toBuffer(bytes);
 		return buf.toString('utf8');
 	}
 	

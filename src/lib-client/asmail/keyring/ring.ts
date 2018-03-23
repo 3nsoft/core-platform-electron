@@ -22,41 +22,43 @@
 import { IntroKeysContainer } from './intro-keys';
 import { CorrespondentKeys, SendingPair } from './correspondent-keys';
 import { IdToEmailMap } from './id-to-email-map';
-import { extractSKeyBytes, extractKeyBytes, ASMailKeyPair, MsgKeyRole }
+import { extractSKeyBytes, extractKeyBytes, ASMailKeyPair, MsgKeyRole,
+	msgKeyPackSizeFor }
 	from './common';
 import { box, secret_box as sbox, arrays } from 'ecma-nacl';
 import { JsonKey, JsonKeyShort, keyToJson, SignedLoad }
 	from '../../../lib-common/jwkeys';
 import { user as mid } from '../../../lib-common/mid-sigs-NaCl-Ed';
-import { SuggestedNextKeyPair, OpenedMsg } from '../msg';
+import { SuggestedNextKeyPair, OpenedMsg } from '../msg/opener';
 import * as delivApi from '../../../lib-common/service-api/asmail/delivery';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
 import { KeyRing } from './index';
-import * as random from '../../random-node';
+import * as random from '../../../lib-common/random-node';
 import { bind } from '../../../lib-common/binding';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { FileKeyHolder } from 'xsp-files';
 import { base64 } from '../../../lib-common/buffer-utils';
 import { areAddressesEqual, toCanonicalAddress }
 	from '../../../lib-common/canonical-address';
 
 type EncryptionException = web3n.EncryptionException;
 
-export interface MsgDecrInfo {
+export interface MsgKeyInfo {
 	correspondent: string;
-	keyHolder?: FileKeyHolder
 	key?: string;
 	keyStatus: MsgKeyRole;
+	msgKeyPackLen: number;
 }
 
 export interface Storage {
 	load(): Promise<string|undefined>;
-	save(serialForm: string): Promise<void>;
+	save(serialForm: string): void;
+	start(): Promise<void>;
+	close(): Promise<void>;
 }
 
 function selectPid(pids: string[]): string {
 	if (pids.length < 1) { throw new Error("There are no pair ids in array."); }
-	let i = Math.round((pids.length-1) * random.uint8()/255);
+	const i = Math.round((pids.length-1) * random.uint8Sync()/255);
 	return pids[i];
 }
 
@@ -68,9 +70,15 @@ interface RingJSON {
 export class Ring implements KeyRing {
 	
 	introKeys: IntroKeysContainer = (undefined as any);
+	
+	/**
+	 * This is a map from correspondents' canonical addresses to key objects.
+	 */
 	corrKeys = new Map<string, CorrespondentKeys>();
+
 	introKeyIdToEmailMap = new IdToEmailMap();
 	pairIdToEmailMap = new IdToEmailMap();
+
 	private storage: Storage = (undefined as any);
 	
 	constructor() {
@@ -79,7 +87,7 @@ export class Ring implements KeyRing {
 	
 	private addCorrespondent(address: string|undefined, serialForm?: string):
 			CorrespondentKeys {
-		let ck = (serialForm ?
+		const ck = (serialForm ?
 			new CorrespondentKeys(this, undefined, serialForm) :
 			new CorrespondentKeys(this, address));
 		if (this.corrKeys.has(ck.correspondent)) { throw new Error(
@@ -96,9 +104,10 @@ export class Ring implements KeyRing {
 		if (this.storage) { throw new Error(
 			"Keyring has already been initialized."); }
 		this.storage = storage;
-		let serialForm = await this.storage.load();
+		await this.storage.start();
+		const serialForm = await this.storage.load();
 		if (serialForm) {
-			let json: RingJSON = JSON.parse(serialForm);
+			const json: RingJSON = JSON.parse(serialForm);
 			// TODO check json's fields
 			
 			// init data
@@ -114,17 +123,17 @@ export class Ring implements KeyRing {
 		}
 	}
 
-	saveChanges(): Promise<void> {
+	saveChanges(): void {
 		// pack bytes that need to be encrypted and saved
-		let dataToSave = <RingJSON> {
+		const dataToSave = <RingJSON> {
 			introKeys: this.introKeys.serialForm(),
 			corrKeys: []
 		};
-		for (let corrKeys of this.corrKeys.values()) {
+		for (const corrKeys of this.corrKeys.values()) {
 			dataToSave.corrKeys.push(corrKeys.serialForm());
 		}
 		// trigger saving utility
-		return this.storage.save(JSON.stringify(dataToSave));
+		this.storage.save(JSON.stringify(dataToSave));
 	}
 	
 	updatePublishedKey(signer: mid.MailerIdSigner): void {
@@ -140,11 +149,13 @@ export class Ring implements KeyRing {
 	}
 
 	isKnownCorrespondent(address: string): boolean {
+		address = toCanonicalAddress(address);
 		return this.corrKeys.has(address);
 	}
 	
 	setCorrepondentTrustedIntroKey(address: string, pkey: JsonKey,
 			invite: string|null = null): void {
+		address = toCanonicalAddress(address);
 		let ck = this.corrKeys.get(address);
 		if (!ck) {
 			ck = this.addCorrespondent(address);
@@ -154,13 +165,13 @@ export class Ring implements KeyRing {
 	}
 	
 	getInviteForSendingTo(correspondent: string): string|undefined {
-		let ck = this.corrKeys.get(correspondent);
-		return ((ck && (typeof ck.invite === 'string')) ? ck.invite : undefined);
-		
+		correspondent = toCanonicalAddress(correspondent);
+		const ck = this.corrKeys.get(correspondent);
+		return ((ck && ck.invite) ? ck.invite : undefined);
 	}
 	
 	markPairAsInUse(correspondent: string, pid: string): void {
-		let ck = this.corrKeys.get(correspondent);
+		const ck = this.corrKeys.get(correspondent);
 		if (!ck) { throw new Error(
 			`No correspondent keys for ${correspondent}`); }
 		ck.markPairAsInUse(pid);
@@ -171,6 +182,7 @@ export class Ring implements KeyRing {
 			introPKeyFromServer?: JsonKey): {
 				encryptor: sbox.Encryptor;
 				pairs: { current: ASMailKeyPair; next: SuggestedNextKeyPair; }; } {
+		address = toCanonicalAddress(address);
 		// get, or generate sending pair
 		let ck = this.corrKeys.get(address);
 		let sendingPair: SendingPair;
@@ -185,13 +197,13 @@ export class Ring implements KeyRing {
 		}
 
 		// prepare message encryptor
-		let mmKey = base64.open(sendingPair.msgMasterKey);
-		let nextNonce = random.bytes(sbox.NONCE_LENGTH);
-		let encryptor = sbox.formatWN.makeEncryptor(mmKey, nextNonce);
+		const mmKey = base64.open(sendingPair.msgMasterKey);
+		const nextNonce = random.bytesSync(sbox.NONCE_LENGTH);
+		const encryptor = sbox.formatWN.makeEncryptor(mmKey, nextNonce);
 		arrays.wipe(mmKey);
 
 		// prepare suggested pair (will be part of encrypted main object)
-		let suggestPair = ck.suggestPair(invitation);
+		const suggestPair = ck.suggestPair(invitation);
 
 		// prepare current crypto info (will be sent in plain text)
 		let currentPair: ASMailKeyPair;
@@ -212,22 +224,25 @@ export class Ring implements KeyRing {
 
 	private async getDecrytorForIntro(recipientKid: string, senderPKey: string,
 			getMainObjHeader: () => Promise<Uint8Array>):
-			Promise<MsgDecrInfo|undefined> {
-		let recipKey = this.introKeys.findKey(recipientKid!);
-
+			Promise<MsgKeyInfo|undefined> {
+		const recipKey = this.introKeys.findKey(recipientKid!);
 		if (!recipKey) { return; }
-		let skey = extractSKeyBytes(recipKey.pair.skey);
-		let pkey = extractKeyBytes({ kid: '', k: senderPKey! });
-		let masterDecr = box.formatWN.makeDecryptor(pkey, skey);
+
+		const skey = extractSKeyBytes(recipKey.pair.skey);
+		const pkey = extractKeyBytes({ kid: '', k: senderPKey! });
+		const masterDecr = box.formatWN.makeDecryptor(pkey, skey);
 		arrays.wipe(skey, pkey);
-		let h = await getMainObjHeader();
-		if (h.length < 72) { return; }
+
+		const h = await getMainObjHeader();
+		const msgKeyPackLen = msgKeyPackSizeFor(recipKey.pair.skey.alg);
+		if (h.length < msgKeyPackLen) { return; }
 		try {
-			let mainObjFileKey = masterDecr.open(h.subarray(0, 72));
-			let info: MsgDecrInfo = {
+			const mainObjFileKey = masterDecr.open(h.subarray(0, 72));
+			const info: MsgKeyInfo = {
 				correspondent: (undefined as any),
 				keyStatus: recipKey.role,
-				key: base64.pack(mainObjFileKey)
+				key: base64.pack(mainObjFileKey),
+				msgKeyPackLen
 			};
 			arrays.wipe(mainObjFileKey);
 			return info;
@@ -240,23 +255,25 @@ export class Ring implements KeyRing {
 
 	private getDecryptorForPair(pid: string): undefined |
 			{ masterDecr: sbox.Decryptor; correspondent: string;
-				role: MsgKeyRole }[] {
-		let emails = this.pairIdToEmailMap.getEmails(pid);
+				role: MsgKeyRole; msgKeyPackLen: number; }[] {
+		const emails = this.pairIdToEmailMap.getEmails(pid);
 		if (!emails) { return; }
-		let decryptors: { masterDecr: sbox.Decryptor; correspondent: string;
-				role: MsgKeyRole }[] = [];
-		for (let email of emails) {
-			let ck = this.corrKeys.get(email);
+
+		const decryptors: { masterDecr: sbox.Decryptor; correspondent: string;
+				role: MsgKeyRole; msgKeyPackLen: number; }[] = [];
+		for (const email of emails) {
+			const ck = this.corrKeys.get(email);
 			if (!ck) { return; }
-			let rp = ck.getReceivingPair(pid!);
+			const rp = ck.getReceivingPair(pid!);
 			if (!rp) { return; }
-			let masterKey = base64.open(rp.pair.msgMasterKey);
-			let masterDecr = sbox.formatWN.makeDecryptor(masterKey);
+			const masterKey = base64.open(rp.pair.msgMasterKey);
+			const masterDecr = sbox.formatWN.makeDecryptor(masterKey);
 			arrays.wipe(masterKey);
 			decryptors.push({
 				correspondent: email,
 				masterDecr,
-				role: rp.role
+				role: rp.role,
+				msgKeyPackLen: msgKeyPackSizeFor(rp.pair.recipientKey.skey.alg)
 			});
 		}
 		return decryptors;
@@ -264,33 +281,31 @@ export class Ring implements KeyRing {
 
 	private async findEstablishedPairToDecrypt(pid: string,
 			getMainObjHeader: () => Promise<Uint8Array>):
-			Promise<MsgDecrInfo|undefined> {
-		let decryptors = this.getDecryptorForPair(pid);
+			Promise<MsgKeyInfo|undefined> {
+		const decryptors = this.getDecryptorForPair(pid);
 		if (!decryptors) { return; }
 		
 		// try to open main object's file key from a header
-		let h = await getMainObjHeader();
-		if (h.length < 72) { return; }
-		try {
-			for (let d of decryptors) {
-				try {
-					let mainObjFileKey = d.masterDecr.open(h.subarray(0, 72));
-					let info: MsgDecrInfo = {
-						correspondent: d.correspondent,
-						keyStatus: d.role,
-						key: base64.pack(mainObjFileKey)
-					};
-					arrays.wipe(mainObjFileKey);
-					return info;
-				} catch (err) {
-					if (!(err as EncryptionException).failedCipherVerification) {
-						throw err;
-					}
+		const h = await getMainObjHeader();
+		for (const d of decryptors) {
+			try {
+				if (h.length < d.msgKeyPackLen) { continue; }
+				const mainObjFileKey = d.masterDecr.open(
+					h.subarray(0, d.msgKeyPackLen));
+				const info: MsgKeyInfo = {
+					correspondent: d.correspondent,
+					keyStatus: d.role,
+					key: base64.pack(mainObjFileKey),
+					msgKeyPackLen: d.msgKeyPackLen
+				};
+				arrays.wipe(mainObjFileKey);
+				return info;
+			} catch (err) {
+				if (!(err as EncryptionException).failedCipherVerification) {
+					throw err;
 				}
-			}
-		} finally {
-			for (let decr of decryptors) {
-				decr.masterDecr.destroy();
+			} finally {
+				d.masterDecr.destroy();
 			}
 		}
 	}
@@ -307,48 +322,52 @@ export class Ring implements KeyRing {
 
 	async decrypt(msgMeta: delivApi.msgMeta.CryptoInfo,
 			timestamp: number, getMainObjHeader: () => Promise<Uint8Array>,
-			getOpenedMsg: (mainObjFileKey: string) => Promise<OpenedMsg>,
+			getOpenedMsg: (mainObjFileKey: string, msgKeyPackLen: number) => Promise<OpenedMsg>,
 			checkMidKeyCerts: (certs: confApi.p.initPubKey.Certs) =>
 				Promise<{ pkey: JsonKey; address: string; }>):
-			Promise<MsgDecrInfo|undefined> {
+			Promise<{ decrInfo: MsgKeyInfo; openedMsg: OpenedMsg }|undefined> {
 
-		let d: MsgDecrInfo|undefined;
-		let msg: OpenedMsg;
+		let decrInfo: MsgKeyInfo|undefined;
+		let openedMsg: OpenedMsg;
 		if (msgMeta.pid) {
-			d = await this.findEstablishedPairToDecrypt(
+			decrInfo = await this.findEstablishedPairToDecrypt(
 				msgMeta.pid, getMainObjHeader);
-			if (!d) { return; }
-			msg = await getOpenedMsg(d.key!);
+			if (!decrInfo) { return; }
+			openedMsg = await getOpenedMsg(decrInfo.key!, decrInfo.msgKeyPackLen);
 		} else {
-			d = await this.getDecrytorForIntro(
+			decrInfo = await this.getDecrytorForIntro(
 				msgMeta.recipientKid!, msgMeta.senderPKey!, getMainObjHeader);
-			if (!d) { return; }
-			msg = await getOpenedMsg(d.key!);
-			let certs = msg.getCurrentCryptoCerts();
-			let { address, pkey } = await checkMidKeyCerts(certs);
+			if (!decrInfo) { return; }
+			openedMsg = await getOpenedMsg(decrInfo.key!, decrInfo.msgKeyPackLen);
+			const certs = openedMsg.getCurrentCryptoCerts();
+			const { address, pkey } = await checkMidKeyCerts(certs);
 			if (pkey.k !== msgMeta.senderPKey!) { throw new Error(
 				`Key certificates in the message are not for a key that encrypted this message.`); }
-			d.correspondent = address;
+			decrInfo.correspondent = toCanonicalAddress(address);
 		}
 
 		// check that sender is the same as the trusted correspondent
-		let sender = msg.getSender();
-		if (!sender || !areAddressesEqual(sender, d.correspondent)) {
-			throw new Error(`Mismatch between message sender field '${sender}', and address '${d.correspondent}', associated with decrypting key.`);
+		const sender = openedMsg.getSender();
+		if (!sender || !areAddressesEqual(sender, decrInfo.correspondent)) {
+			throw new Error(`Mismatch between message sender field '${sender}', and address '${decrInfo.correspondent}', associated with decrypting key.`);
 		}
 
 		// absorb next crypto
-		let pair = msg.getNextCrypto();
+		const pair = openedMsg.getNextCrypto();
 		if (pair) {
 			this.absorbSuggestedNextKeyPair(
-				d.correspondent, pair, timestamp);
+				decrInfo.correspondent, pair, timestamp);
 		}
 
-		return d;
+		return { decrInfo, openedMsg };
+	}
+
+	close(): Promise<void> {
+		return this.storage.close();
 	}
 	
 	wrap(): KeyRing {
-		let wrap: KeyRing = {
+		const wrap: KeyRing = {
 			saveChanges: bind(this, this.saveChanges),
 			updatePublishedKey: bind(this, this.updatePublishedKey),
 			getPublishedKeyCerts: bind(this, this.getPublishedKeyCerts),
@@ -358,7 +377,8 @@ export class Ring implements KeyRing {
 			generateKeysForSendingTo: bind(this, this.generateKeysForSendingTo),
 			decrypt: bind(this, this.decrypt),
 			getInviteForSendingTo: bind(this, this.getInviteForSendingTo),
-			init: bind(this, this.init)
+			init: bind(this, this.init),
+			close: bind(this, this.close)
 		};
 		Object.freeze(wrap);
 		return wrap;

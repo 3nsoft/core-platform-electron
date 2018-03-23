@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,9 +21,9 @@ import { SingleProc } from '../processes';
 import { bind } from '../binding';
 
 export function syncWrapObjSource(src: ObjSource,
-		readingProc = new SingleProc<any>()): ObjSource {
-	let synced: ObjSource = {
-		getObjVersion: bind(src, src.getObjVersion),
+		readingProc = new SingleProc()): ObjSource {
+	const synced: ObjSource = {
+		version: src.version,
 		readHeader: (): Promise<Uint8Array> => {
 			return readingProc.startOrChain(() => {
 				return src.readHeader();
@@ -35,9 +35,9 @@ export function syncWrapObjSource(src: ObjSource,
 }
 
 export function syncWrapObjSink(sink: ObjSink,
-		writingProc = new SingleProc<any>()): ObjSink {
-	let synced: ObjSink = {
-		setObjVersion: bind(sink, sink.setObjVersion),
+		writingProc = new SingleProc()): ObjSink {
+	const synced: ObjSink = {
+		version: sink.version,
 		writeHeader: (bytes: Uint8Array|null, err?: any): Promise<void> => {
 			return writingProc.startOrChain(() => {
 				return sink.writeHeader(bytes, err);

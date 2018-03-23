@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -34,6 +34,9 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 	private objVersion: number|undefined = undefined;
 	private err: any = undefined;
 	private segs = new SinkBackedByteSource();
+
+	constructor(
+			public version: number) {}
 
 	get segSink(): ByteSink {
 		return this.segs.getSink();
@@ -78,19 +81,6 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 		}
 	}
 	
-	setObjVersion(v: number): void {
-		if (this.objVersion === undefined) {
-			this.objVersion = v;
-		} else if (v !== this.objVersion) {
-			throw new Error("Expect object version "+this.objVersion+
-				", but getting version "+v+" instead");
-		}
-	}
-
-	getObjVersion(): number|undefined {
-		return this.objVersion;
-	}
-	
 	getSource(): ObjSource {
 		return wrapObjSourceImplementation(this);
 	}
@@ -99,35 +89,6 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 		return wrapObjSinkImplementation(this);
 	}
 	
-}
-
-/**
- * @param src
- * @param sink
- * @param bufSize is an optional parameter for buffer, used for byte transfer.
- * Default value is 64K.
- * @return a promise, resolvable when all bytes are moved from given source to
- * given sink.
- */
-export async function pipeObj(src: ObjSource, sink: ObjSink,
-		bufSize = 64*1024): Promise<void> {
-	sink.writeHeader(await src.readHeader());
-	let v = src.getObjVersion();
-	if (typeof v === 'number') {
-		sink.setObjVersion(v);
-	}
-	let buf = await src.segSrc.read(bufSize);
-	while (buf) {
-		await sink.segSink.write(buf);
-		buf = await src.segSrc.read(bufSize);
-	}
-	if (typeof v !== 'number') {
-		v = src.getObjVersion();
-		if (typeof v === 'number') {
-			sink.setObjVersion(v);
-		}
-	}
-	await sink.segSink.write(null);
 }
 
 Object.freeze(exports);

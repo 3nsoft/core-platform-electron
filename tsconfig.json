@@ -1,16 +1,21 @@
 {
 	"compilerOptions": {
-		"target": "es6",
+		"target": "es2017",
+		"lib": [
+			"es2017",
+			"dom"
+		],
 		"module": "commonjs",
 		"strictNullChecks": true,
 		"rootDir": "src",
-		"outDir": "build"
+		"outDir": "build/all",
+		"pretty": true
 	},
+	"compileOnSave": false,
 	"exclude": [
 		"dist",
 		"build",
 		"node_modules",
-		"src/api-defs/client-app.d.ts",
-		"src/api-defs/startup-app.d.ts"
+		"src/api-defs/injected-w3n.d.ts"
 	]
 }

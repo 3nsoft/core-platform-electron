@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,7 +15,7 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 /**
- * This defines interfaces for mail retrieval requests.
+ * This defines interfaces for 3nstorage owner's requests.
  */
 
 import * as midApi from '../mailer-id/login';
@@ -35,8 +35,10 @@ Object.freeze(ERR_SC);
 export const HTTP_HEADER = {
 	contentType: 'Content-Type',
 	contentLength: 'Content-Length',
-	objVersion: 'X-Version',
-	objSegmentsLength: 'X-Obj-Segments-Length'
+	objVersion: 'X-Obj-Version',
+	objDiffLength: 'X-Obj-Diff-Length',
+	objHeaderLength: 'X-Obj-Header-Length',
+	objSegmentsLength: 'X-Obj-Segments-Length',
 }
 Object.freeze(HTTP_HEADER);
 
@@ -63,7 +65,6 @@ export namespace sessionParams {
 	export const URL_END = 'session/params';
 	
 	export interface Reply {
-		keyDerivParams: any;
 		maxChunkSize: number;
 	}
 	
@@ -75,124 +76,229 @@ export namespace sessionParams {
 }
 Object.freeze(sessionParams);
 
-export interface GetSegsQueryOpts {
+export const PARAM_SC = {
+	ok: 200
+};
+Object.freeze(PARAM_SC);
+
+export namespace keyDerivParams {
+	
+	export const URL_END = 'param/key-deriv';
+	
+}
+Object.freeze(keyDerivParams);
+
+export interface GetObjQueryOpts {
 	/**
-	 * Offset into segments. If it is missing, zero is assumed.
+	 * This is a boolean flag, which true value indicates that header should be
+	 * present in a response. If it is false, or is not present, header is not
+	 * included in a reply.
+	 */
+	header?: boolean;
+	
+	/**
+	 * This is an offset into segments. If it is not present, zero is assumed.
+	 * This field must be zero or missing, when header is true.
 	 */
 	ofs?: number;
+
 	/**
-	 * Length of chunk to read from segments. If it is missing, all bytes to
-	 * segments end are assumed.
+	 * This is a limit on number of segment bytes to be returned.
 	 */
-	len?: number;
+	limit?: number;
+
+	/**
+	 * This is a particular object version.
+	 * This field must be present when getting archived version.
+	 * When getting current version, this field is optional. If it is present,
+	 * an error is returned when current version doesn't match a given one. If
+	 * it is not present, then a current version is unconditionally returned,
+	 * with http header indicating what this version is.
+	 */
+	ver?: number;
 }
 
-export interface PutSegsQueryOpts {
+export interface PutObjFirstQueryOpts {
+
 	/**
-	 * Transaction id, in which these bytes are absorbed.
+	 * This is a new object version parameter. When it is 1 (one), new object
+	 * should be created. If it is greater than one, changes are accepted only
+	 * when a current version on the server is (ver-1), ensuring that a client
+	 * knows current version on server to advance it.
 	 */
-	trans: string;
+	ver: number;
+
 	/**
-	 * Indicates that bytes in this request should be appended to the blob.
+	 * This is a length of diff, if it is sent in a request.
+	 * Diff must be sent with the first request.
+	 * Diff is located in http body at the very start.
+	 */
+	diff?: number;
+
+	/**
+	 * This is a length of header, when it is sent in a request.
+	 * Header must be sent with the first request, located in http body after
+	 * diff, if it is present, or at body's start.
+	 */
+	header: number;
+
+	/**
+	 * This is a total length of segments in the new version. When total segments
+	 * length is known apriori, this field must be present. Else, append flag
+	 * must be present instead of this field.
+	 * Segments bytes are located in http body after object's header.
+	 */
+	segs?: number;
+
+	/**
+	 * This is a boolean flag, which true value indicates that total length of
+	 * segment is not known, and that segment bytes in this transaction should be
+	 * appended to new object's version.
 	 */
 	append?: boolean;
+
+}
+
+export interface PutObjSecondQueryOpts {
+
 	/**
-	 * Offset in a blob. It must be present in a not appending mode.
+	 * This is a transaction id. It is returned by server as a reply to first
+	 * inconclusive request, and must be present in all subsequent requests.
+	 */
+	trans: string;
+
+	/**
+	 * This is an offset into segments. It must be present in a non-appending
+	 * request, and must be absent in appending requests.
 	 */
 	ofs?: number;
+
+	/**
+	 * This is a boolean flag, which true value indicates that segment bytes in
+	 * the body should be appended to new object's version.
+	 */
+	append?: boolean;
+
+	/**
+	 * This field indicates the last request, closing transaction.
+	 */
+	last?: boolean;
+
 }
 
-export namespace rootHeader {
+export namespace currentObj {
 	
-	export const EXPRESS_URL_END = 'root/header';
+	export const EXPRESS_URL_END = 'obj/:objId/current';
 	
-	export function getReqUrlEnd(version?: number):
-			string {
-		let optStr = (version ? `?ver=${version}` : '');
-		return `${EXPRESS_URL_END}${optStr}`;
+	export function getReqUrlEnd(objId: string, opts?: GetObjQueryOpts): string {
+		return `obj/${objId}/current${opts ? `?${stringifyOpts(opts)}`: ''}`;
 	}
 	
-	export function putReqUrlEnd(transactionId: string): string {
-		return `${EXPRESS_URL_END}?trans=${transactionId}`;
+	export function firstPutReqUrlEnd(objId: string,
+			opts: PutObjFirstQueryOpts): string {
+		return `obj/${objId}/current?${stringifyOpts(opts)}`;
+	}
+	
+	export function secondPutReqUrlEnd(objId: string,
+			opts: PutObjSecondQueryOpts): string {
+		return `obj/${objId}/current?${stringifyOpts(opts)}`;
+	}
+
+	export interface ReplyToPut {
+		/**
+		 * Transaction id field is present, when transaction hasn't been completed
+		 * with this request, i.e. if it is still ongoing.
+		 * This field should be missing, when request 
+		 */
+		transactionId?: string;
 	}
 	
 	export const SC = {
 		okGet: 200,
+		okDelete: 200,
 		okPut: 201,
-		missing: 474
+		objAlreadyExists: 473,
+		unknownObj: 474,
+		concurrentTransaction: 483,
+		unknownTransaction: 484,
+		unknownObjVer: 494,
+		mismatchedObjVer: 495
 	};
 	Object.freeze(SC);
+
+	export interface MismatchedObjVerReply extends ErrorReply {
+		current_version: number;
+	}
 	
 }
-Object.freeze(rootHeader);
+Object.freeze(currentObj);
 
-export namespace rootSegs {
+export namespace currentRootObj {
 	
-	export const EXPRESS_URL_END = 'root/segments';
+	export const EXPRESS_URL_END = 'root/current';
 	
-	export function getReqUrlEnd(version: number,
-			opts?: GetSegsQueryOpts): string {
-		let optStr = `ver=${version}`;
-		if (opts) {
-			optStr += `&${stringifyOpts(opts)}`;
-		}
-		return `${EXPRESS_URL_END}?${optStr}`;
+	export function getReqUrlEnd(opts?: GetObjQueryOpts): string {
+		return `root/current${opts ? `?${stringifyOpts(opts)}`: ''}`;
 	}
 	
-	export function putReqUrlEnd(opts: PutSegsQueryOpts): string {
-		return EXPRESS_URL_END+'?'+stringifyOpts(opts);
+	export function firstPutReqUrlEnd(opts: PutObjFirstQueryOpts): string {
+		return `root/current?${stringifyOpts(opts)}`;
 	}
 	
-	export const SC = rootHeader.SC;
+	export function secondPutReqUrlEnd(opts: PutObjSecondQueryOpts): string {
+		return `root/current?${stringifyOpts(opts)}`;
+	}
+	
+	export type ReplyToPut = currentObj.ReplyToPut;
+
+	export const SC = currentObj.SC;
+
+	export type MismatchedObjVerReply = currentObj.MismatchedObjVerReply;
 	
 }
-Object.freeze(rootHeader);
+Object.freeze(currentRootObj);
 
-export namespace objHeader {
+export namespace archivedObjVersion {
 	
-	export const EXPRESS_URL_END = 'obj/:objId/header';
-	
-	export function getReqUrlEnd(objId: string, version?: number):
-			string {
-		let optStr = (version ? `?ver=${version}` : '');
-		return `obj/${objId}/header${optStr}`;
-	}
-	
-	export function putReqUrlEnd(objId: string, transactionId: string): string {
-		return `obj/${objId}/header?trans=${transactionId}`;
-	}
-	
-	export const SC = {
-		okGet: 200,
-		okPut: 201,
-		missing: 474
-	};
-	Object.freeze(SC);
-	
-}
-Object.freeze(objHeader);
-
-export namespace objSegs {
-	
-	export const EXPRESS_URL_END = 'obj/:objId/segments';
+	export const EXPRESS_URL_END = '/obj/:objId/archived';
 	
 	export function getReqUrlEnd(objId: string, version: number,
-			opts?: GetSegsQueryOpts): string {
-		let optStr = `ver=${version}`;
+			opts?: GetObjQueryOpts): string {
 		if (opts) {
-			optStr += `&${stringifyOpts(opts)}`;
+			opts.ver = version;
 		}
-		return `obj/${objId}/segments?${optStr}`;
+		const query = (opts ? `?${stringifyOpts(opts)}`: '');
+		return `/obj/${objId}/archived${query}`;
 	}
 	
-	export function putReqUrlEnd(objId: string, opts: PutSegsQueryOpts): string {
-		return `obj/${objId}/segments?${stringifyOpts(opts)}`;
-	}
-	
-	export const SC = objHeader.SC;
+	export const SC = {
+		okGet: 200,
+		okDelete: 200,
+		missing: 474,
+		concurrentTransaction: 483,
+		incompatibleObjState: 484
+	};
 	
 }
-Object.freeze(objSegs);
+Object.freeze(archivedObjVersion);
+
+export namespace archivedRootVersion {
+	
+	export const EXPRESS_URL_END = 'root/archived';
+	
+	export function getReqUrlEnd(version: number,
+			opts?: GetObjQueryOpts): string {
+		if (opts) {
+			opts.ver = version;
+		}
+		const query = (opts ? `?${stringifyOpts(opts)}`: '');
+		return `root/archived${query}`;
+	}
+	
+	export const SC = archivedObjVersion.SC;
+	
+}
+Object.freeze(archivedRootVersion);
 
 export interface DiffInfo {
 	
@@ -212,7 +318,36 @@ export interface DiffInfo {
 	 * 1st element is an offset in base/new byte array;
 	 * 2nd element is a length of the sector.
 	 */
-	sections: number[][];
+	sections: [ number, number, number ][];
+}
+
+/**
+ * This functions returns either a checked version of given diff object, if it
+ * passes as diff, or undefined, otherwise.
+ * @param diff is an object that is expected to be diff
+ * @param version is diff's object's version
+ */
+export function sanitizedDiff(diff: DiffInfo, version: number):
+		DiffInfo|undefined {
+	if ((typeof diff !== 'object') || (diff === null)) { return; }
+	if (!Number.isInteger(diff.baseVersion) || (diff.baseVersion < 1) ||
+			(diff.baseVersion >= version)) { return; }
+	if (!Array.isArray(diff.sections) || (diff.sections.length < 1)) { return; }
+	let expSegs = 0;
+	for (const section of diff.sections) {
+		if ((section.length !== 3) ||
+				((section[0] !== 0) && (section[0] !== 1)) ||
+				!Number.isInteger(section[1]) || (section[1] < 0) ||
+				!Number.isInteger(section[2]) || (section[2] < 1)) { return; }
+		expSegs += section[2];
+	}
+	if (diff.segsSize !== expSegs) { 
+		return; }
+	return {
+		baseVersion: diff.baseVersion,
+		segsSize: diff.segsSize,
+		sections: diff.sections
+	};
 }
 
 export function addDiffSectionTo(sections: number[][],
@@ -220,62 +355,14 @@ export function addDiffSectionTo(sections: number[][],
 	sections.push([ (newBytes ? 1 : 0), srcPos, len ]);
 } 
 
-export interface TransactionParams {
-	isNewObj?: boolean;
-	version: number;
-	sizes: {
-		header: number;
-		segments: number;
-	};
-	diff?: DiffInfo;
-}
-
-export namespace startTransaction {
+export namespace cancelTransaction {
 	
-	export const EXPRESS_URL_END = 'obj/:objId/transaction/start';
+	export const EXPRESS_URL_END = 'obj/:objId/current/cancel-transaction/:transactionId';
 	
-	export function getReqUrlEnd(objId: string): string {
-		return `obj/${objId}/transaction/start`;
-	}
-	
-	export type Request = TransactionParams;
-	
-	export interface Reply {
-		transactionId: string;
-	}
-	
-	export const SC = {
-		ok: 200,
-		unknownObj: 474,
-		objAlreadyExists: 473,
-		concurrentTransaction: 483,
-		incompatibleObjState: 484
-	};
-	Object.freeze(SC);
-	
-}
-Object.freeze(startTransaction);
-
-export namespace startRootTransaction {
-	
-	export const URL_END = 'root/transaction/start';
-	
-	export interface Request extends startTransaction.Request {}
-	
-	export interface Reply extends startTransaction.Reply {}
-	
-	export const SC = startTransaction.SC;
-	
-}
-Object.freeze(startRootTransaction);
-
-export namespace finalizeTransaction {
-	
-	export const EXPRESS_URL_END =
-		'obj/:objId/transaction/finalize/:transactionId';
-	
-	export function getReqUrlEnd(objId: string, transactionId: string): string {
-		return `obj/${objId}/transaction/finalize/${transactionId}`;
+	export function getReqUrlEnd(objId: string, transactionId?: string): string {
+		return (transactionId ?
+			`obj/${objId}/current/cancel-transaction/${transactionId}` :
+			`obj/${objId}/current/cancel-transaction/-`);
 	}
 	
 	export const SC = {
@@ -285,48 +372,24 @@ export namespace finalizeTransaction {
 	Object.freeze(SC);
 	
 }
-Object.freeze(finalizeTransaction);
-
-export namespace cancelTransaction {
-	
-	export const EXPRESS_URL_END = 'obj/:objId/transaction/cancel/:transactionId';
-	
-	export function getReqUrlEnd(objId: string, transactionId: string): string {
-		return `obj/${objId}/transaction/cancel/${transactionId}`;
-	}
-	
-	export const SC = finalizeTransaction.SC;
-	
-}
 Object.freeze(cancelTransaction);
-
-export namespace finalizeRootTransaction {
-	
-	export const EXPRESS_URL_END = 'root/transaction/finalize/:transactionId';
-	
-	export function getReqUrlEnd(transactionId: string): string {
-		return `root/transaction/finalize/${transactionId}`;
-	}
-	
-	export const SC = finalizeTransaction.SC;
-	
-}
-Object.freeze(finalizeRootTransaction);
 
 export namespace cancelRootTransaction {
 	
-	export const EXPRESS_URL_END = 'root/transaction/cancel/:transactionId';
+	export const EXPRESS_URL_END = 'root/current/cancel-transaction/:transactionId';
 	
-	export function getReqUrlEnd(transactionId: string): string {
-		return `root/transaction/cancel/${transactionId}`;
+	export function getReqUrlEnd(transactionId?: string): string {
+		return (transactionId ?
+			`root/current/cancel-transaction/${transactionId}` :
+			`root/current/cancel-transaction/-`);
 	}
 	
-	export const SC = finalizeTransaction.SC;
+	export const SC = cancelTransaction.SC;
 	
 }
 Object.freeze(cancelRootTransaction);
 
-export namespace objArchive {
+export namespace archiveObj {
 	
 	export const EXPRESS_URL_END = 'obj/:objId/archive';
 	
@@ -335,70 +398,67 @@ export namespace objArchive {
 	}
 	
 	export const SC = {
-		ok: 200,
+		okGet: 200,
+		okPut: 201,
 		missing: 474
 	};
 
 }
-Object.freeze(objArchive);
+Object.freeze(archiveObj);
 
-export namespace rootArchive {
+export namespace archiveRoot {
 	
 	export const URL_END = 'root/archive';
 	
-	export const SC = objArchive.SC;
+	export const SC = archiveObj.SC;
 
 }
-Object.freeze(rootArchive);
-
-export namespace deleteObj {
-	
-	export const EXPRESS_URL_END = 'obj/:objId';
-	
-	export function getReqUrlEnd(objId: string): string {
-		return `obj/${objId}`;
-	}
-	
-	export const SC = {
-		ok: 200,
-		missing: 474,
-		concurrentTransaction: 483,
-		incompatibleObjState: 484
-	};
-	
-}
-Object.freeze(deleteObj);
-
-export namespace deleteArchivedRootVersion {
-	
-	export const EXPRESS_URL_END = 'root/version/:version';
-	
-	export function getReqUrlEnd(version: string): string {
-		return `root/version/${version}`;
-	}
-	
-	export const SC = deleteObj.SC;
-	
-}
-Object.freeze(deleteArchivedRootVersion);
-
-export namespace deleteArchivedObjVersion {
-	
-	export const EXPRESS_URL_END = 'obj/:objId/version/:version';
-	
-	export function getReqUrlEnd(objId: string, version: string): string {
-		return `obj/${objId}/version/${version}`;
-	}
-	
-	export const SC = deleteObj.SC;
-	
-}
-Object.freeze(deleteArchivedObjVersion);
-
-
+Object.freeze(archiveRoot);
 
 export interface ErrorReply {
 	error: string;
 }
 
+export namespace wsEventChannel {
+
+	export const URL_END = 'events';
+	
+	export const SC = {
+		ok: 200,
+	};
+	Object.freeze(SC);
+
+}
+Object.freeze(wsEventChannel);
+
+export namespace objChanged {
+
+	export const EVENT_NAME = 'obj-changed';
+
+	export interface Event {
+		/**
+		 * This indentifies a non-root object by its string id, while null value
+		 * identifies root object.
+		 */
+		objId: string|null;
+		newVer: number;
+	}
+
+}
+Object.freeze(objChanged);
+
+export namespace objRemoved {
+	
+	export const EVENT_NAME = 'obj-removed';
+
+	export interface Event {
+		/**
+		 * This indentifies a removed non-root object by its string id.
+		 */
+		objId: string;
+	}
+
+}
+Object.freeze(objChanged);
+	
 Object.freeze(exports);

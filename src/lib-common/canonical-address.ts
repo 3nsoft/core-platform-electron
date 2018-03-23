@@ -21,7 +21,7 @@
  */
 export function toCanonicalAddress(address: string): string {
 	address = address.trim();
-	let indOfAt = address.lastIndexOf('@');
+	const indOfAt = address.lastIndexOf('@');
 	let user: string;
 	let domain: string;
 	if (indOfAt <= 0) {

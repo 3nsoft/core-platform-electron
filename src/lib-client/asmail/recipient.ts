@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 3NSoft Inc.
+ Copyright (C) 2015, 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,160 +18,184 @@
  * This defines functions that implement ASMail reception protocol.
  */
 
-import { makeException as makeXhrException } from '../xhr-utils';
-import { RuntimeException, makeRuntimeException }
-	from '../../lib-common/exceptions/runtime';
+import { makeException, extractIntHeader, NetClient } from '../electron/net';
 import * as api from '../../lib-common/service-api/asmail/retrieval';
 import { ServiceUser, IGetMailerIdSigner } from '../user-with-mid-session';
 import { asmailInfoAt } from '../service-locator';
+import { makeSubscriber, SubscribingClient } from '../../lib-common/ipc/ws-ipc';
 
-export const EXCEPTION_TYPE = "inbox";
+type InboxException = web3n.asmail.InboxException;
 
-export function makeMsgNotFoundException(msgId: string):
-		web3n.asmail.InboxException {
-	let exc = <web3n.asmail.InboxException> makeRuntimeException(
-		'msgNotFound', EXCEPTION_TYPE);
-	exc.msgId = msgId;
+export function makeMsgNotFoundException(msgId: string): InboxException {
+	const exc: InboxException = {
+		runtimeException: true,
+		type: 'inbox',
+		msgId,
+		msgNotFound: true
+	};
 	return exc;
 }
 
 export function makeObjNotFoundException(msgId: string, objId: string):
-		web3n.asmail.InboxException {
-	let exc = <web3n.asmail.InboxException> makeRuntimeException(
-		'objNotFound', EXCEPTION_TYPE);
-	exc.msgId = msgId;
-	exc.objId = objId;
+		InboxException {
+	const exc: InboxException = {
+		runtimeException: true,
+		type: 'inbox',
+		msgId,
+		objNotFound: true,
+		objId
+	};
 	return exc;
 }
 
-export function makeMsgIsBrokenException(msgId: string):
-		web3n.asmail.InboxException {
-	let exc = <web3n.asmail.InboxException> makeRuntimeException(
-		'msgIsBroken', EXCEPTION_TYPE);
-	exc.msgId = msgId;
+export function makeMsgIsBrokenException(msgId: string): InboxException {
+	const exc: InboxException = {
+		runtimeException: true,
+		type: 'inbox',
+		msgId,
+		msgIsBroken: true
+	};
 	return exc;
 }
 
 export class MailRecipient extends ServiceUser {
 	
-	private serviceURIGetter: () => Promise<string> = (undefined as any);
-
-	constructor(user: string, getSigner: IGetMailerIdSigner) {
-		super(user, {
-			login: api.midLogin.MID_URL_PART,
-			logout: api.closeSession.URL_END,
-			canBeRedirected: true
-		}, getSigner);
+	constructor(user: string, getSigner: IGetMailerIdSigner,
+		mainUrlGetter: () => Promise<string>
+	) {
+		super(user,
+			{
+				login: api.midLogin.MID_URL_PART,
+				logout: api.closeSession.URL_END,
+				canBeRedirected: true
+			},
+			getSigner,
+			async (): Promise<string> => {
+				const serviceUrl = await mainUrlGetter();
+				const info = await asmailInfoAt(this.net, serviceUrl);
+				if (!info.retrieval) { throw new Error(`Missing retrieval service url in ASMail information at ${serviceUrl}`); }
+				return info.retrieval;
+			});
 		Object.seal(this);
 	}
 
-	private async setServiceUrl(serviceUrl?: string): Promise<void> {
-		if (!serviceUrl) {
-			serviceUrl = await this.serviceURIGetter();
-		}
-		let info = await asmailInfoAt(serviceUrl);
-		if (!info.retrieval) { throw new Error(`Missing retrieval service url in ASMail information at ${serviceUrl}`); }
-		this.serviceURI = info.retrieval;
+	getNet(): NetClient {
+		return this.net;
 	}
 
-	async setRetrievalUrl(serviceUrl: string|(() => Promise<string>)):
-			Promise<void> {
-		if (typeof serviceUrl === 'string') {
-			await this.setServiceUrl(serviceUrl);
-		} else {
-			this.serviceURIGetter = serviceUrl;
-		}
-	}
-	
-	/**
-	 * This method hides super from await, till ES7 comes with native support
-	 * for await.
-	 */
-	private super_login(): Promise<void> {
-		return super.login();
-	}
-	
-	/**
-	 * This does MailerId login with a subsequent getting of session parameters
-	 * from 
-	 * @return a promise, resolvable, when mailerId login and getting parameters'
-	 * successfully completes.
-	 */
-	async login(): Promise<void> {
-		if (!this.isSet) {
-			await this.setServiceUrl();
-		}
-		await this.super_login();
-	}
-	
-	async listMsgs(fromTS: number): Promise<api.listMsgs.Reply> {
-		// if (!this.isSet())
+	async listMsgs(fromTS: number|undefined): Promise<api.listMsgs.Reply> {
 		
 		// XXX modify request to take fromTS parameter to limit number of msgs
 		
-		let rep = await this.doBodylessSessionRequest<api.listMsgs.Reply>({
-			path: api.listMsgs.URL_END,
+		const rep = await this.doBodylessSessionRequest<api.listMsgs.Reply>({
+			appPath: api.listMsgs.URL_END,
 			method: 'GET',
 			responseType: 'json'
 		});
 		if (rep.status === api.listMsgs.SC.ok) {
 			if (!Array.isArray(rep.data)) {
-				throw makeXhrException(rep, 'Malformed response');
+				throw makeException(rep, 'Malformed response');
 			}
 			return rep.data;
 		} else {
-			throw makeXhrException(rep, 'Unexpected status');
+			throw makeException(rep, 'Unexpected status');
 		}
 	}
 
 	async getMsgMeta(msgId: string): Promise<api.MsgMeta> {
-		let rep = await this.doBodylessSessionRequest<api.MsgMeta>({
-			path: api.msgMetadata.genUrlEnd(msgId),
+		const rep = await this.doBodylessSessionRequest<api.MsgMeta>({
+			appPath: api.msgMetadata.genUrlEnd(msgId),
 			method: 'GET',
 			responseType: 'json'
 		});
 		if (rep.status === api.msgMetadata.SC.ok) {
-			if (!rep.data || (typeof rep.data !== 'object')) {
-				throw makeXhrException(rep, 'Malformed response');
-			}
-			return rep.data;
+			const meta = api.sanitizedMeta(rep.data);
+			if (!meta) { throw makeException(rep, 'Malformed response'); }
+			return meta;
 		} else if (rep.status === api.msgMetadata.SC.unknownMsg) {
 			throw makeMsgNotFoundException(msgId);
 		} else {
-			throw makeXhrException(rep, 'Unexpected status');
+			throw makeException(rep, 'Unexpected status');
 		}
 	}
 
-	private async getBytes(path: string, msgId: string, objId: string):
-			Promise<Uint8Array> {
-		let rep = await this.doBodylessSessionRequest<Uint8Array>(
-			{ path, method: 'GET', responseType: 'arraybuffer' });
-		if (rep.status === api.msgObjSegs.SC.ok) {
-			if (!rep.data) {
-				throw makeXhrException(rep, 'Malformed response');
-			}
-			return rep.data;
-		} else if (rep.status === api.msgObjSegs.SC.unknownMsgOrObj) {
+	/**
+	 * This method returns either first part of message object, or a whole of it,
+	 * depending on a given limit for segments. Returned promise resolves to a
+	 * total segments length, header bytes and a first chunk of segments, which
+	 * can be a whole of object segments, if chunk's length is equal to total
+	 * segments length.
+	 * @param msgId 
+	 * @param objId 
+	 * @param limit this is a limit on segments size that we can accept in this
+	 * request.
+	 */
+	async getObj(msgId: string, objId: string, limit: number): Promise<{
+			segsTotalLen: number; header: Uint8Array; segsChunk: Uint8Array; }> {
+		const opts: api.GetObjQueryOpts = { header: true, limit };
+		const rep = await this.doBodylessSessionRequest<Uint8Array>({
+			appPath: api.msgObj.genUrlEnd(msgId, objId, opts),
+			method: 'GET',
+			responseType: 'arraybuffer',
+			responseHeaders: [ api.HTTP_HEADER.objSegmentsLength,
+				api.HTTP_HEADER.objHeaderLength ]
+		});
+
+		if (rep.status === api.msgObj.SC.ok) {
+			if (!(rep.data instanceof Uint8Array)) { throw makeException(rep,
+				`Malformed response: body is not binary`); }
+			const segsTotalLen = extractIntHeader(rep,
+				api.HTTP_HEADER.objSegmentsLength);
+			const headerLen = extractIntHeader(rep,
+				api.HTTP_HEADER.objHeaderLength);
+			if (rep.data.length > (headerLen + segsTotalLen)) {
+				throw makeException(rep, `Malformed response: body is too long`); }
+			return {
+				segsTotalLen,
+				header: rep.data.subarray(0, headerLen),
+				segsChunk: rep.data.subarray(headerLen)
+			};
+		} else if (rep.status === api.msgObj.SC.unknownMsgOrObj) {
 			throw makeObjNotFoundException(msgId, objId);
 		} else {
-			throw makeXhrException(rep, 'Unexpected status');
+			throw makeException(rep, 'Unexpected status');
 		}
 	}
-	
-	getObjHead(msgId: string, objId: string): Promise<Uint8Array> {
-		let path = api.msgObjHeader.genUrlEnd(msgId, objId);
-		return this.getBytes(path, msgId, objId);
-	}
 
-	getObjSegs(msgId: string, objId: string, opts?: api.BlobQueryOpts):
+	/**
+	 * This method reads particular part of object's segments.
+	 * @param msgId 
+	 * @param objId 
+	 * @param start is a start read position in segments
+	 * @param end is an end, excluded, read position in segments
+	 */
+	async getObjSegs(msgId: string, objId: string, start: number, end: number):
 			Promise<Uint8Array> {
-		let path = api.msgObjSegs.genUrlEnd(msgId, objId, opts);
-		return this.getBytes(path, msgId, objId);
+		if (start >= end) { throw new Error(
+			`Start parameter ${start} is not smaller than end ${end}`); }
+		const opts: api.GetObjQueryOpts = { ofs: start, limit: end - start };
+		const rep = await this.doBodylessSessionRequest<Uint8Array>({
+			appPath: api.msgObj.genUrlEnd(msgId, objId, opts),
+			method: 'GET',
+			responseType: 'arraybuffer',
+			responseHeaders: [ api.HTTP_HEADER.objSegmentsLength,
+				api.HTTP_HEADER.objHeaderLength ]
+		});
+
+		if (rep.status === api.msgObj.SC.ok) {
+			if (!(rep.data instanceof Uint8Array)) { throw makeException(rep,
+				`Malformed response: body is not binary`); }
+			return rep.data;
+		} else if (rep.status === api.msgObj.SC.unknownMsgOrObj) {
+			throw makeObjNotFoundException(msgId, objId);
+		} else {
+			throw makeException(rep, 'Unexpected status');
+		}
 	}
 
 	async removeMsg(msgId: string): Promise<void> {
-		let rep = await this.doBodylessSessionRequest<void>({
-			path: api.rmMsg.genUrlEnd(msgId),
+		const rep = await this.doBodylessSessionRequest<void>({
+			appPath: api.rmMsg.genUrlEnd(msgId),
 			method: 'DELETE'
 		});
 		if (rep.status === api.rmMsg.SC.ok) {
@@ -179,7 +203,16 @@ export class MailRecipient extends ServiceUser {
 		} else if (rep.status === api.rmMsg.SC.unknownMsg) {
 			throw makeMsgNotFoundException(msgId);
 		} else {
-			throw makeXhrException(rep, 'Unexpected status');
+			throw makeException(rep, 'Unexpected status');
+		}
+	}
+
+	async openEventSource(): Promise<SubscribingClient> {
+		const rep = await this.openWS(api.wsEventChannel.URL_END);
+		if (rep.status === api.wsEventChannel.SC.ok) {
+			return makeSubscriber(rep.data, undefined);
+		} else {
+			throw makeException(rep, 'Unexpected status');
 		}
 	}
 	

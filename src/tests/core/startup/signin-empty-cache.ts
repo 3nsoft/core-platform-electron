@@ -16,8 +16,7 @@
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
 import { setupWithUsers } from '../../libs-for-tests/setups';
-import { setAwaiterJS6InClient, setRemoteJasmineInClient,
-	checkRemoteExpectations }
+import { setRemoteJasmineInClient, checkRemoteExpectations }
 	from '../../libs-for-tests/remote-js-utils';
 import { AppRunner, User } from '../../libs-for-tests/app-runner';
 import { sleep } from '../../../lib-common/processes';
@@ -47,10 +46,9 @@ describe('signIn process (empty cache)', () => {
 		await app.stop();
 		await app.removeDataFolder();
 		await app.restart();
-		await setAwaiterJS6InClient(app.c);
 		await setRemoteJasmineInClient(app.c);
 		await setKeyDerivNotifsChecker(app.c);
-	});
+	}, 30000);
 
 	itAsync('has no users on disk', async () => {
 		let exps = (await app.c.executeAsync(async function(
@@ -83,7 +81,7 @@ describe('signIn process (empty cache)', () => {
 		checkRemoteExpectations(exps, 1);
 
 		// completing MailerId provisioning
-		(app.c as any).timeouts('script', 59000);
+		app.c.timeouts('script', 59000);
 		exps = (await app.c.executeAsync(async function(
 				pass: string, done: Function) {
 			let notifications: number[] = [];
@@ -97,7 +95,7 @@ describe('signIn process (empty cache)', () => {
 			}
 			done(collectAllExpectations());
 		}, 'wrong password')).value;
-		(app.c as any).timeouts('script', 5000);
+		app.c.timeouts('script', 5000);
 		checkRemoteExpectations(exps);
 	}, 60000);
 
@@ -117,7 +115,7 @@ describe('signIn process (empty cache)', () => {
 		checkRemoteExpectations(exps, 1);
 
 		// complete login and a local storage setup
-		(app.c as any).timeouts('script', 59000);
+		app.c.timeouts('script', 59000);
 		exps = (await app.c.executeAsync(async function(
 				pass: string, done: Function) {
 			let notifications: number[] = [];
@@ -131,7 +129,7 @@ describe('signIn process (empty cache)', () => {
 			}
 			done(collectAllExpectations());
 		}, user.pass)).value;
-		(app.c as any).timeouts('script', 5000);
+		app.c.timeouts('script', 5000);
 		await sleep(500);	// for windows switch over
 		checkRemoteExpectations(exps);
 	}, 60000);

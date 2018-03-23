@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -23,13 +23,12 @@ import { signing, GetRandom, arrays, compareVectors } from "ecma-nacl";
 import { JsonKey, Key, SignedLoad, keyToJson, keyFromJson, KeyCert, getKeyCert }
 	from "./jwkeys";
 import { utf8, base64 } from "./buffer-utils";
-import { RuntimeException, makeRuntimeException } from "./exceptions/runtime";
 
 /**
  * This enumerates MailerId's different use-roles of keys, involved in
  * establishing a trust.
  */
-export let KEY_USE = {
+export const KEY_USE = {
 	/**
 	 * This is a MailerId trust root.
 	 * It signs certificate for itself, and it signs certificates for provider
@@ -50,23 +49,61 @@ Object.freeze(KEY_USE);
 
 export const exceptionType = 'mailerid';
 
-export interface MidException extends RuntimeException {
+export interface MidException extends web3n.RuntimeException {
+	type: 'mailerid';
 	msg: string;
-	algMismatch?: boolean;
-	timeMismatch?: boolean;
-	certsMismatch?: boolean;
-	certMalformed?: boolean;
-	sigVerificationFails?: boolean;
+	algMismatch?: true;
+	timeMismatch?: true;
+	certsMismatch?: true;
+	certMalformed?: true;
+	sigVerificationFails?: true;
 }
 
-export function makeMidException(flag: string, msg: string, cause?: any):
-		MidException {
-	let e = <MidException> makeRuntimeException(flag, exceptionType);
-	e.msg = msg;
-	if (cause) {
-		e.cause = cause;
+function makeAlgMismatchException(msg: string): MidException {
+	return {
+		runtimeException: true,
+		type: 'mailerid',
+		msg,
+		algMismatch: true
 	}
-	return e;
+}
+
+function makeTimeMismatchException(msg: string): MidException {
+	return {
+		runtimeException: true,
+		type: 'mailerid',
+		msg,
+		timeMismatch: true
+	}
+}
+
+function makeCertsMismatchException(msg: string): MidException {
+	return {
+		runtimeException: true,
+		type: 'mailerid',
+		msg,
+		certsMismatch: true
+	}
+}
+
+export function makeMalformedCertsException(msg: string, cause?: any):
+		MidException {
+	return {
+		runtimeException: true,
+		type: 'mailerid',
+		msg,
+		certMalformed: true,
+		cause
+	}
+}
+
+function makeSigVerifException(msg: string): MidException {
+	return {
+		runtimeException: true,
+		type: 'mailerid',
+		msg,
+		sigVerificationFails: true
+	}
 }
 
 export interface Keypair {
@@ -76,14 +113,14 @@ export interface Keypair {
 
 function genSignKeyPair(use: string, kidLen: number, random: GetRandom,
 		arrFactory?: arrays.Factory): Keypair {
-	let pair = signing.generate_keypair(random(32), arrFactory);
-	let pkey: JsonKey = {
+	const pair = signing.generate_keypair(random(32), arrFactory);
+	const pkey: JsonKey = {
 		use: use,
 		alg: signing.JWK_ALG_NAME,
 		kid: base64.pack(random(kidLen)),
 		k: base64.pack(pair.pkey)
 	};
-	let skey: Key = {
+	const skey: Key = {
 		use: pkey.use,
 		alg: pkey.alg,
 		kid: pkey.kid,
@@ -95,9 +132,9 @@ function genSignKeyPair(use: string, kidLen: number, random: GetRandom,
 function makeCert(pkey: JsonKey, principalAddr: string,
 		issuer: string, issuedAt: number, expiresAt: number,
 		signKey: Key, arrFactory?: arrays.Factory): SignedLoad {
-	if (signKey.alg !== signing.JWK_ALG_NAME) { throw makeMidException(
-		'algMismatch', `Given signing key is used with unknown algorithm ${signKey.alg}`); }
-	let cert: KeyCert = {
+	if (signKey.alg !== signing.JWK_ALG_NAME) { throw makeAlgMismatchException(
+		`Given signing key is used with unknown algorithm ${signKey.alg}`); }
+	const cert: KeyCert = {
 		cert: {
 			publicKey: pkey,
 			principal: { address: principalAddr }
@@ -106,8 +143,8 @@ function makeCert(pkey: JsonKey, principalAddr: string,
 		issuedAt: issuedAt,
 		expiresAt: expiresAt
 	};
-	let certBytes = utf8.pack(JSON.stringify(cert));
-	let sigBytes = signing.signature(certBytes, signKey.k, arrFactory);
+	const certBytes = utf8.pack(JSON.stringify(cert));
+	const sigBytes = signing.signature(certBytes, signKey.k, arrFactory);
 	return {
 		alg: signKey.alg,
 		kid: signKey.kid,
@@ -118,22 +155,22 @@ function makeCert(pkey: JsonKey, principalAddr: string,
 
 export module idProvider {
 
-	export let KID_BYTES_LENGTH = 9;
+	export const KID_BYTES_LENGTH = 9;
 
-	export let MAX_USER_CERT_VALIDITY = 24*60*60;
+	export const MAX_USER_CERT_VALIDITY = 24*60*60;
 	
 	export function makeSelfSignedCert(address: string, validityPeriod: number,
 			sjkey: JsonKey, arrFactory?: arrays.Factory):
 			SignedLoad {
-		let skey = keyFromJson(sjkey, KEY_USE.ROOT,
+		const skey = keyFromJson(sjkey, KEY_USE.ROOT,
 			signing.JWK_ALG_NAME, signing.SECRET_KEY_LENGTH);
-		let pkey: JsonKey = {
+		const pkey: JsonKey = {
 			use: sjkey.use,
 			alg: sjkey.alg,
 			kid: sjkey.kid,
 			k: base64.pack(signing.extract_pkey(skey.k))
 		};
-		let now = Math.floor(Date.now()/1000);
+		const now = Math.floor(Date.now()/1000);
 		return makeCert(pkey, address, address,
 			now, now+validityPeriod, skey, arrFactory);
 	}
@@ -153,10 +190,10 @@ export module idProvider {
 			random: GetRandom, arrFactory?: arrays.Factory):
 			{ cert: SignedLoad; skey: JsonKey } {
 		if (validityPeriod < 1) { throw new Error(`Illegal validity period: ${validityPeriod}`); }
-		let rootPair = genSignKeyPair(KEY_USE.ROOT,
+		const rootPair = genSignKeyPair(KEY_USE.ROOT,
 				KID_BYTES_LENGTH, random, arrFactory);
-		let now = Math.floor(Date.now()/1000);
-		let rootCert = makeCert(rootPair.pkey, address, address,
+		const now = Math.floor(Date.now()/1000);
+		const rootCert = makeCert(rootPair.pkey, address, address,
 				now, now+validityPeriod, rootPair.skey, arrFactory);
 		return { cert: rootCert, skey: keyToJson(rootPair.skey) };
 	}
@@ -176,12 +213,12 @@ export module idProvider {
 			arrFactory?: arrays.Factory):
 			{ cert: SignedLoad; skey: JsonKey } {
 		if (validityPeriod < 1) { throw new Error(`Illegal validity period: ${validityPeriod}`); }
-		let rootKey = keyFromJson(rootJKey, KEY_USE.ROOT,
+		const rootKey = keyFromJson(rootJKey, KEY_USE.ROOT,
 				signing.JWK_ALG_NAME, signing.SECRET_KEY_LENGTH);
-		let provPair = genSignKeyPair(KEY_USE.PROVIDER,
+		const provPair = genSignKeyPair(KEY_USE.PROVIDER,
 				KID_BYTES_LENGTH, random, arrFactory);
-		let now = Math.floor(Date.now()/1000);
-		let rootCert = makeCert(provPair.pkey, address, address,
+		const now = Math.floor(Date.now()/1000);
+		const rootCert = makeCert(provPair.pkey, address, address,
 				now, now+validityPeriod, rootKey, arrFactory);
 		return { cert: rootCert, skey: keyToJson(provPair.skey) };
 	}
@@ -243,7 +280,7 @@ export module idProvider {
 				} else {
 					validFor = validityPeriod;
 				}
-				let now = Math.floor(Date.now()/1000);
+				const now = Math.floor(Date.now()/1000);
 				return makeCert(publicKey, address, issuer,
 						now, now+validFor, signKey, arrFactory);
 			},
@@ -276,19 +313,22 @@ export interface CertsChain {
 
 export module relyingParty {
 
+	const minValidityPeriodForCert = 20*60;
+
 	function verifyCertAndGetPubKey(signedCert: SignedLoad, use: string,
 			validAt: number, arrFactory: arrays.Factory|undefined,
 			issuer?: string, issuerPKey?: Key):
 			{ pkey: Key; address:string; } {
-		let cert = getKeyCert(signedCert);
-		if ((validAt < cert.issuedAt) || (cert.expiresAt <= validAt)) {
-			throw makeMidException('timeMismatch', `Certificate is not valid at a given moment ${validAt}, cause it is issued at ${cert.issuedAt}, and expires at ${cert.expiresAt}`);
+		const cert = getKeyCert(signedCert);
+		if ((validAt < (cert.issuedAt - minValidityPeriodForCert))
+		|| (cert.expiresAt <= validAt)) {
+			throw makeTimeMismatchException(`Certificate is not valid at a given moment ${validAt}, cause it is issued at ${cert.issuedAt}, and expires at ${cert.expiresAt}`);
 		}
 		if (issuer) {
 			if (!issuerPKey) { throw new Error(`No issuer key given.`); }
 			if ((cert.issuer !== issuer) ||
 					(signedCert.kid !== issuerPKey.kid)) {
-				throw makeMidException('certsMismatch', `Certificate is not signed by issuer key.`);
+				throw makeCertsMismatchException(`Certificate is not signed by issuer key.`);
 			}
 		}
 		let pkey: Key;
@@ -300,12 +340,11 @@ export module relyingParty {
 			sig = base64.open(signedCert.sig);
 			load = base64.open(signedCert.load);
 		} catch (err) {
-			throw makeMidException('certMalformed', `Cannot read certificate`, err);
+			throw makeMalformedCertsException(`Cannot read certificate`, err);
 		}
-		let pk = (issuer ? issuerPKey!.k : pkey.k);
-		let certOK = signing.verify(sig, load, pk, arrFactory);
-		if (!certOK) { throw makeMidException(
-			'sigVerificationFails', `Certificate ${use} failed validation.`); }
+		const pk = (issuer ? issuerPKey!.k : pkey.k);
+		const certOK = signing.verify(sig, load, pk, arrFactory);
+		if (!certOK) { throw makeSigVerifException(`Certificate ${use} failed validation.`); }
 		return { pkey: pkey, address: cert.cert.principal.address };
 	}
 	
@@ -326,29 +365,28 @@ export module relyingParty {
 		try {
 			rootValidityMoment = getKeyCert(certs.prov).issuedAt;
 		} catch (err) {
-			throw makeMidException('certMalformed', `Provider's certificate is malformed`, err);
+			throw makeMalformedCertsException(`Provider's certificate is malformed`, err);
 		}
 
 		// check root and get the key
-		let root = verifyCertAndGetPubKey(
+		const root = verifyCertAndGetPubKey(
 			certs.root, KEY_USE.ROOT, rootValidityMoment, arrFactory);
-		if (rootAddr !== root.address) { throw makeMidException('certsMismatch', `Root certificate address ${root.address} doesn't match expected address ${rootAddr}`); }
+		if (rootAddr !== root.address) { throw makeCertsMismatchException(`Root certificate address ${root.address} doesn't match expected address ${rootAddr}`); }
 
 		// provider's certificate must be valid when user's certificate was issued
 		let provValidityMoment: number;
 		try {
 			provValidityMoment = getKeyCert(certs.user).issuedAt;
 		} catch (err) {
-			throw makeMidException('certMalformed', `User's certificate is malformed`, err);
+			throw makeMalformedCertsException(`User's certificate is malformed`, err);
 		}
 		
 		// check provider and get the key
-		let provider = verifyCertAndGetPubKey(certs.prov, KEY_USE.PROVIDER,
+		const provider = verifyCertAndGetPubKey(certs.prov, KEY_USE.PROVIDER,
 			provValidityMoment, arrFactory, root.address, root.pkey);
 		
 		// check that provider cert comes from the same issuer as root
-		if (root.address !== provider.address) { throw makeMidException(
-			'certsMismatch', `Provider's certificate address ${provider.address} doesn't match expected address ${root.address}.`); }
+		if (root.address !== provider.address) { throw makeCertsMismatchException(`Provider's certificate address ${provider.address} doesn't match expected address ${root.address}.`); }
 		
 		// check user certificate and get the key
 		return verifyCertAndGetPubKey(certs.user, KEY_USE.SIGN,
@@ -364,7 +402,7 @@ export module relyingParty {
 	export function verifyAssertion(midAssertion: SignedLoad,
 			certChain: CertsChain, rootAddr: string,
 			validAt: number, arrFactory?: arrays.Factory): AssertionInfo {
-		let userInfo = verifyChainAndGetUserKey(
+		const userInfo = verifyChainAndGetUserKey(
 			certChain, rootAddr, validAt, arrFactory);
 		let loadBytes: Uint8Array;
 		let sigBytes: Uint8Array;
@@ -374,18 +412,23 @@ export module relyingParty {
 			sigBytes = base64.open(midAssertion.sig);
 			assertion = JSON.parse(utf8.open(loadBytes));
 		} catch (err) {
-			throw makeMidException('certMalformed', `Cannot read assertion`, err);
+			throw makeMalformedCertsException(`Cannot read assertion`, err);
 		}
 		if (!signing.verify(sigBytes, loadBytes, userInfo.pkey.k, arrFactory)) {
-			throw makeMidException('sigVerificationFails', `Assertion fails verification.`);
+			throw makeSigVerifException(`Assertion fails verification.`);
 		}
-		if (assertion.user !== userInfo.address) { throw makeMidException(
-			'certMalformed', `Assertion is for one user, while chain is for another.`); }
-		if (!assertion.sessionId) { throw makeMidException(
-			'certMalformed', `Assertion doesn't have session id.`); }
+		if (assertion.user !== userInfo.address) {
+			throw makeMalformedCertsException(
+				`Assertion is for one user, while chain is for another.`);
+		}
+		if (!assertion.sessionId) {throw makeMalformedCertsException(
+			`Assertion doesn't have session id.`); }
+		// Note that assertion can be valid before issue time, to counter
+		// some mis-synchronization of clocks.
+		// It can be some fixed value, like minimum validity period of certs.
 		if (Math.abs(validAt - assertion.issuedAt) >
 				(assertion.expiresAt - assertion.issuedAt)) {
-			throw makeMidException('timeMismatch', `Assertion is not valid at ${validAt}, being issued at ${assertion.expiresAt} and expiring at ${assertion.expiresAt}.`);
+			throw makeTimeMismatchException(`Assertion is not valid at ${validAt}, being issued at ${assertion.expiresAt} and expiring at ${assertion.expiresAt}.`);
 		}
 		return {
 			sessionId: assertion.sessionId,
@@ -421,22 +464,29 @@ export module relyingParty {
 			sigBytes = base64.open(keyCert.sig);
 			loadBytes = base64.open(keyCert.load);
 		} catch (err) {
-			throw makeMidException('certMalformed', `Cannot read certificate`, err);
+			throw makeMalformedCertsException(`Cannot read certificate`, err);
 		}
 		if (!signing.verify(sigBytes, loadBytes, signingKey.k, arrFactory)) {
-			throw makeMidException('sigVerificationFails', `Key certificate fails verification.`);
+			throw makeSigVerifException(`Key certificate fails verification.`);
 		}
 		let cert: KeyCert;
 		try {
 			cert = getKeyCert(keyCert);
 		} catch (err) {
-			throw makeMidException('certMalformed', `Cannot read certificate`, err);
+			throw makeMalformedCertsException(`Cannot read certificate`, err);
 		}
 		if (cert.cert.principal.address !== principalAddress) {
-			throw makeMidException('certsMismatch', `Key certificate is for user ${cert.cert.principal.address}, while expected address is ${principalAddress}`);
+			throw makeCertsMismatchException(`Key certificate is for user ${cert.cert.principal.address}, while expected address is ${principalAddress}`);
 		}
-		if ((validAt < cert.issuedAt) || (cert.expiresAt <= validAt)) {
-			throw makeMidException('timeMismatch', `Certificate is not valid at ${validAt} being issued at ${cert.issuedAt} and expiring at ${cert.expiresAt}`);
+		if ((cert.expiresAt - cert.issuedAt) <= minValidityPeriodForCert) {
+			if (Math.abs(cert.issuedAt - validAt) > minValidityPeriodForCert) {
+				throw makeTimeMismatchException(`Certificate is not valid at ${validAt} being issued at ${cert.issuedAt} and applying minimum validity period window of ${minValidityPeriodForCert} seconds`);
+			}
+		} else {
+			if ((validAt < (cert.issuedAt - minValidityPeriodForCert))
+			|| (cert.expiresAt <= validAt)) {
+				throw makeTimeMismatchException(`Certificate is not valid at ${validAt} being issued at ${cert.issuedAt} and expiring at ${cert.expiresAt}`);
+			}
 		}
 		return cert.cert.publicKey;
 	}
@@ -462,13 +512,12 @@ export module relyingParty {
 		try {
 			chainValidityMoment = getKeyCert(pubKeyCert).issuedAt;
 		} catch (err) {
-			throw makeMidException('certMalformed', `Cannot read certificate`, err);			
+			throw makeMalformedCertsException(`Cannot read certificate`, err);			
 		}
 		
-		let principalInfo = verifyChainAndGetUserKey(
+		const principalInfo = verifyChainAndGetUserKey(
 			certChain, rootAddr, chainValidityMoment, arrFactory);
-		if (principalInfo.address !== principalAddress) { throw makeMidException(
-			'certsMismatch', `MailerId certificate chain is for user ${principalInfo.address}, while expected address is ${principalAddress}`); }
+		if (principalInfo.address !== principalAddress) { throw makeCertsMismatchException(`MailerId certificate chain is for user ${principalInfo.address}, while expected address is ${principalAddress}`); }
 		
 		return verifyKeyCert(pubKeyCert, principalAddress,
 			principalInfo.pkey, validAt, arrFactory);
@@ -479,7 +528,7 @@ Object.freeze(relyingParty);
 
 
 function correlateSKeyWithItsCert(skey: Key, cert: KeyCert): void {
-	let pkey = keyFromJson(cert.cert.publicKey, skey.use,
+	const pkey = keyFromJson(cert.cert.publicKey, skey.use,
 			signing.JWK_ALG_NAME, signing.PUBLIC_KEY_LENGTH);
 	if ( ! ((pkey.kid === skey.kid) &&
 			(pkey.use === skey.use) &&
@@ -522,9 +571,9 @@ export module user {
 		destroy(): void;
 	}
 
-	export let KID_BYTES_LENGTH = 9;
+	export const KID_BYTES_LENGTH = 9;
 
-	export let MAX_SIG_VALIDITY = 30*60;
+	export const MAX_SIG_VALIDITY = 30*60;
 	
 	export function generateSigningKeyPair(random: GetRandom,
 			arrFactory?: arrays.Factory): Keypair {
@@ -547,7 +596,7 @@ export module user {
 			userCert: SignedLoad, provCert: SignedLoad,
 			assertionValidity = user.MAX_SIG_VALIDITY,
 			arrFactory?: arrays.Factory): MailerIdSigner {
-		let certificate = getKeyCert(userCert);
+		const certificate = getKeyCert(userCert);
 		if (signKey.use !== KEY_USE.SIGN) { throw new Error(
 				`Given key ${signKey.kid} has incorrect use: ${signKey.use}`); }
 		correlateSKeyWithItsCert(signKey, certificate);
@@ -558,7 +607,7 @@ export module user {
 		if (!arrFactory) {
 			arrFactory = arrays.makeFactory();
 		}
-		let signer: MailerIdSigner = {
+		const signer: MailerIdSigner = {
 			address: certificate.cert.principal.address,
 			userCert: userCert,
 			providerCert: provCert,
@@ -582,15 +631,15 @@ export module user {
 					now = certificate.issuedAt + 1;
 				}
 				if (now >= certificate.expiresAt) { throw new Error(`Signing key has already expiried at ${certificate.expiresAt} and now is ${now}`); }
-				let assertion: AssertionLoad = {
+				const assertion: AssertionLoad = {
 					rpDomain: rpDomain,
 					sessionId: sessionId,
 					user: certificate.cert.principal.address,
 					issuedAt: now,
 					expiresAt: now+validFor
 				}
-				let assertionBytes = utf8.pack(JSON.stringify(assertion));
-				let sigBytes = signing.signature(
+				const assertionBytes = utf8.pack(JSON.stringify(assertion));
+				const sigBytes = signing.signature(
 						assertionBytes, signKey.k, arrFactory);
 				return {
 					alg: signKey.alg,
@@ -603,7 +652,7 @@ export module user {
 					SignedLoad => {
 				if (!signKey) { throw new Error("Signer is already destroyed."); }
 				if (validFor < 0) { new Error(`Given certificate validity is illegal: ${validFor}`); }
-				let now = Math.floor(Date.now()/1000);
+				const now = Math.floor(Date.now()/1000);
 				if (now >= certificate.expiresAt) { throw new Error(`Signing key has already expiried at ${certificate.expiresAt} and now is ${now}`); }
 				return makeCert(pkey, certificate.cert.principal.address,
 							certificate.cert.principal.address,

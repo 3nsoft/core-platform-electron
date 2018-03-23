@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,62 +19,36 @@
  * reliance set.
  */
 
-import * as random from '../../random-node';
-import { arrays, secret_box as sbox } from 'ecma-nacl';
-import { FileKeyHolder, makeFileKeyHolder, makeNewFileKeyHolder, makeHolderFor }
-	from 'xsp-files';
 import { ByteSource, ByteSink }
 	from '../../../lib-common/byte-streaming/common';
-import { ObjSink } from '../../../lib-common/obj-streaming/common';
-import { ObjSource } from '../../../lib-common/obj-streaming/common';
+import { ObjSink, ObjSource } from '../../../lib-common/obj-streaming/common';
 import { SinkBackedObjSource } from '../../../lib-common/obj-streaming/pipe';
-import { makeDecryptedByteSource, makeEncryptingByteSink,
-	makeObjByteSourceFromArrays }
+import { makeDecryptedByteSource, makeEncryptingByteSink, idToHeaderNonce }
 	from '../../../lib-common/obj-streaming/crypto';
 import { syncWrapByteSink, syncWrapByteSource }
 	from '../../../lib-common/byte-streaming/concurrent';
-import { FS } from './fs';
-import { NodeInFS, NodeCrypto, SEG_SIZE, WriteChainingResult }
-	from './node-in-fs';
+import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { LinkParameters } from '../../files';
-import { Storage } from './common';
+import { Storage, AsyncSBoxCryptor } from './common';
 import { base64 } from '../../../lib-common/buffer-utils';
+import { defer } from '../../../lib-common/processes';
 
 class FileCrypto extends NodeCrypto {
 	
-	private constructor(keyHolder: FileKeyHolder) {
-		super(keyHolder);
+	constructor(zNonce: Uint8Array, key: Uint8Array, cryptor: AsyncSBoxCryptor) {
+		super(zNonce, key, cryptor);
 		Object.seal(this);
 	}
 	
-	static makeForNew(masterEncr: sbox.Encryptor): FileCrypto {
-		let keyHolder = makeNewFileKeyHolder(masterEncr, random.bytes,
-			NodeCrypto.arrFactory);
-		return new FileCrypto(keyHolder);
-	}
-
-	static makeForExisting(masterDecr: sbox.Decryptor, fileHeader: Uint8Array):
-			FileCrypto {
-		let keyHolder = makeFileKeyHolder(masterDecr, fileHeader,
-			NodeCrypto.arrFactory);
-		return new FileCrypto(keyHolder);
-	}
-
-	static makeFromLinkParam(fKey: string, fileHeader: Uint8Array): FileCrypto {
-		let keyHolder = makeHolderFor(base64.open(fKey), fileHeader);
-		return new FileCrypto(keyHolder);
-	}
-
 	async decryptedBytesSource(src: ObjSource): Promise<ByteSource> {
-		if (!this.keyHolder) { throw new Error("Cannot use wiped object."); }
 		return syncWrapByteSource(await makeDecryptedByteSource(
-			src, this.keyHolder.segReader));
+			src, header => this.segReader(src.version, header)));
 	}
 	
-	encryptingByteSink(objSink: ObjSink): ByteSink {
-		if (!this.keyHolder) { throw new Error("Cannot use wiped object."); }
-		return syncWrapByteSink(makeEncryptingByteSink(
-			objSink, this.keyHolder.newSegWriter(SEG_SIZE, random.bytes)));
+	async encryptingByteSink(version: number, objSink: ObjSink):
+			Promise<ByteSink> {
+		const writer = await this.segWriter(version);
+		return syncWrapByteSink(makeEncryptingByteSink(objSink, writer));
 	}
 	
 }
@@ -87,106 +61,129 @@ export interface FileLinkParams {
 	fKey: string;
 }
 
+type FileChangeEvent = web3n.files.FileChangeEvent;
+
 export class FileNode extends NodeInFS<FileCrypto> {
 
 	private constructor(storage: Storage, name: string,
-			objId: string, version: number|undefined, parentId: string|undefined) {
+			objId: string, version: number, parentId: string|undefined,
+			key: Uint8Array) {
 		super(storage, 'file', name, objId, version, parentId);
 		if (!name || !objId) { throw new Error("Bad file parameter(s) given"); }
+		this.crypto = new FileCrypto(
+			idToHeaderNonce(this.objId), key, this.storage.cryptor);
 		Object.seal(this);
 	}
 
 	static makeForNew(storage: Storage, parentId: string, name: string,
-			masterEncr: sbox.Encryptor): FileNode {
+			key: Uint8Array, cryptor: AsyncSBoxCryptor): FileNode {
 		if (!parentId) { throw new Error("Bad parent id"); }
-		let objId = storage.generateNewObjId();
-		let f = new FileNode(storage, name, objId, undefined, parentId);
-		f.crypto = FileCrypto.makeForNew(masterEncr);
-		return f;
+		const objId = storage.generateNewObjId();
+		return new FileNode(storage, name, objId, 0, parentId, key);
 	}
 
 	static async makeForExisting(storage: Storage, parentId: string,
-			name: string, masterDecr: sbox.Decryptor, objId: string):
-			Promise<FileNode> {
-		if ((typeof parentId !== 'string') && (parentId !== null)) {
-			throw new Error("Bad parent id"); }
-		let src = await storage.getObj(objId);
-		let fileHeader = await src.readHeader();
-		let f = new FileNode(storage, name, objId, src.getObjVersion(), parentId);
-		f.crypto = FileCrypto.makeForExisting(masterDecr, fileHeader);
-		return f;
+			name: string, objId: string, key: Uint8Array): Promise<FileNode> {
+		if (!parentId) { throw new Error("Bad parent id"); }
+		const src = await storage.getObj(objId);
+		return new FileNode(
+			storage, name, objId, src.version, parentId, key);
 	}
 
-	static async makeForLinkParams(storage: Storage, params: FileLinkParams):
+	static async makeFromLinkParams(storage: Storage, params: FileLinkParams):
 			Promise<FileNode> {
-		let src = await storage.getObj(params.objId);
-		let fileHeader = await src.readHeader();
-		let f = new FileNode(storage, params.fileName, params.objId,
-			src.getObjVersion(), undefined);
-		f.crypto = FileCrypto.makeFromLinkParam(params.fKey, fileHeader);
-		return f;
+		const { objId, fileName } = params;
+		const key = base64.open(params.fKey);
+		const src = await storage.getObj(objId);
+		return new FileNode(storage, fileName,
+			objId, src.version, undefined,  key);
 	}
 	
 	async readSrc(): Promise<{ src: ByteSource; version: number; }> {
-		let objSrc = await this.storage.getObj(this.objId);
-		let src = await this.crypto.decryptedBytesSource(objSrc);
-		let isVersioned = (this.storage.type === 'synced') ||
+		const objSrc = await this.storage.getObj(this.objId);
+		const src = await this.crypto.decryptedBytesSource(objSrc);
+		const isVersioned = (this.storage.type === 'synced') ||
 			(this.storage.type === 'local');
 		if (!isVersioned) {
 			return { src, version: (undefined as any) };
 		}
-		let version = objSrc.getObjVersion();
-		if (typeof version !== 'number') { throw new Error(
-			`Object source doesn't have defined version`); }
+		const version = objSrc.version;
 		if (this.version < version) {
-			this.version = version;
+			this.setCurrentVersion(version);
 		}
 		return { src, version };
 	}
 
-	writeSink(): { sink: ByteSink; version: number; } {
-		let pipe = new SinkBackedObjSource();
-		let { completion, newVersion } = this.chainWrite((newVersion: number) => {
-			pipe.setObjVersion(newVersion);
-			return this.storage.saveObj(this.objId, pipe.getSource());
+	async writeSink(): Promise<{ sink: ByteSink; version: number; }> {
+		// XXX do we have a proper back-pressure in this pipe arrangement?
+		// We should, but this is not obvious here.
+		const deferredPipe = defer<SinkBackedObjSource>();
+		const completion = this.doChange(false, async () => {
+			// XXX is version change rolled back, if sink is never used, and even
+			// if it is garbage collected?
+			const newVersion = this.version + 1;
+			const pipe = new SinkBackedObjSource(newVersion);
+			deferredPipe.resolve(pipe);
+			await this.storage.saveObj(this.objId, pipe.getSource());
+			this.setCurrentVersion(newVersion);
+			const event: FileChangeEvent = {
+				type: 'file-change',
+				path: this.name,
+				newVersion
+			};
+			this.broadcastEvent(event);
 		});
-		let sink = this.crypto.encryptingByteSink(pipe.getSink())
-		let originalWrite = sink.write;
+		const pipe = await deferredPipe.promise;
+		const sink = await this.crypto.encryptingByteSink(
+			pipe.version, pipe.getSink());
+		const originalWrite = sink.write;
 		sink.write = async (bytes: Uint8Array|null, err?: any): Promise<void> => {
 			if (bytes) {
 				await originalWrite(bytes);
 			} else {
-				originalWrite(null, err);
+				await originalWrite(null, err);
 				await completion;
 			}
-		}
-		if (sink.write === originalWrite) { throw new Error('Cannot wrap write method of a sink object.'); }
+		};
+		if (sink.write === originalWrite) { throw new Error('Failed to wrap write method of a sink object (it could be frozen).'); }
 		return {
 			sink,
-			version: newVersion
-		}
+			version: pipe.version
+		};
 	}
 	
 	save(bytes: Uint8Array|Uint8Array[]): Promise<number> {
-		return this.saveBytes(bytes).completion;
+		return this.doChange(false, async () => {
+			const newVersion = this.version + 1;
+			const src = await this.crypto.packBytes(bytes, newVersion);
+			await this.storage.saveObj(this.objId, src);
+			this.setCurrentVersion(newVersion);
+			const event: FileChangeEvent = {
+				type: 'file-change',
+				path: this.name,
+				newVersion
+			};
+			this.broadcastEvent(event);
+			return this.version;
+		});
 	}
 
 	getParamsForLink(): LinkParameters<FileLinkParams> {
 		if ((this.storage.type !== 'synced') && (this.storage.type !== 'local')) {
 			throw new Error(`Creating link parameters to object in ${this.storage.type} file system, is not implemented.`); }
-		let params: FileLinkParams = {
+		const params: FileLinkParams = {
 			fileName: (undefined as any),
 			objId: this.objId,
 			fKey: this.crypto.fileKeyInBase64()
 		};
-		let linkParams: LinkParameters<FileLinkParams> = {
+		const linkParams: LinkParameters<FileLinkParams> = {
 			storageType: this.storage.type,
 			isFile: true,
 			params
 		};
 		return linkParams;
 	}
-	
+
 }
 Object.freeze(FileNode.prototype);
 Object.freeze(FileNode);

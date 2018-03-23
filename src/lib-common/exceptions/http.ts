@@ -19,28 +19,29 @@
  * both main and worker processes.
  */
 
-import { RuntimeException } from './runtime';
-
-export const HTTPExceptionType = 'http-request';
-export const ConnectExceptionType = 'http-connect';
-
-export interface ConnectException extends RuntimeException {
+interface HTTPErrorDetails extends web3n.RuntimeException {
 	url: string;
 	method: string;
 	message?: string;
 }
 
-export interface HTTPException extends ConnectException {
+export interface ConnectException extends HTTPErrorDetails {
+	type: 'http-connect';
+}
+
+export interface HTTPException extends HTTPErrorDetails {
+	type: 'http-request';
 	status: number;
 }
 
 export function makeConnectionException(url: string|undefined,
-		method: string|undefined, msg?: string): ConnectException {
-	let exc: ConnectException = {
+		method: string|undefined, msg?: string, cause?: any): ConnectException {
+	const exc: ConnectException = {
 		runtimeException: true,
-		type: ConnectExceptionType,
+		type: 'http-connect',
 		url: url!,
-		method: method!
+		method: method!,
+		cause
 	};
 	if (msg) {
 		exc.message = msg;
@@ -49,13 +50,14 @@ export function makeConnectionException(url: string|undefined,
 }
 
 export function makeHTTPException(url: string, method: string, status: number,
-		msg?: string): HTTPException {
-	let exc: HTTPException = {
+		msg?: string, cause?: any): HTTPException {
+	const exc: HTTPException = {
 		runtimeException: true,
-		type: HTTPExceptionType,
+		type: 'http-request',
 		url: url,
 		method: method,
-		status: status
+		status: status,
+		cause
 	};
 	if (msg) {
 		exc.message = msg;

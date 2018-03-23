@@ -14,12 +14,12 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { itAsync, fitAsync, xitAsync, beforeAllAsync }
+import { itAsync, beforeAllAsync }
 	from '../libs-for-tests/async-jasmine';
 import { setupWithUsers, checkRemoteExpectations }
 	from '../libs-for-tests/setups';
 import { AppRunner } from '../libs-for-tests/app-runner';
-import { stringOfB64Chars } from '../../lib-client/random-node';
+import { stringOfB64Chars } from '../../lib-common/random-node';
 import { specsWithArgs } from '../libs-for-tests/spec-module';
 import { resolve } from 'path';
 
@@ -27,8 +27,8 @@ declare var w3n: {
 	mail: web3n.asmail.Service;
 	storage: web3n.storage.Service;
 	device: {
-		openFileDialog: typeof web3n.device.files.openFileDialog;
-		saveFileDialog: typeof web3n.device.files.saveFileDialog;
+		openFileDialog: web3n.device.files.OpenFileDialog;
+		saveFileDialog: web3n.device.files.SaveFileDialog;
 	};
 }
 declare var cExpect: typeof expect;
@@ -75,7 +75,7 @@ describe('ASMail', () => {
 		checkRemoteExpectations(exps, 2);
 	});
 
-	specsWithArgs(resolve(__dirname, './asmail'), {
+	specsWithArgs(resolve(__dirname, './asmail/specs'), {
 		s: () => s,
 		app1: () => app1,
 		app2: () => app2,

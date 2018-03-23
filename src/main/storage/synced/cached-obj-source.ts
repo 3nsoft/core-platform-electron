@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,16 +19,17 @@ import { ByteSource, BytesFIFOBuffer }
 	from '../../../lib-common/byte-streaming/common';
 import { syncWrapObjSource }
 	from '../../../lib-common/obj-streaming/concurrent';
-import { CacheFiles, DiffInfo } from './cache-files';
-import { Downloader, ObjInfo } from './downloader';
-import { Uploader } from './uploader';
+import { DiffInfo, ObjId } from './files/objs';
+import { ObjReader } from './files/obj-reader';
+import { SyncedVersionsDownloader, ObjInfo }
+	from './synced-versions-downloader';
 
 function addToDiffPrecomputedValues(diff: DiffInfo): void {
-	let sections = diff.sections;
+	const sections = diff.sections;
 	let totalLen = 0;
-	for (let i=0; i < sections.length; i+=1) {
-		let sec = sections[i];
-		let secLen = sec[2];
+	for (let i=0; i<sections.length; i+=1) {
+		const sec = sections[i];
+		const secLen = sec[2];
 		totalLen += secLen;
 		sec[3] = totalLen;
 	}
@@ -44,9 +45,9 @@ class CachedByteSource implements ByteSource {
 	private baseSrc: ByteSource = (undefined as any);
 	
 	constructor(
-			private cache: CacheFiles,
-			private downloader: Downloader,
-			private objId: string,
+			private cache: ObjReader,
+			private downloader: SyncedVersionsDownloader,
+			private objId: ObjId,
 			private version: number,
 			info: ObjInfo) {
 		this.segsSize = info.segsSize;
@@ -71,7 +72,7 @@ class CachedByteSource implements ByteSource {
 			this.allBytesInCache = await this.downloader.ensureBytesAreOnDisk(
 				this.objId, this.version, start, end);
 		}
-		let chunk = await this.cache.readObjSegments(
+		const chunk = await this.cache.readObjSegments(
 			this.objId, this.version, start, end);
 		if (!chunk) { return undefined; }
 		this.segsPointer += chunk.length;
@@ -79,49 +80,49 @@ class CachedByteSource implements ByteSource {
 	}
 
 	private async nonDiffRead(len: number): Promise<Uint8Array|undefined> {
-		let start = this.segsPointer;
-		let end = ((typeof len === 'number') ? (start + len) : this.segsSize);
+		const start = this.segsPointer;
+		const end = ((typeof len === 'number') ? (start + len) : this.segsSize);
 		return this.getChunk(start, end);
 	}
 
 	private async diffRead(len: number): Promise<Uint8Array|undefined> {
-		let start = this.segsPointer;
-		let end = ((typeof len === 'number') ?
+		const start = this.segsPointer;
+		const end = ((typeof len === 'number') ?
 			(start + len) : this.diff.segsSize);
 
 		// find first and last diff sections
-		let fstSecInd = this.diff.sections.findIndex(s => (start < s[3]));
+		const fstSecInd = this.diff.sections.findIndex(s => (start < s[3]));
 		if (typeof fstSecInd !== 'number') { return undefined; }
 		let lastSecInd = this.diff.sections.findIndex(s => (end <= s[3]));
 		if (typeof lastSecInd !== 'number') {
 			lastSecInd = this.diff.sections.length - 1;
 		}
-		let fstSec = Array.from(this.diff.sections[fstSecInd]);
-		let lastSec = ((fstSecInd === lastSecInd) ?
+		const fstSec = Array.from(this.diff.sections[fstSecInd]);
+		const lastSec = ((fstSecInd === lastSecInd) ?
 			fstSec : Array.from(this.diff.sections[lastSecInd]));
 		
 		// adjust position of first sector to align with start
-		let fstSecStart = ((fstSecInd === 0) ?
+		const fstSecStart = ((fstSecInd === 0) ?
 			0 : this.diff.sections[fstSecInd-1][3]);
 		fstSec[1] = fstSec[1] + (start - fstSecStart);
 		// adjust length of last sector to align with end
 		lastSec[2] = lastSec[2] - (lastSec[3] - end);
 
-		let buf = new BytesFIFOBuffer();
-		for (let i=fstSecInd; i <= lastSecInd; i+=1) {
+		const buf = new BytesFIFOBuffer();
+		for (let i=fstSecInd; i<=lastSecInd; i+=1) {
 			let s: number[];
 			if (i === fstSecInd) { s = fstSec; }
 			else if (i === lastSecInd) { s = lastSec; }
 			else { s = this.diff.sections[i]; }
 			if (s[0] === 0) {
-				let baseSrc = await this.getBaseSrc();
+				const baseSrc = await this.getBaseSrc();
 				baseSrc.seek!(s[1]);
-				let bytes = await baseSrc.read(s[2]);
+				const bytes = await baseSrc.read(s[2]);
 				if (!bytes || (bytes.length < s[2])) { throw new Error(
 					`Base file is too short.`); }
 				buf.push(bytes);
 			} else {
-				let bytes = await this.getChunk(s[1], s[1]+s[2]);
+				const bytes = await this.getChunk(s[1], s[1]+s[2]);
 				if (!bytes || (bytes.length < s[2])) { throw new Error(
 					`Segments file is too short.`); }
 				buf.push(bytes);
@@ -162,22 +163,18 @@ class CachedObjSource implements ObjSource {
 	segSrc: ByteSource;
 	
 	constructor(
-			private cache: CacheFiles,
-			downloader: Downloader,
-			private objId: string,
-			private version: number,
+			private cache: ObjReader,
+			downloader: SyncedVersionsDownloader,
+			private objId: ObjId,
+			public version: number,
 			info: ObjInfo) {
 		this.segSrc = new CachedByteSource(cache, downloader,
 			objId, version, info);
 		Object.seal(this);
 	}
-	
-	getObjVersion(): number {
-		return this.version;
-	}
-	
+
 	async readHeader(): Promise<Uint8Array> {
-		let h = await this.cache.readObjHeader(this.objId, this.version);
+		const h = await this.cache.readObjHeader(this.objId, this.version);
 		return h;
 	}
 	
@@ -192,11 +189,11 @@ Object.freeze(CachedObjSource);
  * @param version
  * @return a promise, resolvable to ObjSource of a given object version.
  */
-export async function makeCachedObjSource(cache: CacheFiles,
-		downloader: Downloader, objId: string, version: number):
+export async function makeCachedObjSource(cache: ObjReader,
+		downloader: SyncedVersionsDownloader, objId: ObjId, version: number):
 		Promise<ObjSource> {
-	let info = await downloader.getObjInfo(objId, version);
-	let src = new CachedObjSource(cache, downloader, objId, version, info);
+	const info = await downloader.getObjInfo(objId, version);
+	const src = new CachedObjSource(cache, downloader, objId, version, info);
 	return Object.freeze(syncWrapObjSource(src));
 }
 

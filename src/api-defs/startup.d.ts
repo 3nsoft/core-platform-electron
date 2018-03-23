@@ -101,5 +101,10 @@ declare namespace web3n.startup {
 			progressCB: (progress: number) => void): Promise<boolean>;
 		
 	}
+
+	interface W3N {
+		signIn: startup.SignInService;
+		signUp: startup.SignUpService;
+	}
 	
 }

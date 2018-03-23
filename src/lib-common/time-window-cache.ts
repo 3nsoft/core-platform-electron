@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,11 +16,12 @@
 
 export class TimeWindowCache<TKey, TVal> {
 
-	private filling: Map<TKey, TVal>|void = new Map<TKey, TVal>();
-	private waiting: Map<TKey, TVal>|void = new Map<TKey, TVal>();
+	private filling: Map<TKey, TVal> = new Map<TKey, TVal>();
+	private waiting: Map<TKey, TVal> = new Map<TKey, TVal>();
 	private interval: NodeJS.Timer|void;
 
-	constructor(periodMillis: number) {
+	constructor(periodMillis: number,
+			private canItemTimeout?: (val: TVal) => boolean) {
 		this.interval = setInterval(
 			() => { this.dropAndRotate(); }, periodMillis);
 		this.interval.unref();
@@ -28,8 +29,15 @@ export class TimeWindowCache<TKey, TVal> {
 	}
 
 	private dropAndRotate(): void {
+		if (this.canItemTimeout) {
+			// save items that cannot be dropped by putting them into filling
+			for (const entry of this.waiting.entries()) {
+				if (this.canItemTimeout(entry[1])) { continue; }
+				this.filling.set(entry[0], entry[1]);
+			}
+		}
 		this.waiting.clear();
-		let b = this.waiting;
+		const b = this.waiting;
 		this.waiting = this.filling;
 		this.filling = b;
 	}
@@ -42,6 +50,10 @@ export class TimeWindowCache<TKey, TVal> {
 			this.filling.set(key, v);
 		}
 		return v
+	}
+
+	has(key: TKey): boolean {
+		return (this.get(key) !== undefined);
 	}
 
 	set(key: TKey, val: TVal): void {
@@ -62,8 +74,8 @@ export class TimeWindowCache<TKey, TVal> {
 		if (!this.interval) { return; }
 		clearInterval(this.interval);
 		this.interval = undefined;
-		this.filling = undefined;
-		this.waiting = undefined;
+		this.filling = (undefined as any);
+		this.waiting = (undefined as any);
 	}
 
 }

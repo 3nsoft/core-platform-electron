@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,20 +14,20 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { IGetSigner } from '../../renderer/common';
-import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
-import * as random from '../../lib-client/random-node';
-import { deepEqual } from '../../lib-common/json-equal';
+import * as random from '../../lib-common/random-node';
+import { deepEqual } from '../../lib-common/json-utils';
 import { getASMailServiceFor } from '../../lib-client/service-locator';
 import { MailConfigurator } from '../../lib-client/asmail/service-config';
 import * as api from '../../lib-common/service-api/asmail/config';
 import { PublishedKeys } from './keyring';
 import { FileException } from '../../lib-common/exceptions/file';
 import { errWithCause } from '../../lib-common/exceptions/error';
-import { ConnectException, ConnectExceptionType }
-	from '../../lib-common/exceptions/http';
+import { ConnectException } from '../../lib-common/exceptions/http';
+import { GetSigner } from '../id-manager';
 
-let ANON_SENDER_INVITES_FNAME = 'anonymous/invites.json';
+type FS = web3n.files.WritableFS;
+
+const ANON_SENDER_INVITES_FNAME = 'anonymous/invites.json';
 
 interface InvitesJSON {
 	invites: {
@@ -62,9 +62,9 @@ abstract class ParamOnFileAndServer<TF, TS> {
 	
 	async loadFromFileAndSyncServiceSetting(): Promise<void> {
 		try {
-			let json = await this.fs.readJSONFile<TF>(this.filePath);
+			const json = await this.fs.readJSONFile<TF>(this.filePath);
 			this.setFromJSON(json);
-			let infoOnServer = await this.serviceConf.getParam<TS>(this.paramPath)
+			const infoOnServer = await this.serviceConf.getParam<TS>(this.paramPath)
 			if (!deepEqual(infoOnServer, this.toServiceJSON())) {
 				await this.serviceConf.setParam(
 					this.paramPath, this.toServiceJSON());
@@ -73,7 +73,7 @@ abstract class ParamOnFileAndServer<TF, TS> {
 			if ((<FileException> exc).notFound) {
 				this.initStruct();
 				await this.save();
-			} else if ((<ConnectException> exc).type !== ConnectExceptionType) {
+			} else if ((<ConnectException> exc).type !== 'http-connect') {
 				throw exc;
 			}
 		}
@@ -91,7 +91,7 @@ abstract class ParamOnFileAndServer<TF, TS> {
 
 const INVITE_TOKEN_LEN = 40;
 const DEFAULT_INVITE_LABEL = 'Default';
-const DEFAULT_INVITE_MAX_MSG_SIZE = 500*1024*1024;
+const DEFAULT_INVITE_MAX_MSG_SIZE = 1024*1024*1024;
 
 class Invites extends ParamOnFileAndServer<InvitesJSON, api.InvitesList> {
 	
@@ -120,7 +120,7 @@ class Invites extends ParamOnFileAndServer<InvitesJSON, api.InvitesList> {
 	createNewInvite(label: string, msgMaxSize: number): string {
 		let token: string;
 		do {
-			token = random.stringOfB64Chars(INVITE_TOKEN_LEN);
+			token = random.stringOfB64CharsSync(INVITE_TOKEN_LEN);
 		} while (this.invites[token]);
 		this.invites[token] = {
 			label: label,
@@ -142,8 +142,8 @@ class Invites extends ParamOnFileAndServer<InvitesJSON, api.InvitesList> {
 	}
 	
 	toServiceJSON(): api.InvitesList {
-		let serverJSON: api.InvitesList = {};
-		for (let token in this.invites) {
+		const serverJSON: api.InvitesList = {};
+		for (const token in this.invites) {
 			serverJSON[token] = this.invites[token].msgMaxSize;
 		}
 		return serverJSON;
@@ -152,7 +152,7 @@ class Invites extends ParamOnFileAndServer<InvitesJSON, api.InvitesList> {
 	getFor(address: string): string {
 		let token = this.addresses[address];
 		if (!token) {
-			for (let t in this.invites) {
+			for (const t in this.invites) {
 				if (this.invites[t].label === DEFAULT_INVITE_LABEL) {
 					token = t;
 					break;
@@ -170,7 +170,7 @@ class IntroKeys {
 	constructor(
 			private fs: FS,
 			private keyring: PublishedKeys,
-			private getSigner: IGetSigner,
+			private getSigner: GetSigner,
 			private serviceConf: MailConfigurator) {
 		Object.seal(this);
 	}
@@ -187,21 +187,21 @@ class IntroKeys {
 	}
 	
 	async checkOrSetPublishedKeyCerts(): Promise<void> {
-		let certs = this.keyring.getIntroKeyCerts();
+		const certs = this.keyring.getIntroKeyCerts();
 		if (certs) {
 			try {
-				let certsOnServer = await this.getCertsOnServer();
+				const certsOnServer = await this.getCertsOnServer();
 				if (!deepEqual(certs, certsOnServer)) {
 					await this.putCertsOnServer(certs);
 				}
 			} catch (exc) {
-				if ((<ConnectException> exc).type !== ConnectExceptionType) {
+				if ((<ConnectException> exc).type !== 'http-connect') {
 					throw exc; }
 			}
 		} else {
-			let signer = await this.getSigner();
+			const signer = await this.getSigner();
 			this.keyring.updateIntroKey(signer);
-			let certs = this.keyring.getIntroKeyCerts();
+			const certs = this.keyring.getIntroKeyCerts();
 			if (!certs) { throw new Error(`Expectation fail: intro key certs must be present after an update`); }
 			await this.putCertsOnServer(certs);
 		}
@@ -219,21 +219,20 @@ export class ConfigOfASMailServer {
 	private fs: FS = (undefined as any);
 	
 	constructor(address: string,
-			private getSigner: IGetSigner) {
-		this.serviceConf = new MailConfigurator(address, this.getSigner);
+			private getSigner: GetSigner) {
+		this.serviceConf = new MailConfigurator(address, this.getSigner,
+			() => getASMailServiceFor(address));
 		Object.seal(this);
 	}
 	
 	async init(fs: FS, publishedKeys: PublishedKeys): Promise<void> {
+		if (fs.type !== 'synced') { throw new Error(`Expected synced file system, instead got ${fs.type} type.`); }
 		try {
 			this.fs = fs;
 			this.anonInvites = new Invites(this.fs, ANON_SENDER_INVITES_FNAME,
 				api.p.anonSenderInvites.URL_END, this.serviceConf);
 			this.introKeys = new IntroKeys(this.fs, publishedKeys, this.getSigner,
 				this.serviceConf);
-			this.serviceConf.setConfigUrl(() => {
-				return getASMailServiceFor(this.serviceConf.userId);
-			});
 			await Promise.all([
 				this.anonInvites.loadFromFileAndSyncServiceSetting(),
 				this.introKeys.checkOrSetPublishedKeyCerts(),

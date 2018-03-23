@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,95 +14,90 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { Duplex, RequestEnvelope } from '../../lib-common/ipc/electron-ipc';
-import { asmail, IGetSigner } from '../../renderer/common';
-import { InboxOnServer } from './inbox';
+import { InboxOnServer } from './inbox/service';
 import { errWithCause } from '../../lib-common/exceptions/error';
 import { KeyRing, makeKeyring, PublishedKeys } from './keyring';
-import { FS } from '../../lib-client/3nstorage/xsp-fs/common';
 import { ConfigOfASMailServer } from './config';
 import { bind } from '../../lib-common/binding';
-import { makeInboxCache } from './inbox-cache';
+import { makeInboxCache } from './inbox/cache';
 import { makeInboxFS } from '../../lib-client/local-files/app-files';
-import { ProxiedObjGetter } from '../proxied-objs/fs';
-import { DeliveryService } from './delivery';
+import { Delivery } from './delivery/service';
 import { StorageGetter } from '../../lib-client/3nstorage/xsp-fs/common';
+import { GetSigner } from '../id-manager';
+import { AsyncSBoxCryptor } from 'xsp-files';
+
+type WritableFS = web3n.files.WritableFS;
+type Service = web3n.asmail.Service;
+type DeliveryService = web3n.asmail.DeliveryService;
+type InboxService = web3n.asmail.InboxService;
 
 const KEYRING_DATA_FOLDER = 'keyring';
 const INBOX_DATA_FOLDER = 'inbox';
 const CONFIG_DATA_FOLDER = 'config';
+const DELIVERY_DATA_FOLDER = 'delivery';
 
 const CACHE_DIR = 'cache';
 
 export class ASMail {
 	
-	private uiSide: Duplex = (undefined as any);
 	private keyring: KeyRing = (undefined as any);
 	private address: string = (undefined as any);
-	private getSigner: IGetSigner = (undefined as any);
+	private getSigner: GetSigner = (undefined as any);
 	private inbox: InboxOnServer = (undefined as any);
-	private delivery: DeliveryService = (undefined as any);
+	private delivery: Delivery = (undefined as any);
 	private config: ConfigOfASMailServer = (undefined as any);
-	private proxiedObjs: ProxiedObjGetter = (undefined as any);
 	
-	constructor() {
+	constructor(
+			private cryptor: AsyncSBoxCryptor) {
 		Object.seal(this);
 	}
 	
-	async init(address: string, getSigner: IGetSigner, asmailFS: FS,
+	async init(address: string, getSigner: GetSigner,
+			syncedFS: WritableFS, localFS: WritableFS,
 			getStorages: StorageGetter): Promise<void> {
 		try {
 			this.address = address;
 			this.getSigner = getSigner;
-			let keyringFS = await asmailFS.writableSubRoot(KEYRING_DATA_FOLDER);
-			this.keyring = await makeKeyring(keyringFS);
+			this.keyring = await makeKeyring(
+				await syncedFS.writableSubRoot(KEYRING_DATA_FOLDER));
 			this.config = new ConfigOfASMailServer(this.address, this.getSigner);
 			this.inbox = new InboxOnServer(this.address, this.getSigner,
-				this.keyring, getStorages);
-			this.delivery = new DeliveryService(this.address, this.getSigner,
-				this.keyring, this.config.anonSenderInviteGetter());
+				this.keyring, getStorages, this.cryptor);
+			this.delivery = new Delivery(this.address, this.getSigner,
+				this.keyring, this.config.anonSenderInviteGetter(), this.cryptor);
 			await Promise.all([
 				(async () => {
-					let inboxFS = await asmailFS.writableSubRoot(INBOX_DATA_FOLDER);
-					let inboxDevFS = await makeInboxFS(this.address);
-					let cacheFS = await inboxDevFS.writableSubRoot(CACHE_DIR);
-					let inboxCache = await makeInboxCache(cacheFS);
-					await this.inbox.init(inboxCache, inboxFS);
+					const inboxDevFS = await makeInboxFS(this.address);
+					const cacheFS = await inboxDevFS.writableSubRoot(CACHE_DIR);
+					const inboxCache = await makeInboxCache(cacheFS);
+					await this.inbox.init(inboxCache,
+						await syncedFS.writableSubRoot(INBOX_DATA_FOLDER));
 				})(),
-				(async () => {
-					await this.delivery.init();
-				})(),
-				(async () => {
-					let confFS = await asmailFS.writableSubRoot(CONFIG_DATA_FOLDER);
-					await this.config.init(confFS, new PublishedKeys(this.keyring));
-				})()
+				this.delivery.init(
+					await localFS.writableSubRoot(DELIVERY_DATA_FOLDER)),
+				this.config.init(
+					await syncedFS.writableSubRoot(CONFIG_DATA_FOLDER),
+					new PublishedKeys(this.keyring))
 			]);
-			await asmailFS.close();
+			await syncedFS.close();
+			await localFS.close();
 		} catch (err) {
 			throw errWithCause(err, 'Failed to initialize ASMail');
 		}
 	}
 	
-	attachTo(uiSide: Duplex, proxiedObjs: ProxiedObjGetter): void {
-		this.uiSide = uiSide;
-		this.proxiedObjs = proxiedObjs;
-		this.inbox.attachTo(this.uiSide, this.proxiedObjs.addFS);
-		this.delivery.attachTo(this.uiSide, this.proxiedObjs);
-		this.attachHandlersToUI();
-	}
+	makeASMailCAP = (): Service => {
+		const w: Service = {
+			getUserId: async () => this.address,
+			delivery: this.delivery.wrap(),
+			inbox: this.inbox.wrap()
+		};
+		return Object.freeze(w);
+	};
 	
-	private attachHandlersToUI(): void {
-		let uiReqNames = asmail.uiReqNames;
-		this.uiSide.addHandler(uiReqNames.getUserId,
-			bind(this, this.handleGetUserId));
-	}
-	
-	private async handleGetUserId(): Promise<string> {
-		return this.address;
-	}
-	
-	close(): void {
+	async close(): Promise<void> {
 		this.keyring.saveChanges();
+		await this.keyring.close();
 	}
 	
 }

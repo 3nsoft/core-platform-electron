@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,14 +21,21 @@
 
 import { FileException, makeFileException, Code as excCode }
 	from '../../../lib-common/exceptions/file';
-import { Linkable, LinkParameters, ByteSink, ByteSource } from '../../files';
+import { Linkable, LinkParameters, wrapReadonlyFile,
+	wrapWritableFile }
+	from '../../files';
 import { FileNode, FileLinkParams } from './file-node';
 import { utf8 } from '../../../lib-common/buffer-utils';
-import { Storage, wrapFileImplementation } from './common';
+import { Storage } from './common';
 import { pipe } from '../../../lib-common/byte-streaming/pipe';
+import { bind } from '../../../lib-common/binding';
 
-export type File = web3n.storage.File;
-export type FileStats = web3n.storage.FileStats;
+type ByteSource = web3n.ByteSource;
+type ByteSink = web3n.ByteSink;
+type FileStats = web3n.files.FileStats;
+type File = web3n.files.File;
+type WritableFile = web3n.files.WritableFile;
+type ReadonlyFile = web3n.files.ReadonlyFile;
 
 export async function readBytesFrom(src: ByteSource,
 		start: number|undefined, end: number|undefined):
@@ -37,7 +44,7 @@ export async function readBytesFrom(src: ByteSource,
 		`Parameter start has bad value: ${start}`); }
 	if ((typeof end === 'number') && (end < 0)) { throw new Error(
 		`Parameter end has bad value: ${end}`); }
-	let size = await src.getSize();
+	const size = await src.getSize();
 	if (typeof size !== 'number') { throw new Error(
 		'File size is not known.'); }
 	if (size === 0) { return; }
@@ -51,166 +58,192 @@ export async function readBytesFrom(src: ByteSource,
 		}
 		if (!src.seek) { throw new Error('Byte source is not seekable.'); }
 		await src.seek(start);
-		let bytes = await src.read(end - start);
+		const bytes = await src.read(end - start);
 		return bytes;
 	} else {
-		let bytes = await src.read(undefined);
+		const bytes = await src.read(undefined);
 		return bytes;
 	}
 }
 
-export class FileObject implements File, Linkable {
+export class FileObject implements WritableFile, Linkable {
 
-	public versioned = true;
+	v: V;
 
 	private constructor(public name: string,
 			public isNew: boolean,
-			private node: FileNode | undefined,
-			private makeNode: (() => Promise<FileNode>) | undefined,
+			node: FileNode | undefined,
+			makeOrGetNode: (() => Promise<FileNode>) | undefined,
 			public writable: boolean) {
+		this.v = new V(name, node, makeOrGetNode, writable);
 		Object.seal(this);
 	}
 
-	static makeExisting(node: FileNode, writable: boolean): File {
-		let f = new FileObject(node.name, false, node, undefined, writable);
-		return wrapFileImplementation(f);
+	static makeExisting(node: FileNode, writable: boolean):
+			WritableFile | ReadonlyFile {
+		const f = new FileObject(node.name, false, node, undefined, writable);
+		return (writable ?
+			wrapWritableFile(f) : wrapReadonlyFile(f));
 	}
 
-	static makeForNotExisiting(name: string,
-			makeNode: () => Promise<FileNode>): File {
-		let f = new FileObject(name, true, undefined, makeNode, true);
-		return wrapFileImplementation(f);
+	static makeForNotExisiting(name: string, makeNode: () => Promise<FileNode>):
+			WritableFile {
+		const f = new FileObject(name, true, undefined, makeNode, true);
+		return wrapWritableFile(f);
 	}
 
 	static async makeFileFromLinkParams(storage: Storage,
-			params: LinkParameters<FileLinkParams>): Promise<File> {
-		let node = await FileNode.makeForLinkParams(storage, params.params);
+			params: LinkParameters<FileLinkParams>):
+			Promise<WritableFile | ReadonlyFile> {
+		const node = await FileNode.makeFromLinkParams(storage, params.params);
 		return FileObject.makeExisting(node, !params.readonly);
 	}
 
 	async getLinkParams(): Promise<LinkParameters<FileLinkParams>> {
-		if (!this.node) { throw new Error(
+		if (!this.v.node) { throw new Error(
 			'File does not exist, yet, and cannot be linked.'); }
-		let linkParams = this.node.getParamsForLink();
+		const linkParams = this.v.node.getParamsForLink();
 		linkParams.params.fileName = this.name;
 		linkParams.readonly = !this.writable;
 		return linkParams;
 	}
 
-	async versionedGetByteSink():
-			Promise<{ sink: web3n.ByteSink; version: number; }> {
-		if (!this.node) {
-			this.node = await this.makeNode!();
-			this.makeNode = undefined;
-		}
-		return this.node.writeSink();
+	async stat(): Promise<FileStats> {
+		if (!this.v.node) { throw makeFileException(excCode.notFound, this.name); }
+		const { src } = await this.v.node.readSrc();
+		const stat: FileStats = {
+			size: await src.getSize(),
+			version: this.v.node.version
+		};
+		return stat;
 	}
 
-	async getByteSink(): Promise<web3n.ByteSink> {
-		let { sink } = await this.versionedGetByteSink();
-		return sink;
-	}
-	
-	async versionedGetByteSource():
-			Promise<{ src: web3n.ByteSource; version: number; }> {
-		if (!this.node) { throw makeFileException(excCode.notFound, this.name); }
-		return this.node.readSrc();
-	}
-
-	async getByteSource(): Promise<web3n.ByteSource> {
-		let { src } = await this.versionedGetByteSource();
-		return src;
-	}
-
-	async versionedWriteBytes(bytes: Uint8Array): Promise<number> {
-		if (!this.node) {
-			this.node = await this.makeNode!();
-			this.makeNode = undefined;
-		}
-		return this.node.save(bytes);
-	}
-
-	async writeBytes(bytes: Uint8Array): Promise<void> {
-		await this.versionedWriteBytes(bytes);
-	}
-
-	versionedWriteTxt(txt: string): Promise<number> {
-		let bytes = utf8.pack(txt);
-		return this.versionedWriteBytes(bytes);
-	}
-
-	async writeTxt(txt: string): Promise<void> {
-		await this.versionedWriteTxt(txt);
-	}
-
-	versionedWriteJSON(json: any): Promise<number> {
-		return this.versionedWriteTxt(JSON.stringify(json));
-	}
-
-	async writeJSON(json: any): Promise<void> {
-		await this.versionedWriteJSON(json);
-	}
-
-	async versionedReadBytes(start?: number, end?: number):
-			Promise<{ bytes: Uint8Array|undefined; version: number; }> {
-		let { src, version } = await this.versionedGetByteSource();
-		let bytes = await readBytesFrom(src, start, end);
-		return { bytes, version };
-	}
-	
 	async readBytes(start?: number, end?: number):
 			Promise<Uint8Array|undefined> {
-		let { bytes } = await this.versionedReadBytes(start, end);
+		const { bytes } = await this.v.readBytes(start, end);
 		return bytes;
 	}
 
-	async versionedReadTxt(): Promise<{ txt: string; version: number; }> {
-		let { bytes, version } = await this.versionedReadBytes();
-		let txt = (bytes ? utf8.open(bytes) : '');
-		return { txt, version };
-	}
-
 	async readTxt(): Promise<string> {
-		let { txt } = await this.versionedReadTxt();
+		const { txt } = await this.v.readTxt();
 		return txt;
 	}
 
-	async versionedCopy(file: web3n.files.File): Promise<number> {
-		let { version, sink } = await this.versionedGetByteSink();
-		let src = await file.getByteSource();
-		await pipe(src, sink);
-		return version;
-	}
-
-	async copy(file: web3n.files.File): Promise<void> {
-		let sink = await this.getByteSink();
-		let src = await file.getByteSource();
-		await pipe(src, sink);
-	}
-
-	async versionedReadJSON<T>(): Promise<{ json: T; version: number; }> {
-		let { txt, version } = await this.versionedReadTxt();
-		let json = JSON.parse(txt);
-		return { json, version };
-	}
-
 	async readJSON<T>(): Promise<T> {
-		let { json, version } = await this.versionedReadJSON<T>();
+		const { json } = await this.v.readJSON<T>();
 		return json;
 	}
 
-	async stat(): Promise<FileStats> {
-		if (!this.node) { throw makeFileException(excCode.notFound, this.name); }
-		let { src } = await this.node.readSrc();
-		let stat: FileStats = {
-			size: await src.getSize(),
-			version: this.node.version
-		};
-		return stat;
+	async getByteSource(): Promise<web3n.ByteSource> {
+		const { src } = await this.v.getByteSource();
+		return src;
+	}
+
+	async writeBytes(bytes: Uint8Array): Promise<void> {
+		await this.v.writeBytes(bytes);
+	}
+
+	async writeTxt(txt: string): Promise<void> {
+		await this.v.writeTxt(txt);
+	}
+
+	async writeJSON(json: any): Promise<void> {
+		await this.v.writeJSON(json);
+	}
+
+	async getByteSink(): Promise<web3n.ByteSink> {
+		const { sink } = await this.v.getByteSink();
+		return sink;
+	}
+
+	async copy(file: File): Promise<void> {
+		await this.v.copy(file);
 	}
 
 }
 Object.freeze(FileObject.prototype);
 Object.freeze(FileObject);
+
+type WritableFileVersionedAPI = web3n.files.WritableFileVersionedAPI;
+
+class V implements WritableFileVersionedAPI {
+
+	constructor(public name: string,
+			public node: FileNode | undefined,
+			private makeOrGetNode: (() => Promise<FileNode>) | undefined,
+			public writable: boolean) {
+		Object.seal(this);
+	}
+
+	async getLinkParams(): Promise<LinkParameters<FileLinkParams>> {
+		if (!this.node) { throw new Error(
+			'File does not exist, yet, and cannot be linked.'); }
+		const linkParams = this.node.getParamsForLink();
+		linkParams.params.fileName = this.name;
+		linkParams.readonly = !this.writable;
+		return linkParams;
+	}
+
+	async getByteSink(): Promise<{ sink: web3n.ByteSink; version: number; }> {
+		if (!this.node) {
+			this.node = await this.makeOrGetNode!();
+			this.makeOrGetNode = undefined;
+		}
+		return this.node.writeSink();
+	}
+	
+	async getByteSource(): Promise<{ src: web3n.ByteSource; version: number; }> {
+		if (!this.node) { throw makeFileException(excCode.notFound, this.name); }
+		return this.node.readSrc();
+	}
+
+	async writeBytes(bytes: Uint8Array): Promise<number> {
+		if (!this.node) {
+			this.node = await this.makeOrGetNode!();
+			this.makeOrGetNode = undefined;
+		}
+		return this.node.save(bytes);
+	}
+
+	writeTxt(txt: string): Promise<number> {
+		const bytes = utf8.pack(txt);
+		return this.writeBytes(bytes);
+	}
+
+	writeJSON(json: any): Promise<number> {
+		return this.writeTxt(JSON.stringify(json));
+	}
+
+	async readBytes(start?: number, end?: number):
+			Promise<{ bytes: Uint8Array|undefined; version: number; }> {
+		const { src, version } = await this.getByteSource();
+		const bytes = await readBytesFrom(src, start, end);
+		return { bytes, version };
+	}
+
+	async readTxt(): Promise<{ txt: string; version: number; }> {
+		const { bytes, version } = await this.readBytes();
+		const txt = (bytes ? utf8.open(bytes) : '');
+		return { txt, version };
+	}
+
+	async copy(file: File): Promise<number> {
+		const { version, sink } = await this.getByteSink();
+		const src = (file.v ?
+			(await file.v.getByteSource()).src :
+			await file.getByteSource());
+		await pipe(src, sink);
+		return version;
+	}
+
+	async readJSON<T>(): Promise<{ json: T; version: number; }> {
+		const { txt, version } = await this.readTxt();
+		const json = JSON.parse(txt);
+		return { json, version };
+	}
+
+}
+Object.freeze(V.prototype);
+Object.freeze(V);
 
 Object.freeze(exports);

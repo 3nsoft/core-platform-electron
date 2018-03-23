@@ -14,21 +14,21 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { makeException, doBinaryRequest } from '../xhr-utils';
+import { makeException, NetClient, makeNetClient } from '../electron/net';
 import { mailerIdInfoAt } from '../service-locator';
 import { ServiceUser, ICalcDHSharedKey, LoginCompletion }
 	from '../user-with-pkl-session';
 import { SignedLoad, JsonKey, keyToJson, getKeyCert }
 	from '../../lib-common/jwkeys';
-import { deepEqual } from '../../lib-common/json-equal';
+import { deepEqual } from '../../lib-common/json-utils';
 import { toCanonicalAddress } from '../../lib-common/canonical-address';
 import * as mid from '../../lib-common/mid-sigs-NaCl-Ed';
-import * as random from '../random-node';
+import * as random from '../../lib-common/random-node';
 import * as certProvApi from 
 	'../../lib-common/service-api/mailer-id/provisioning';
-let Uri = require('jsuri');
+import { parse as parseUrl } from 'url';
 
-let DEFAULT_ASSERTION_VALIDITY = 20*60;
+const DEFAULT_ASSERTION_VALIDITY = 20*60;
 
 export interface ProvisioningCompletion {
 	keyParams: any;
@@ -67,8 +67,8 @@ export class MailerIdProvisioner extends ServiceUser {
 	}
 
 	private async setUrlAndDomain(): Promise<void> {
-		let info = await mailerIdInfoAt(this.entryURI);
-		this.midDomain = (new Uri(this.serviceURI)).host();
+		const info = await mailerIdInfoAt(this.net, this.entryURI);
+		this.midDomain = parseUrl(this.serviceURI).hostname!;
 		this.serviceURI = info.provisioning;
 		this.rootCert = info.currentCert;
 	}
@@ -83,11 +83,11 @@ export class MailerIdProvisioner extends ServiceUser {
 	 */
 	private async getCertificates(pkey: JsonKey, duration: number):
 			Promise<void> {
-		let plainReqData: certProvApi.certify.Request = {
+		const plainReqData: certProvApi.certify.Request = {
 			pkey: pkey,
 			duration: duration
 		};
-		let rep = await doBinaryRequest<Uint8Array>({
+		const rep = await this.net.doBinaryRequest<Uint8Array>({
 			url: this.serviceURI + certProvApi.certify.URL_END,
 			method: 'POST',
 			sessionId: this.sessionId,
@@ -106,7 +106,7 @@ export class MailerIdProvisioner extends ServiceUser {
 					throw makeException(rep,
 						'Malformed reply: Certificates are missing.');
 				}
-				let pkeyAndId = mid.relyingParty.verifyChainAndGetUserKey(
+				const pkeyAndId = mid.relyingParty.verifyChainAndGetUserKey(
 					{ user: certs.userCert, prov: certs.provCert,
 						root: this.rootCert }, this.midDomain,
 					getKeyCert(certs.userCert).issuedAt+1);
@@ -114,7 +114,7 @@ export class MailerIdProvisioner extends ServiceUser {
 					throw makeException(rep,
 						'Malformed reply: Certificate is for a wrong address.');
 				}
-				let keyInCert = keyToJson(pkeyAndId.pkey);
+				const keyInCert = keyToJson(pkeyAndId.pkey);
 				if (!deepEqual(keyInCert, pkey)) {
 					throw makeException(rep,
 						'Malformed reply: Certificate is for a wrong key.');
@@ -150,10 +150,10 @@ export class MailerIdProvisioner extends ServiceUser {
 	 */
 	async provisionSigner(keyId: string|undefined):
 			Promise<ProvisioningCompletion> {
-		let pair = mid.user.generateSigningKeyPair(random.bytes);
+		const pair = mid.user.generateSigningKeyPair(random.bytesSync);
 		await this.setUrlAndDomain();
-		let login = await this.super_login(keyId);
-		let completion = async (
+		const login = await this.super_login(keyId);
+		const completion = async (
 				dhsharedKeyCalc: ICalcDHSharedKey,
 				certDuration: number,
 				assertDuration = DEFAULT_ASSERTION_VALIDITY) => {

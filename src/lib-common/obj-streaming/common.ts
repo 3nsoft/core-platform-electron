@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016 - 2017 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -25,15 +25,11 @@ import { ByteSink, ByteSource } from '../byte-streaming/common';
  * all methods must be functions, already bound to some state/closure.
  */
 export interface ObjSource {
-	/**
-	 * @return a version of an object, associated with this byte source.
-	 * Rerturned value can be undefined, if a byte source does not know its
-	 * object's version, yet.
-	 */
-	getObjVersion(): number|undefined;
+	
+	version: number;
 	
 	/**
-	 * @return a promise, resolvable to a complete header byte array.
+	 * This returns a promise, resolvable to a complete header byte array.
 	 */
 	readHeader(): Promise<Uint8Array>;
 	
@@ -41,8 +37,8 @@ export interface ObjSource {
 }
 
 export function wrapObjSourceImplementation(impl: ObjSource): ObjSource {
-	let w: ObjSource = {
-		getObjVersion: bind(impl, impl.getObjVersion),
+	const w: ObjSource = {
+		version: impl.version,
 		readHeader: bind(impl, impl.readHeader),
 		segSrc: impl.segSrc
 	};
@@ -58,12 +54,7 @@ export function wrapObjSourceImplementation(impl: ObjSource): ObjSource {
  */
 export interface ObjSink {
 	
-	/**
-	 * The method sets object's version.
-	 * Do not call this method on versionless objects.
-	 * @param v is object's version
-	 */
-	setObjVersion(v: number): void;
+	version: number;
 	
 	/**
 	 * This method writes a whole of object header in one call.
@@ -78,8 +69,8 @@ export interface ObjSink {
 }
 
 export function wrapObjSinkImplementation(impl: ObjSink): ObjSink {
-	let w: ObjSink = {
-		setObjVersion: bind(impl, impl.setObjVersion),
+	const w: ObjSink = {
+		version: impl.version,
 		writeHeader: bind(impl, impl.writeHeader),
 		segSink: impl.segSink
 	};

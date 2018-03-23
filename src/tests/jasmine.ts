@@ -14,12 +14,14 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-// NOTE: due to bad definition file, typescript below is not very type-strict.
+// NOTE: due to bad definition file, typescript below is not 100% type-strict.
 
-let jas = new (require('jasmine'))();
+import { stringifyErr } from '../lib-common/exceptions/error';
+
+const jas = new (require('jasmine'))();
 
 jas.loadConfig({
-	spec_dir: 'build/tests',
+	spec_dir: 'build/all/tests',
 	spec_files: [
 		'units/*.js',
 		'core/startup/*.js',
@@ -29,6 +31,21 @@ jas.loadConfig({
 
 jas.configureDefaultReporter({
 	showColors: true
-})
+});
+
+const unhandledRejections = new WeakMap();
+process.on('unhandledRejection', (reason, p) => {
+	unhandledRejections.set(p, reason);
+console.error(`
+Got an unhandled rejection:
+${stringifyErr(reason)}`);
+});
+process.on('rejectionHandled', (p) => {
+const reason = unhandledRejections.get(p);
+console.error(`
+Handling previously unhandled rejection:
+${stringifyErr(reason)}`);
+	unhandledRejections.delete(p);
+});
 
 jas.execute();

@@ -16,6 +16,7 @@
 
 import { itAsync } from './async-jasmine';
 import { AppRunner } from './app-runner';
+import { SpectronClient } from 'spectron';
 
 declare var w3n: {
 	signUp: web3n.startup.SignUpService;
@@ -31,7 +32,7 @@ export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 		expect(flag).toBeFalsy();
 		
 		// focus on a new window
-		await (app().c as any).windowByIndex(0);
+		await app().c.windowByIndex(0);
 
 		// check in the new window
 		let t: { tIn: string; tUp: string; } = (await app().c.execute(function() {
@@ -47,7 +48,7 @@ export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 
 declare var cExpect: typeof expect;
 
-export async function setKeyDerivNotifsChecker(c: WebdriverIO.Client<any>):
+export async function setKeyDerivNotifsChecker(c: SpectronClient):
 		Promise<void> {
 	await c.executeAsync(async function(done) {
 		(window as any).checkKeyDerivNotifications = (notifPerc: number[]) => {

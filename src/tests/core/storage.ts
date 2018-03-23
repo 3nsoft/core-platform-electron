@@ -21,20 +21,21 @@ import { setupWithUsers, checkRemoteExpectations }
 import { AppRunner } from '../libs-for-tests/app-runner';
 import { fsSpecsForWebDrvCtx } from '../libs-for-tests/spec-module';
 import { resolve } from 'path';
+import { SpectronClient } from 'spectron';
 
 declare var w3n: {
 	mail: web3n.asmail.Service;
 	storage: web3n.storage.Service;
 	device: {
-		openFileDialog: typeof web3n.device.files.openFileDialog;
-		saveFileDialog: typeof web3n.device.files.saveFileDialog;
+		openFileDialog: web3n.device.files.OpenFileDialog;
+		saveFileDialog: web3n.device.files.SaveFileDialog;
 	};
 }
 declare var cExpect: typeof expect;
 declare var cFail: typeof fail;
 declare function collectAllExpectations(): void;
 
-async function makeTestLocalFSIn(client: WebdriverIO.Client<any>,
+async function makeTestLocalFSIn(client: SpectronClient,
 		varName: string|null = null): Promise<void> {
 	await <any> client.executeAsync(async function(varName: string|null, done) {
 		if (varName === null) { varName = 'testFS'; }
@@ -44,7 +45,7 @@ async function makeTestLocalFSIn(client: WebdriverIO.Client<any>,
 	}, varName);
 }
 
-async function makeTestSyncedFSIn(client: WebdriverIO.Client<any>,
+async function makeTestSyncedFSIn(client: SpectronClient,
 		varName: string|null = null): Promise<void> {
 	await <any> client.executeAsync(async function(varName: string|null, done) {
 		if (varName === null) { varName = 'testFS'; }
@@ -54,8 +55,7 @@ async function makeTestSyncedFSIn(client: WebdriverIO.Client<any>,
 	}, varName);
 }
 
-async function makeUtilFuncsIn(client: WebdriverIO.Client<any>):
-		Promise<void> {
+async function makeUtilFuncsIn(client: SpectronClient): Promise<void> {
 	await <any> client.executeAsync(async function(done) {
 		(<any> window).testRandomBytes = (n: number): Uint8Array => {
 			let arr = new Uint8Array(n);
@@ -106,11 +106,10 @@ async function makeUtilFuncsIn(client: WebdriverIO.Client<any>):
 	});
 }
 
-async function clearTestFS(client: WebdriverIO.Client<any>,
-		varName: string|null = null): Promise<void> {
-	await client.executeAsync(async function(varName: string|null, done) {
-		if (varName === null) { varName = 'testFS'; }
-		let testFS: web3n.storage.FS = (window as any)[varName];
+async function clearTestFS(client: SpectronClient, varName = 'testFS'):	
+		Promise<void> {
+	await client.executeAsync(async function(varName: string, done) {
+		let testFS: web3n.files.WritableFS = (window as any)[varName];
 		try {
 			let items = await testFS.listFolder('');
 			let delTasks: Promise<void>[] = [];
@@ -140,10 +139,6 @@ describe('3NStorage', () => {
 
 	beforeAllAsync(async () => {
 		app = s.apps.get(s.users[0].userId)!;
-	});
-
-	afterEachAsync(async () => {
-		await s.displayStdOutLogs();
 	});
 
 	itAsync('api object is injected', async () => {
@@ -194,7 +189,7 @@ describe('3NStorage', () => {
 			let appDomain = allowedAppFS[0];
 			let exps = (await app.c.executeAsync(
 			async function(appDomain, done) {
-				let promises: Promise<web3n.storage.FS>[] = [];
+				let promises: Promise<web3n.files.FS>[] = [];
 				for (let i=0; i<10; i+=1) {
 					let promise = w3n.storage.getAppSyncedFS(appDomain);
 					promises.push(promise);
@@ -255,7 +250,7 @@ describe('3NStorage', () => {
 			let appDomain = allowedAppFS[0];
 			let exps = (await app.c.executeAsync(
 			async function(appDomain, done) {
-				let promises: Promise<web3n.storage.FS>[] = [];
+				let promises: Promise<web3n.files.FS>[] = [];
 				for (let i=0; i<10; i+=1) {
 					let promise = w3n.storage.getAppLocalFS(appDomain);
 					promises.push(promise);
@@ -275,7 +270,7 @@ describe('3NStorage', () => {
 
 	});
 
-	describe('local FS is web3n.files.FS', () => {
+	describe('local FS is a web3n.files.WritableFS', () => {
 
 		beforeAllAsync(async () => {
 			await makeTestLocalFSIn(app.c);
@@ -288,30 +283,12 @@ describe('3NStorage', () => {
 
 		fsSpecsForWebDrvCtx(
 			() => app.c,
-			resolve(__dirname, '../shared-checks/fs'),
-			'storage-fs');
+			resolve(__dirname, '../fs-checks/not-versioned'),
+			'xsp-backed');
 
 	});
 
-	describe('synced FS is web3n.files.FS', () => {
-
-		beforeAllAsync(async () => {
-			await makeTestSyncedFSIn(app.c);
-			await makeUtilFuncsIn(app.c);
-		});
-
-		afterEachAsync(async () => {
-			await clearTestFS(app.c);
-		});
-
-		fsSpecsForWebDrvCtx(
-			() => app.c,
-			resolve(__dirname, '../shared-checks/fs'),
-			'storage-fs');
-
-	});
-
-	describe('local FS is web3n.storage.FS', () => {
+	describe('local FS is a web3n.files.WritableFS with versioned API', () => {
 
 		beforeAllAsync(async () => {
 			await makeTestLocalFSIn(app.c);
@@ -324,11 +301,11 @@ describe('3NStorage', () => {
 
 		fsSpecsForWebDrvCtx(
 			() => app.c,
-			resolve(__dirname, './storage/fs'));
+			resolve(__dirname, '../fs-checks/versioned'));
 
 	});
 
-	describe('synced FS is web3n.storage.FS', () => {
+	describe('synced FS is a web3n.files.WritableFS', () => {
 
 		beforeAllAsync(async () => {
 			await makeTestSyncedFSIn(app.c);
@@ -341,7 +318,25 @@ describe('3NStorage', () => {
 
 		fsSpecsForWebDrvCtx(
 			() => app.c,
-			resolve(__dirname, './storage/fs'));
+			resolve(__dirname, '../fs-checks/not-versioned'),
+			'xsp-backed');
+
+	});
+
+	describe('synced FS is a web3n.files.WritableFS with versioned API', () => {
+
+		beforeAllAsync(async () => {
+			await makeTestSyncedFSIn(app.c);
+			await makeUtilFuncsIn(app.c);
+		});
+
+		afterEachAsync(async () => {
+			await clearTestFS(app.c);
+		});
+
+		fsSpecsForWebDrvCtx(
+			() => app.c,
+			resolve(__dirname, '../fs-checks/versioned'));
 
 	});
 
@@ -363,7 +358,7 @@ describe('3NStorage', () => {
 
 		fsSpecsForWebDrvCtx(
 			() => app.c,
-			resolve(__dirname, './storage/local-n-synced'));
+			resolve(__dirname, '../fs-checks/local-to-synced-linking'));
 
 	});
 

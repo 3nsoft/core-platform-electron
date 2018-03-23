@@ -21,9 +21,9 @@
 import { JWKeyPair, PID_LENGTH, extractPKeyBytes, generateKeyPair,
 	extractKeyBytes, MsgKeyRole, extractSKeyBytes } from './common';
 import { JsonKey, JsonKeyShort } from '../../../lib-common/jwkeys';
-import { SuggestedNextKeyPair } from '../msg';
+import { SuggestedNextKeyPair } from '../msg/opener';
 import { Ring } from './ring';
-import * as random from '../../random-node';
+import * as random from '../../../lib-common/random-node';
 import { box, arrays } from 'ecma-nacl';
 import { base64 } from '../../../lib-common/buffer-utils';
 import { errWithCause } from '../../../lib-common/exceptions/error';
@@ -45,18 +45,18 @@ export interface SendingPair {
 }
 
 function generatePids(): string[] {
-	let pids: string[] = [];
+	const pids: string[] = [];
 	for (let i=0; i<5; i+=1) {
-		pids[i] = random.stringOfB64Chars(PID_LENGTH);
+		pids[i] = random.stringOfB64UrlSafeCharsSync(PID_LENGTH);
 	}
 	return pids;
 }
 
 function calcMsgMasterKey(skey: JsonKey, pkey: JsonKeyShort): string {
-	let sk = extractSKeyBytes(skey);
-	let pk = extractKeyBytes(pkey);
-	let dhShared = box.calc_dhshared_key(pk, sk);
-	let mmKey = base64.pack(dhShared);
+	const sk = extractSKeyBytes(skey);
+	const pk = extractKeyBytes(pkey);
+	const dhShared = box.calc_dhshared_key(pk, sk);
+	const mmKey = base64.pack(dhShared);
 	arrays.wipe(sk, pk, dhShared);
 	return mmKey;
 }
@@ -115,9 +115,6 @@ export class CorrespondentKeys {
 	get invite(): string|null {
 		return this.keys.inviteForSending;
 	}
-	set invite(invite: string|null) {
-		this.keys.inviteForSending = invite;
-	}
 	
 	/**
 	 * @param keyring in which these keys are hanging.
@@ -143,7 +140,7 @@ export class CorrespondentKeys {
 				}
 			};
 		} else {
-			let data: CorrespondentKeysJSON = JSON.parse(serialData!);
+			const data: CorrespondentKeysJSON = JSON.parse(serialData!);
 			// TODO checks of deserialized json data
 			
 			this.keys = data;
@@ -163,10 +160,10 @@ export class CorrespondentKeys {
 					this.keys.introKey.kid, this.correspondent);
 		}
 		// index key pairs
-		let pairs = [ this.keys.receptionPairs.suggested,
+		const pairs = [ this.keys.receptionPairs.suggested,
 	    	          this.keys.receptionPairs.inUse,
 	        	      this.keys.receptionPairs.old ];
-		let email = this.correspondent;
+		const email = this.correspondent;
 		pairs.forEach((pair) => {
 			if (!pair) { return; }
 			pair.pids.forEach((pid) => {
@@ -221,8 +218,8 @@ export class CorrespondentKeys {
 		
 		// reuse previously suggested pair
 		if (this.keys.receptionPairs.suggested) {
-			let p = this.keys.receptionPairs.suggested;
-			let nextKeyPair: SuggestedNextKeyPair = {
+			const p = this.keys.receptionPairs.suggested;
+			const nextKeyPair: SuggestedNextKeyPair = {
 				pids: p.pids,
 				senderKid: p.senderPKey.kid,
 				recipientPKey: p.recipientKey.pkey
@@ -238,10 +235,10 @@ export class CorrespondentKeys {
 		// generate new suggested pair
 		if (!this.keys.sendingPair) { throw new Error(
 				"Sending pair should be set before calling this function."); }
-		let corrPKey = this.keys.sendingPair.recipientPKey;
-		let recipientKey = generateKeyPair();
-		let msgMasterKey = calcMsgMasterKey(recipientKey.skey, corrPKey);
-		let pair: ReceptionPair = {
+		const corrPKey = this.keys.sendingPair.recipientPKey;
+		const recipientKey = generateKeyPair();
+		const msgMasterKey = calcMsgMasterKey(recipientKey.skey, corrPKey);
+		const pair: ReceptionPair = {
 				pids: generatePids(),
 				recipientKey,
 				senderPKey: corrPKey,
@@ -256,7 +253,7 @@ export class CorrespondentKeys {
 		this.keyring.pairIdToEmailMap.addPairs(pair.pids, this.correspondent);
 		this.keyring.saveChanges();
 
-		let nextKeyPair: SuggestedNextKeyPair = {
+		const nextKeyPair: SuggestedNextKeyPair = {
 			pids: pair.pids,
 			senderKid: pair.senderPKey.kid,
 			recipientPKey: pair.recipientKey.pkey
@@ -278,10 +275,10 @@ export class CorrespondentKeys {
 	markPairAsInUse(pid: string): void {
 		if (!this.keys.receptionPairs.suggested ||
 			(this.keys.receptionPairs.suggested.pids.indexOf(pid) < 0)) { return; }
-		let mp = this.keys.receptionPairs.inUse;
+		const mp = this.keys.receptionPairs.inUse;
 		this.keys.receptionPairs.inUse = this.keys.receptionPairs.suggested;
 		if (mp) {
-			let dp = this.keys.receptionPairs.old;
+			const dp = this.keys.receptionPairs.old;
 			this.keys.receptionPairs.old = mp;
 			if (dp) {
 				dp.pids.forEach((pid) => {
@@ -298,18 +295,18 @@ export class CorrespondentKeys {
 	 * @return a key for receiving, corresponding to given key id.
 	 */
 	private findReceptionKey(kid: string): JWKeyPair {
-		for (let fieldName of Object.keys(this.keys.receptionPairs)) {
-			let rp: ReceptionPair = this.keys.receptionPairs[fieldName];
+		for (const fieldName of Object.keys(this.keys.receptionPairs)) {
+			const rp: ReceptionPair = this.keys.receptionPairs[fieldName];
 			if (!rp) { continue; }
 			if (rp.recipientKey.skey.kid === kid) {
 				return rp.recipientKey;
 			}
 		}
-		let keyInfo = this.keyring.introKeys.findKey(kid);
+		const keyInfo = this.keyring.introKeys.findKey(kid);
 		if (keyInfo) {
 			return keyInfo.pair;
 		} else {
-			let err = new Error("Key cannot be found");
+			const err = new Error("Key cannot be found");
 			(<any> err).unknownKid = true;
 			throw err;
 		}
@@ -322,9 +319,14 @@ export class CorrespondentKeys {
 	 */
 	setSendingPair(pair: SuggestedNextKeyPair, timestamp: number): void {
 		if (this.keys.sendingPairTS >= timestamp) { return; }
-		let senderKey = this.findReceptionKey(pair.senderKid);
+		if (this.keys.sendingPair &&
+				(this.keys.sendingPair.recipientPKey.k === pair.recipientPKey.k) &&
+				(this.keys.sendingPair.senderKey.pkey.kid === pair.senderKid)) {
+			return;
+		}
+		const senderKey = this.findReceptionKey(pair.senderKid);
 		try {
-			let msgMasterKey = calcMsgMasterKey(
+			const msgMasterKey = calcMsgMasterKey(
 				senderKey.skey, pair.recipientPKey);
 			this.keys.sendingPair = {
 					pids: pair.pids,
@@ -348,7 +350,7 @@ export class CorrespondentKeys {
 	 */
 	getReceivingPair(pid: string):
 			{ pair: ReceptionPair; role: MsgKeyRole; } | undefined {
-		let pairs = this.keys.receptionPairs;
+		const pairs = this.keys.receptionPairs;
 		if (pairs.suggested && (pairs.suggested.pids.indexOf(pid) >= 0)) {
 			return {
 				pair: pairs.suggested,
@@ -375,11 +377,11 @@ export class CorrespondentKeys {
 	 */
 	getSendingPair(corrIntroKey?: JsonKey): SendingPair {
 		if (this.keys.sendingPair) { return this.keys.sendingPair; }
-		let senderKey = generateKeyPair();
-		let recipientPKey = (corrIntroKey ? corrIntroKey : this.keys.introKey);
+		const senderKey = generateKeyPair();
+		const recipientPKey = (corrIntroKey ? corrIntroKey : this.keys.introKey);
 		if (!recipientPKey) { throw new Error("Introductory key for "+
 			this.correspondent+" is neither given, nor present in the ring."); }
-		let msgMasterKey = calcMsgMasterKey(senderKey.skey, recipientPKey);
+		const msgMasterKey = calcMsgMasterKey(senderKey.skey, recipientPKey);
 		this.keys.sendingPair = {
 				pids: generatePids(),
 				recipientPKey: recipientPKey,

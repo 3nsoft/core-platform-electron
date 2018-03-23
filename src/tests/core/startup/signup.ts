@@ -16,8 +16,7 @@
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
 import { minimalSetup } from '../../libs-for-tests/setups';
-import { setAwaiterJS6InClient, setRemoteJasmineInClient,
-	checkRemoteExpectations }
+import { setRemoteJasmineInClient, checkRemoteExpectations }
 	from '../../libs-for-tests/remote-js-utils';
 import { sleep } from '../../../lib-common/processes';
 import { checkSecondWindow, setKeyDerivNotifsChecker }
@@ -39,7 +38,6 @@ describe('signUp process', () => {
 	let s = minimalSetup();
 
 	beforeAllAsync(async () => {
-		await setAwaiterJS6InClient(s.app.c);
 		await setRemoteJasmineInClient(s.app.c);
 		await setKeyDerivNotifsChecker(s.app.c);
 	});
@@ -66,7 +64,7 @@ describe('signUp process', () => {
 	});
 
 	itAsync('creates User parameters', async () => {
-		(s.c as any).timeouts('script', 59000);
+		s.c.timeouts('script', 59000);
 		let exps = (await s.c.executeAsync(async function(
 				pass: string, done: Function) {
 			let notifications: number[] = [];
@@ -79,7 +77,7 @@ describe('signUp process', () => {
 			}
 			done(collectAllExpectations());
 		}, pass)).value;
-		(s.c as any).timeouts('script', 5000);
+		s.c.timeouts('script', 5000);
 		checkRemoteExpectations(exps);
 	}, 60000);
 
