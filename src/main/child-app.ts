@@ -23,7 +23,6 @@ import { makeRPCLink } from '../lib-common/apps-rpc/core-side';
 type ChildWindow = web3n.ui.ChildWindow;
 type OpenChildAppWindow = web3n.ui.OpenChildWindow;
 type RPC = web3n.rpc.RPC;
-type FS = web3n.files.FS;
 type W3N = web3n.ui.W3N;
 
 export interface ChildOpener {

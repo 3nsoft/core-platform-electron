@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,12 +16,8 @@
 
 import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
-type FileException = web3n.files.FileException;
 declare var syncedTestFS: web3n.files.WritableFS;
 declare var localTestFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.link, when linking from local into synced storage,',
@@ -29,90 +25,72 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'links readonly file' };
-it.func = async function(done: Function) {
-	try {
-		let original = 'Should I be at BlackHat conference or working?';
-		let fName = 'file1';
-		await syncedTestFS.writeTxtFile(fName, original, true);
-		let file = await syncedTestFS.readonlyFile(fName);
+it.func = async function() {
+	let original = 'Should I be at BlackHat conference or working?';
+	let fName = 'file1';
+	await syncedTestFS.writeTxtFile(fName, original, true);
+	let file = await syncedTestFS.readonlyFile(fName);
 
-		let linkPath = 'link1';
-		await localTestFS.link(linkPath, file);
+	let linkPath = 'link1';
+	await localTestFS.link(linkPath, file);
 
-		let link = await localTestFS.readLink(linkPath);
-		cExpect(link.isFile).toBe(true, 'this link should be for a file');
-		cExpect(link.readonly).toBe(true, 'this link should be readonly');
+	let link = await localTestFS.readLink(linkPath);
+	expect(link.isFile).toBe(true, 'this link should be for a file');
+	expect(link.readonly).toBe(true, 'this link should be readonly');
 
-		file = (await link.target()) as web3n.files.ReadonlyFile;
-		cExpect(!!file).toBe(true, 'target should be instantiated');
-		cExpect(await file.readTxt()).toBe(original);
-		cExpect(file.writable).toBe(false);
-
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	file = (await link.target()) as web3n.files.ReadonlyFile;
+	expect(!!file).toBe(true, 'target should be instantiated');
+	expect(await file.readTxt()).toBe(original);
+	expect(file.writable).toBe(false);
 };
 it.numOfExpects = 5;
 specs.its.push(it);
 
 it = { expectation: 'links writable file' };
-it.func = async function(done: Function) {
-	try {
-		let original = 'Should I be at BlackHat conference or working?';
-		let fName = 'file1';
-		await syncedTestFS.writeTxtFile(fName, original, true);
-		let file = await syncedTestFS.writableFile(fName);
+it.func = async function() {
+	let original = 'Should I be at BlackHat conference or working?';
+	let fName = 'file1';
+	await syncedTestFS.writeTxtFile(fName, original, true);
+	let file = await syncedTestFS.writableFile(fName);
 
-		let linkPath = 'link1';
-		await localTestFS.link(linkPath, file);
+	let linkPath = 'link1';
+	await localTestFS.link(linkPath, file);
 
-		let link = await localTestFS.readLink(linkPath);
-		cExpect(link.isFile).toBe(true, 'this link should be for a file');
-		cExpect(link.readonly).toBe(false, 'this link should be writable');
+	let link = await localTestFS.readLink(linkPath);
+	expect(link.isFile).toBe(true, 'this link should be for a file');
+	expect(link.readonly).toBe(false, 'this link should be writable');
 
-		file = (await link.target()) as web3n.files.WritableFile;
-		cExpect(!!file).toBe(true, 'target should be instantiated');
-		cExpect(await file.readTxt()).toBe(original);
-		let newTxt = 'I better work. A-a-a!!!';
-		await file.writeTxt(newTxt);
-		cExpect(await file.readTxt()).toBe(newTxt);
-
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	file = (await link.target()) as web3n.files.WritableFile;
+	expect(!!file).toBe(true, 'target should be instantiated');
+	expect(await file.readTxt()).toBe(original);
+	let newTxt = 'I better work. A-a-a!!!';
+	await file.writeTxt(newTxt);
+	expect(await file.readTxt()).toBe(newTxt);
 };
 it.numOfExpects = 5;
 specs.its.push(it);
 
 it = { expectation: 'links writable folder' };
-it.func = async function(done: Function) {
-	try {
-		let original = 'Should I be at BlackHat conference or working?';
-		let folderName = 'folder1';
-		let fName = 'file1';
-		await syncedTestFS.writeTxtFile(`${folderName}/${fName}`, original, true);
-		let folder = await syncedTestFS.writableSubRoot(folderName);
+it.func = async function() {
+	let original = 'Should I be at BlackHat conference or working?';
+	let folderName = 'folder1';
+	let fName = 'file1';
+	await syncedTestFS.writeTxtFile(`${folderName}/${fName}`, original, true);
+	let folder = await syncedTestFS.writableSubRoot(folderName);
 
-		let linkPath = 'link1';
-		await localTestFS.link(linkPath, folder);
+	let linkPath = 'link1';
+	await localTestFS.link(linkPath, folder);
 
-		let link = await localTestFS.readLink(linkPath);
-		cExpect(link.isFolder).toBe(true, 'this link should be for a folder');
-		cExpect(link.readonly).toBe(false, 'this link should be writable');
+	let link = await localTestFS.readLink(linkPath);
+	expect(link.isFolder).toBe(true, 'this link should be for a folder');
+	expect(link.readonly).toBe(false, 'this link should be writable');
 
-		folder = (await link.target()) as web3n.files.WritableFS;
-		cExpect(!!folder).toBe(true, 'target should be instantiated');
-		cExpect(await folder.readTxtFile(fName)).toBe(original);
-		let newTxt = 'I better work. A-a-a!!!';
-		await folder.writeTxtFile(fName, newTxt);
-		cExpect(await folder.readTxtFile(fName)).toBe(newTxt);
-
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	folder = (await link.target()) as web3n.files.WritableFS;
+	expect(!!folder).toBe(true, 'target should be instantiated');
+	expect(await folder.readTxtFile(fName)).toBe(original);
+	let newTxt = 'I better work. A-a-a!!!';
+	await folder.writeTxtFile(fName, newTxt);
+	expect(await folder.readTxtFile(fName)).toBe(newTxt);
 };
 it.numOfExpects = 5;
 specs.its.push(it);

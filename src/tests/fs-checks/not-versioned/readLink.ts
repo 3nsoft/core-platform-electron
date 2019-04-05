@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readLink',
@@ -28,21 +25,15 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'cannot read non-existing link' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let fName = 'non-existing-link';
 	try {
-		let fName = 'non-existing-link';
-		try {
-			await testFS.readLink(fName)
-			cFail('reading non-existing link must fail');
-		} catch (exc) {
-			cExpect((exc as FileException).notFound).toBe(true);
-			if (!exc.notFound) { throw exc; }
-		}
-		
-	} catch (err) {
-		cFail(err);
+		await testFS.readLink(fName)
+		fail('reading non-existing link must fail');
+	} catch (exc) {
+		expect((exc as FileException).notFound).toBe(true);
+		if (!exc.notFound) { throw exc; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 1;
 specs.its.push(it);

@@ -14,7 +14,7 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { Subject, Observable, Subscription } from 'rxjs';
+import { Subject, Observable } from 'rxjs';
 import { SyncProc } from './sync';
 import { ObjId, LocalObjVersions } from '../files/objs';
 import { StorageOwner } from '../../../../lib-client/3nstorage/service';
@@ -101,12 +101,19 @@ export class SyncQueue {
 		this.sync = new SyncProc(remoteStorage, objId, this.files, fsNode,
 			bind(this, this.unshiftBuffer));
 
-		this.processingBufBacklog = this.sync.idle$
-		.flatMap(() => this.waitForOnline(), 1)
-		.subscribe(() => this.giveNextFromBufToSync());
+		// XXX subscriptions in following processes are newer unsubscribe.
+		// Is this OK? May be process run as long as program runs.
+		this.startProcessingIncomingChanges();
+		this.startProcessingBufferBacklog();
 
 		this.initFromFileProc = this.initFromFile();
 		Object.seal(this);
+	}
+
+	private startProcessingBufferBacklog() {
+		this.sync.idle$
+		.flatMap(() => this.waitForOnline(), 1)
+		.subscribe(() => this.giveNextFromBufToSync());
 	}
 
 	get isEmpty(): boolean {
@@ -117,18 +124,20 @@ export class SyncQueue {
 
 	private newChanges = new Subject<ChangeToSync>();
 
-	private processingIncomingChanges = (this.newChanges.asObservable()
-	.flatMap(async c => {
-		if (c.type === 'save-version') {
-			return toCompleteVersion(c);
-		} else {
-			return c;
-		}
-	}, 1) as Observable<Changes>)
-	.subscribe(c => {
-		if (!c) { return; }
-		this.startOrBuf(c);
-	});
+	private startProcessingIncomingChanges(): void {
+		(this.newChanges.asObservable()
+		.flatMap(async c => {
+			if (c.type === 'save-version') {
+				return toCompleteVersion(c);
+			} else {
+				return c;
+			}
+		}, 1) as Observable<Changes>)
+		.subscribe(c => {
+			if (!c) { return; }
+			this.startOrBuf(c);
+		});
+	}
 
 	private startOrBuf(c: Changes): void {
 		if (this.sync.isIdle) {
@@ -137,8 +146,6 @@ export class SyncQueue {
 			this.addToBuf(c);
 		}
 	}
-
-	private processingBufBacklog: Subscription;
 
 	private giveNextFromBufToSync(): void {
 		if (this.initFromFileProc) { return; }

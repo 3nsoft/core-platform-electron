@@ -18,8 +18,6 @@
  * This file contains functionality, used inside keyring.
  */
 
-import { Ring } from './ring';
-
 /**
  * This is a one-to-many, one way map from string ids to string emails in a
  * canonical form.
@@ -54,7 +52,7 @@ export class IdToEmailMap {
 	addPair(id: string, email: string): boolean {
 		const emails = this.idToEmail.get(id);
 		if (emails) {
-			if (emails.indexOf(email) >= 0) { return false; }
+			if (emails.includes(email)) { return false; }
 			emails.push(email);
 		} else {
 			this.idToEmail.set(id, [ email ]);

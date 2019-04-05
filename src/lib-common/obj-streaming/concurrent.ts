@@ -18,7 +18,6 @@ import { ObjSink, ObjSource } from './common';
 import { syncWrapByteSource, syncWrapByteSink }
 	from '../byte-streaming/concurrent';
 import { SingleProc } from '../processes';
-import { bind } from '../binding';
 
 export function syncWrapObjSource(src: ObjSource,
 		readingProc = new SingleProc()): ObjSource {

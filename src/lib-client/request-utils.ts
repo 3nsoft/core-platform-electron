@@ -20,7 +20,7 @@ import { BytesFIFOBuffer } from '../lib-common/byte-streaming/common';
 import * as https from 'https';
 import { IncomingMessage, IncomingHttpHeaders, ClientRequest } from 'http';
 import { parse as parseUrl } from 'url';
-import { Observable, Subject } from 'rxjs';
+import { Observable } from 'rxjs';
 import { toBuffer, utf8 } from '../lib-common/buffer-utils';
 import { defer } from '../lib-common/processes';
 import { stringifyErr } from '../lib-common/exceptions/error';
@@ -140,12 +140,6 @@ export function formHttpsReqOpts(opts: RequestOpts, contentType?: ContentType,
 	}
 	return netReqOpts;
 }
-
-/**
- * This is timeout in milliseconds before response object appears, which should
- * be right when server sends reply headers.
- */
-const DEFAULT_TIMEOUT = 10000;
 
 function attachRequestReaders(clReq: ClientRequest, opts: RequestOpts):
 		Promise<{ res: IncomingMessage, resBody: Uint8Array|undefined }> {

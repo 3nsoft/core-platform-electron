@@ -15,8 +15,6 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { getASMailServiceFor } from '../../../lib-client/service-locator';
-import { KeyRing } from '../keyring';
-import { GetSigner } from '../../id-manager';
 import { bind } from '../../../lib-common/binding';
 import { FileException, ensureCorrectFS }
 	from '../../../lib-common/exceptions/file';
@@ -27,7 +25,7 @@ import { OutgoingMessage, DeliveryProgress, Attachments,
 	from './common';
 import { copy as jsonCopy } from '../../../lib-common/json-utils';
 import { logError, logWarning } from '../../../lib-client/logging/log-to-file';
-import { AsyncSBoxCryptor } from 'xsp-files';
+import { Observer as RxObserver } from 'rxjs';
 
 type WritableFS = web3n.files.WritableFS;
 type DeliveryService = web3n.asmail.DeliveryService;
@@ -42,18 +40,7 @@ function idToMsgFolder(id: string): string {
 	return `${MSGS_FOLDER}/${id}`;
 }
 
-function checkIfAllRecipientsDone(progress: DeliveryProgress): boolean {
-	for (const recipient of Object.keys(progress.recipients)) {
-		const recInfo = progress.recipients[recipient];
-		if (!recInfo.done) { return false; }
-	}
-	return true;
-}
-
 export class Delivery {
-
-	private r: ResourcesForSending;
-	private fs: WritableFS = (undefined as any);
 
 	/**
 	 * This is a container for all messages, added for delivery.
@@ -71,18 +58,20 @@ export class Delivery {
 	 */
 	private queuedDelivery: Msg[] = [];
 
-	constructor(address: string, getSigner: GetSigner, keyring: KeyRing,
-			invitesForAnonReplies: (address: string) => string,
-			cryptor: AsyncSBoxCryptor) {
-		this.r = new ResourcesForSending(
-			address, getSigner, keyring, invitesForAnonReplies, cryptor);
+	private constructor(
+		private fs: WritableFS,
+		private r: ResourcesForSending
+	) {
+		ensureCorrectFS(fs, 'local', true);
+		Object.freeze(this.r);
 		Object.seal(this);
 	}
 	
-	async init(fs: WritableFS): Promise<void> {
-		ensureCorrectFS(fs, 'local', true);
-		this.fs = fs;
-		await this.restartDeliveryOfMsgsAtStartup();
+	static async makeAndStart(fs: WritableFS, r: ResourcesForSending):
+			Promise<Delivery> {
+		const delivery = new Delivery(fs, r);
+		await delivery.restartDeliveryOfMsgsAtStartup();
+		return delivery;
 	}
 
 	wrap(): DeliveryService {
@@ -137,14 +126,21 @@ export class Delivery {
 			return () => {};
 		}
 		const subToProgress = msg.progress$.subscribe(
-			observer.next, observer.error, observer.complete);
+			observer as RxObserver<DeliveryProgress>);
 		return () => { subToProgress.unsubscribe(); }
 	}
 	
 	private async preFlight(recipient: string): Promise<number> {
-		const inviteToken = this.r.keyring.getInviteForSendingTo(recipient);
-		const mSender = await MailSender.fresh(undefined, recipient,
-			getASMailServiceFor, inviteToken);
+		const sendParams = this.r.correspondents.paramsForSendingTo(recipient);
+		let mSender: MailSender;
+		if (sendParams) {
+			mSender = await MailSender.fresh(
+				(sendParams.auth ? this.r.address : undefined),
+				recipient, getASMailServiceFor, sendParams.invitation);
+		} else {
+			mSender = await MailSender.fresh(
+				undefined, recipient, getASMailServiceFor);
+		}
 		await mSender.performPreFlight();
 		return mSender.maxMsgLength;
 	}

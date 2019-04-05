@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017 - 2019 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,7 +16,7 @@
 
 import { getUtilFS, getCurrentAppVersion } from '../local-files/app-files';
 import { utf8 } from '../../lib-common/buffer-utils';
-import { ErrorWithCause, stringifyErr } from '../../lib-common/exceptions/error';
+import { stringifyErr } from '../../lib-common/exceptions/error';
 import { SingleProc } from '../../lib-common/processes';
 
 const LOGS_FOLDER = 'logs';
@@ -26,7 +26,7 @@ export async function logError(err: any, msg?: string): Promise<void> {
 		const now = new Date();
 		const entry = `
 ${now} ==================================
-App version ${getCurrentAppVersion()}
+App version ${getCurrentAppVersion().join('.')}
 Log level: error.${msg ? `
 ${msg}` : ''}
 ${stringifyErr(err)}`;
@@ -62,7 +62,7 @@ export async function logWarning(msg: string, err?: any): Promise<void> {
 		const now = new Date();
 		const entry = `
 ${now} ==================================
-App version ${getCurrentAppVersion()}
+App version ${getCurrentAppVersion().join('.')}
 Log level: warning.
 ${msg}
 ${err ? stringifyErr(err) : ''}`;
@@ -82,7 +82,7 @@ export async function appLog(type: 'error'|'info'|'warning', appDomain: string,
 		const now = new Date();
 		const entry = `
 ${now} ==================================
-App ${appDomain}, running on core version ${getCurrentAppVersion()}
+App ${appDomain}, running on core version ${getCurrentAppVersion().join('.')}
 Log level: ${type}.${msg ? `
 ${msg}` : ''}
 ${stringifyErr(err)}`;
@@ -92,5 +92,19 @@ ${stringifyErr(err)}`;
 	}
 
 }
+
+export function recordUnhandledRejectionsInProcess(): void {
+	const unhandledRejections = new WeakMap();
+	process.on('unhandledRejection', async (reason, p) => {
+		unhandledRejections.set(p, reason);
+		await logError(reason, 'Unhandled exception');
+	});
+	process.on('rejectionHandled', async (p) => {
+		const reason = unhandledRejections.get(p);
+		await logWarning('Handling previously unhandled rejection', reason);
+		unhandledRejections.delete(p);
+	});
+}
+
 
 Object.freeze(exports);

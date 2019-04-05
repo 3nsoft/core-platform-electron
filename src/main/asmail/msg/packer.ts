@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,30 +14,28 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { secret_box as sbox, arrays } from 'ecma-nacl';
+import { secret_box as sbox } from 'ecma-nacl';
 import { SegmentsWriter, KEY_LENGTH, makeSegmentsWriter, AsyncSBoxCryptor,
 	makeSplicingSegmentsWriter }
 	from 'xsp-files';
 import * as delivApi from '../../../lib-common/service-api/asmail/delivery';
 import * as random from '../../../lib-common/random-node';
 import { base64, base64urlSafe, utf8 } from '../../../lib-common/buffer-utils';
-import { FolderInfo } from '../../3nstorage/xsp-fs/common';
+import { FolderInfo } from '../../../lib-client/3nstorage/xsp-fs/common';
 import { serializeFolderInfo }
-	from '../../3nstorage/xsp-fs/folder-node-serialization';
+	from '../../../lib-client/3nstorage/xsp-fs/folder-node-serialization';
 import { ByteSource } from '../../../lib-common/byte-streaming/common';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { bind } from '../../../lib-common/binding';
 import { copy } from '../../../lib-common/json-utils';
 import { makeObjSourceFromArrays, makeObjSourceFromByteSource, idToHeaderNonce }
 	from '../../../lib-common/obj-streaming/crypto';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
-import { MainData, headers, managedFields, SuggestedNextKeyPair, MetaForNewKey,
-	isManagedField, MetaForEstablishedKeyPair }
+import { MsgEnvelope, SuggestedNextKeyPair, MetaForNewKey,
+	MetaForEstablishedKeyPair, SendingParams }
 	from './common';
 import { isContainerEmpty, iterFilesIn, iterFoldersIn }
 	from './attachments-container';
-
-export { headers } from './common';
+import { Encryptor } from '../../../lib-common/async-cryptor-wrap';
 
 type FS = web3n.files.FS;
 type AttachmentsContainer = web3n.asmail.AttachmentsContainer
@@ -104,6 +102,15 @@ function appendedPath(p: PathInMsg, name: string): PathInMsg {
 	};
 }
 
+const managedMsgFields: (keyof MsgEnvelope)[] = [
+	'Flow Params', 'Body', 'Attachments'
+];
+Object.freeze(managedMsgFields);
+
+function isManagedField<N extends keyof MsgEnvelope>(name: N): boolean {
+	return managedMsgFields.includes(name);
+}
+
 /**
  * Instance of this class packs message to sendable objects.
  * When the same message is sent to different recipients, this object must be
@@ -113,7 +120,7 @@ function appendedPath(p: PathInMsg, name: string): PathInMsg {
 export class MsgPacker {
 
 	private meta: MetaForEstablishedKeyPair | MetaForNewKey = (undefined as any);
-	private main: MainData;
+	private main: MsgEnvelope;
 	private mainObjId: string;
 	private allObjs = new Map<string, MsgObj>();
 	private readyPack: PackJSON|undefined = undefined;
@@ -123,7 +130,14 @@ export class MsgPacker {
 
 	private constructor(
 			private segSizeIn256bs: number) {
-		this.main = ({} as MainData);
+		this.main = {
+			'Flow Params': {
+				msgCount: undefined as any,
+			},
+			'Msg Type': undefined as any,
+			'Body': {},
+			'From': undefined as any
+		};
 		this.mainObjId = this.addJsonObj(this.main);
 		Object.seal(this);
 	}
@@ -192,7 +206,7 @@ export class MsgPacker {
 			const fName = entry.name;
 			const fPath = appendedPath(fsPath, fName);
 			if (entry.isFile) {
-				const f = await fs.readonlyFile(fName);
+				await fs.readonlyFile(fName);
 				this.addFileInto(folder, fName, fPath);
 			} else if (entry.isFolder) {
 				const f = await fs.readonlySubRoot(fName);
@@ -217,12 +231,11 @@ export class MsgPacker {
 		if (this.readyPack) { throw new Error(`Message is already packed.`); }
 	}
 
+	private wasBodySet = false;
+
 	private get mainBody(): any {
 		this.throwIfAlreadyPacked();
-		if (!this.main[managedFields.BODY]) {
-			this.main[managedFields.BODY] = {};
-		}
-		return this.main[managedFields.BODY];
+		return this.main['Body'];
 	}
 
 	/**
@@ -234,6 +247,7 @@ export class MsgPacker {
 			this.mainBody.text = {};
 		}
 		this.mainBody.text = { plain: text };
+		this.wasBodySet = true;
 	}
 
 	/**
@@ -245,6 +259,7 @@ export class MsgPacker {
 			this.mainBody.text = {};
 		}
 		this.mainBody.text = { html };
+		this.wasBodySet = true;
 	}
 
 	/**
@@ -253,15 +268,15 @@ export class MsgPacker {
 	 */
 	setJsonBody(json: any): void {
 		this.mainBody.json = json;
+		this.wasBodySet = true;
 	}
 
 	/**
-	 * This sets named header to a given value.
-	 * These headers go into main object, which is encrypted.
+	 * This sets named message section of main object to a given value.
 	 * @param name
-	 * @param value can be string, number, or json.
+	 * @param value
 	 */
-	setHeader(name: string, value: any): void {
+	setSection<N extends keyof MsgEnvelope>(name: N, value: MsgEnvelope[N]): void {
 		this.throwIfAlreadyPacked();
 		if (isManagedField(name)) { throw new Error(
 			"Cannot directly set message field '"+name+"'."); }
@@ -269,18 +284,45 @@ export class MsgPacker {
 		this.main[name] = JSON.parse(JSON.stringify(value));
 	}
 
-	setMetaForEstablishedKeyPair(pid: string): void {
+	/**
+	 * Sets information related to crypto used to encrypt this message.
+	 * @param pid pair id goes into unencrypted meta part of a message, for
+	 * recipient to find respective key pair.
+	 * @param msgCount is a message count for given key pair. It goes into flow
+	 * parameters section that sits in encrypted main part of the message.
+	 */
+	setEstablishedKeyPairInfo(pid: string, msgCount: number): void {
 		this.throwIfAlreadyPacked();
 		if (this.meta) { throw new Error(
 			"Message metadata has already been set."); }
 		this.meta = <MetaForEstablishedKeyPair> {
 			pid: pid,
 		};
+		this.main['Flow Params'].msgCount = msgCount;
 		Object.freeze(this.meta);
 	}
 
-	setMetaForNewKey(recipientKid: string, senderPKey: string,
-			pkeyCerts: confApi.p.initPubKey.Certs): void {
+	/**
+	 * Sets information related to crypto used to encrypt this message.
+	 * @param recipientKid is a key id of recipient's published intro key that
+	 * is used to encrypt this message.
+	 * This value goes into unencrypted meta part of a message, for recipient to
+	 * find respective key pair.
+	 * @param senderPKey is a base64 form of sender's one-time introductory key
+	 * bytes. Type of this key is dictated by the type of recipient's key. Hence,
+	 * this is only reperesentation of bytes.
+	 * This value goes into unencrypted meta part of a message, for recipient to
+	 * find respective key pair.
+	 * @param pkeyCerts is a chain of MailerId cretificates that ties sender
+	 * public key to sender's identity.
+	 * This value goes into flow parameters section that sits in encrypted main
+	 * part of the message.
+	 * @param msgCount is a message count for given key pair.
+	 * This value goes into flow parameters section that sits in encrypted main
+	 * part of the message.
+	 */
+	setNewKeyInfo(recipientKid: string, senderPKey: string,
+			pkeyCerts: confApi.p.initPubKey.Certs, msgCount: number): void {
 		this.throwIfAlreadyPacked();
 		if (this.meta) { throw new Error(
 			"Message metadata has already been set."); }
@@ -289,12 +331,17 @@ export class MsgPacker {
 			senderPKey: senderPKey,
 		};
 		Object.freeze(this.meta);
-		this.main[managedFields.CRYPTO_CERTIF] = pkeyCerts;
+		this.main['Flow Params'].introCerts = pkeyCerts;
+		this.main['Flow Params'].msgCount = msgCount;
 	}
 
-	setNextKeyPair(pair: SuggestedNextKeyPair): void {
+	setNextCrypto(pair: SuggestedNextKeyPair): void {
 		this.throwIfAlreadyPacked();
-		this.main[managedFields.NEXT_CRYPTO] = pair;
+		this.main['Flow Params'].nextCrypto = pair;
+	}
+
+	setNextSendingParams(params: SendingParams): void {
+		this.main['Flow Params'].nextSendingParams = params;
 	}
 
 	async setAttachments(att: { fs: FS|undefined;
@@ -303,14 +350,10 @@ export class MsgPacker {
 		if (this.hasAttachments) { throw new Error(
 			`Attachments are already set.`); }
 
-		// master key for attachments
-		const mkey = base64.pack(await random.bytes(sbox.KEY_LENGTH));
-
 		// attachments folder json to insert into main
 		const attachments: FolderInfo = { nodes: {} };
 
 		// populate attachments json
-		const attachmentsEmpty = true;
 		const path: PathInMsg = { start: 'attachments', path: [] };
 		if (att.container && !isContainerEmpty(att.container)) {
 			for (const f of iterFilesIn(att.container)) {
@@ -349,29 +392,25 @@ export class MsgPacker {
 
 		// insert attachments json into main object
 		if (this.hasAttachments) {
-			this.main[managedFields.ATTACHMENTS] = attachments;
+			this.main['Attachments'] = attachments;
 		}
 	}
 
 	private throwupOnMissingParts() {
 		if (!this.meta) { throw new Error("Message meta is not set"); }
-		if (!this.main[headers.DO_NOT_REPLY] &&
-				!this.main[managedFields.NEXT_CRYPTO]) { throw new Error(
-			"Next Crypto is not set."); }
-		if (!this.main[managedFields.BODY]) { throw new Error(
-			"Message Body is not set."); }
-		if ((<MetaForNewKey> this.meta).senderPKey &&
-				!this.main[managedFields.CRYPTO_CERTIF]) { throw new Error(
+		if (!this.wasBodySet) { throw new Error("Message Body is not set."); }
+		if ((this.meta as MetaForNewKey).senderPKey &&
+				!this.main['Flow Params'].introCerts) { throw new Error(
 			"Sender's key certification is missing."); }
 	}
 
-	async getSrcForMainObj(msgKeyEnc: sbox.Encryptor,
+	async getSrcForMainObj(msgKeyEnc: Encryptor,
 			cryptor: AsyncSBoxCryptor): Promise<ObjSource> {
 		const obj = this.allObjs.get(this.mainObjId);
 		if (!obj || !obj.json) { throw new Error(
 			`Missing or malformed main object.`); }
 
-		const msgKeyPack = msgKeyEnc.pack(obj.key);
+		const msgKeyPack = await msgKeyEnc.pack(obj.key);
 		const bytes = utf8.pack(JSON.stringify(obj.json));
 
 		const segWriter = await makeSegmentsWriter(

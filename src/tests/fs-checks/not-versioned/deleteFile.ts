@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.deleteFile',
@@ -28,47 +25,36 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'cannot delete non-existing file' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'non-existing-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		await testFS.deleteFile(fName)
-		.then(() => {
-			cFail('deleting non-existing file must fail');
-		}, (exc: FileException) => {
-			cExpect(exc.notFound).toBe(true);
-		});
+it.func = async function() {
+	let fName = 'non-existing-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
+	await testFS.deleteFile(fName)
+	.then(() => {
+		fail('deleting non-existing file must fail');
+	}, (exc: FileException) => {
+		expect(exc.notFound).toBe(true);
+	});
 
-		await testFS.makeFolder(fName);
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-		await testFS.deleteFile(fName)
-		.then(() => {
-			cFail('deleting folder as file must fail');
-		}, (exc: FileException) => {
-			cExpect(exc.notFile).toBe(true, 'folder is not a file');
-		});
-		
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	await testFS.makeFolder(fName);
+	expect(await testFS.checkFolderPresence(fName)).toBe(true);
+	await testFS.deleteFile(fName)
+	.then(() => {
+		fail('deleting folder as file must fail');
+	}, (exc: FileException) => {
+		expect(exc.notFile).toBe(true, 'folder is not a file');
+	});
 };
 it.numOfExpects = 4;
 specs.its.push(it);
 
 it = { expectation: 'deletes file' };
-it.func = async function(done: Function) {
-	try {
-		for (let fName of [ 'file1', 'folder/file1' ]) {
-			await testFS.writeTxtFile(fName, '');
-			cExpect(await testFS.checkFilePresence(fName)).toBe(true);
-			await testFS.deleteFile(fName);
-			cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		}
-	} catch (err) {
-		cFail(err);
+it.func = async function() {
+	for (let fName of [ 'file1', 'folder/file1' ]) {
+		await testFS.writeTxtFile(fName, '');
+		expect(await testFS.checkFilePresence(fName)).toBe(true);
+		await testFS.deleteFile(fName);
+		expect(await testFS.checkFilePresence(fName)).toBe(false);
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 4;
 specs.its.push(it);

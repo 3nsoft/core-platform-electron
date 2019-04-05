@@ -14,12 +14,10 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { BytesFIFOBuffer, ByteSink, ByteSource }
-	from '../byte-streaming/common';
+import { ByteSink, ByteSource } from '../byte-streaming/common';
 import { SinkBackedByteSource } from '../byte-streaming/pipe';
 import { ObjSink, ObjSource, wrapObjSourceImplementation,
 	wrapObjSinkImplementation } from './common';
-import { bind } from '../binding';
 
 interface Deferred {
 	resolve(result?: any): void;
@@ -31,7 +29,6 @@ export class SinkBackedObjSource implements ObjSink, ObjSource {
 	private header: Uint8Array|undefined = undefined;
 	private deferredHeader: Deferred|undefined = undefined;
 	private headerPromise: Promise<Uint8Array> | undefined = undefined;
-	private objVersion: number|undefined = undefined;
 	private err: any = undefined;
 	private segs = new SinkBackedByteSource();
 

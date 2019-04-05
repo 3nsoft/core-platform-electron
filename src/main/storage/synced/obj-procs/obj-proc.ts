@@ -26,7 +26,6 @@ import { objChanged, objRemoved }
 import { TimeWindowCache } from '../../../../lib-common/time-window-cache';
 import { logError } from '../../../../lib-client/logging/log-to-file';
 import { Node } from '../../../../lib-client/3nstorage/xsp-fs/common';
-import { ObjSource } from '../../../../lib-common/obj-streaming/common';
 
 
 // Rule #1: All conflicts are resolved locally, on a device that has a conflict.

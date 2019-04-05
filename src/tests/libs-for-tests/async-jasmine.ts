@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -53,7 +53,8 @@ export function fitAsync(expectation: string,
 	}
 }
 
-export function beforeAllAsync(action: () => Promise<void>, timeout?: number) {
+export function beforeAllAsync(action: () => Promise<void>,
+		timeout?: number): void {
 	beforeAll(done => {
 		action().then(
 			() => done(),
@@ -61,7 +62,8 @@ export function beforeAllAsync(action: () => Promise<void>, timeout?: number) {
 	}, timeout);
 }
 
-export function afterAllAsync(action: () => Promise<void>, timeout?: number) {
+export function afterAllAsync(action: () => Promise<void>,
+		timeout?: number): void {
 	afterAll(done => {
 		action().then(
 			() => done(),
@@ -69,7 +71,8 @@ export function afterAllAsync(action: () => Promise<void>, timeout?: number) {
 	}, timeout);
 }
 
-export function beforeEachAsync(action: () => Promise<void>, timeout?: number) {
+export function beforeEachAsync(action: () => Promise<void>,
+		timeout?: number): void {
 	beforeEach(done => {
 		action().then(
 			() => done(),
@@ -77,7 +80,8 @@ export function beforeEachAsync(action: () => Promise<void>, timeout?: number) {
 	}, timeout);
 }
 
-export function afterEachAsync(action: () => Promise<void>, timeout?: number) {
+export function afterEachAsync(action: () => Promise<void>,
+		timeout?: number): void {
 	afterEach(done => {
 		action().then(
 			() => done(),

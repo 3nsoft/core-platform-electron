@@ -65,7 +65,7 @@ type FileChangeEvent = web3n.files.FileChangeEvent;
 
 export class FileNode extends NodeInFS<FileCrypto> {
 
-	private constructor(storage: Storage, name: string,
+	private constructor(storage: Storage,  name: string,
 			objId: string, version: number, parentId: string|undefined,
 			key: Uint8Array) {
 		super(storage, 'file', name, objId, version, parentId);
@@ -76,7 +76,7 @@ export class FileNode extends NodeInFS<FileCrypto> {
 	}
 
 	static makeForNew(storage: Storage, parentId: string, name: string,
-			key: Uint8Array, cryptor: AsyncSBoxCryptor): FileNode {
+			key: Uint8Array): FileNode {
 		if (!parentId) { throw new Error("Bad parent id"); }
 		const objId = storage.generateNewObjId();
 		return new FileNode(storage, name, objId, 0, parentId, key);

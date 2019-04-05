@@ -15,28 +15,27 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { shell } from 'electron';
-import { SignUp } from './signup';
-import { makeManager } from './id-manager';
-import { Storages } from './storage/index';
-import { SignIn, GenerateKey } from './sign-in';
-import { ASMail } from './asmail/index';
+import { SignUp, CreatedUser } from './sign-up';
+import { IdManager } from './id-manager';
+import { Storages } from './storage';
+import { SignIn, StartInitWithoutCache, InitWithCache } from './sign-in';
+import { ASMail } from './asmail';
 import { makeDeviceFileOpener } from './device';
-import { bind } from '../lib-common/binding';
 import { errWithCause } from '../lib-common/exceptions/error';
 import { copy as jsonCopy } from '../lib-common/json-utils';
 import { makeCryptor } from '../lib-client/cryptor/cryptor';
-import { AppManifest, StoragePolicy, AppFSSetting, FSSetting }
+import { AppManifest, StoragePolicy, AppFSSetting, FSSetting, FilesOnDeviceSetting, FSChecker, DevPathChecker }
 	from '../ui/app-settings';
 import { AppInstance } from '../ui/app-instance';
 import { makeChildOpener } from './child-app';
-import { Subject, Observable } from 'rxjs';
+import { Subject } from 'rxjs';
 import { appLog } from '../lib-client/logging/log-to-file';
+import * as pathMod from 'path';
 
 const ASMAIL_APP_NAME = 'computer.3nweb.core.asmail';
 const MAILERID_APP_NAME = 'computer.3nweb.core.mailerid';
 
 type FS = web3n.files.FS;
-type File = web3n.files.File;
 
 export interface CAPs {
 	remotedW3N: any;
@@ -46,7 +45,6 @@ export interface CAPs {
 
 export class Core {
 	
-	private idManager = makeManager();
 	private cryptor = makeCryptor();
 	private storages = new Storages(this.cryptor.cryptor.sbox);
 	private asmail = new ASMail(this.cryptor.cryptor.sbox);
@@ -60,37 +58,114 @@ export class Core {
 	}
 
 	/**
-	 * This method returns caps object for startup app, and an observable
-	 * of core initialization event.
+	 * This method returns caps object for startup app, and a promise of core
+	 * initialization.
 	 * @param signUpUrl 
 	 */
 	start(signUpUrl: string):
-			{ caps: CAPs, coreInit$: Observable<void>; } {
-		const signUp = new SignUp(signUpUrl,
-			this.cryptor.cryptor,
-			this.idManager,
-			bind(this, this.initStorageFromRemote));
+			{ caps: CAPs, coreInit: Promise<void>; } {
+		const signUp = new SignUp(signUpUrl, this.cryptor.cryptor);
 		const signIn = new SignIn(
 			this.cryptor.cryptor,
-			this.idManager,
-			bind(this, this.initStorageFromRemote),
-			bind(this, this.initExistingStorage));
+			this.initForExistingUserWithoutCache,
+			this.initForExistingUserWithCache);
 		
 		const remotedW3N: web3n.startup.W3N = {
-			signUp: signUp.wrap(),
-			signIn: signIn.wrap()
+			signUp: signUp.exposedService(),
+			signIn: signIn.exposedService()
 		};
 		const caps: CAPs = {
 			remotedW3N: Object.freeze(remotedW3N)
 		};
 		Object.freeze(caps);
 
-		const coreInit$ = signIn.done$
-		.merge(signUp.done$)
-		.take(1)
-		.flatMap(() => this.initCore(), 1);
+		const initFromSignUp$ = signUp.newUser$
+		.flatMap(this.initForNewUser, 1);
 
-		return { coreInit$, caps };
+		const initFromSignIn$ = signIn.existingUser$;
+
+		const coreInit = initFromSignIn$
+		.merge(initFromSignUp$)
+		.take(1)
+		.flatMap(idManager => this.initCore(idManager), 1)
+		.toPromise();
+
+		return { coreInit, caps };
+	};
+
+	private initForNewUser = async (u: CreatedUser): Promise<IdManager> => {
+		// 1) init of id manager without setting fs
+		const idManager = await IdManager.initInOneStepWithoutStore(
+			u.address, u.midSKey.default);
+		if (!idManager) { throw new Error(
+			`Failed to provision MailerId identity`); }
+
+		// 2) setup storage
+		const storesUp = await this.storages.initFromRemote(
+			u.address, idManager.getSigner, u.storeSKey);
+		if (!storesUp) { throw new Error(`Stores failed to initialize`); }
+
+		// 3) give id manager fs, in which it will record labeled key(s)
+		await idManager.setStorages(
+			await this.storages.makeLocalFSForApp(MAILERID_APP_NAME),
+			await this.storages.makeSyncedFSForApp(MAILERID_APP_NAME),
+			[ u.midSKey.labeled ]);
+
+		return idManager;
+	};
+
+	private initForExistingUserWithoutCache: StartInitWithoutCache =
+			async (address) => {
+		// 1) init of id manager without setting fs
+		const stepTwo = await IdManager.initWithoutStore(address);
+		if (!stepTwo) { return; }
+		return async (midLoginKey, storageKey) => {
+			// 2) complete id manager login, without use of fs
+			const idManager = await stepTwo(midLoginKey);
+			if (!idManager) { return; }
+
+			// 3) initialize all storages
+			const storeDone = await this.storages.initFromRemote(
+				address, idManager.getSigner, storageKey);
+			if (!storeDone) { return; }
+
+			// 4) complete initialization of id manager
+			await idManager.setStorages(
+				await this.storages.makeLocalFSForApp(MAILERID_APP_NAME),
+				await this.storages.makeSyncedFSForApp(MAILERID_APP_NAME));
+				
+			return idManager;
+		};
+	};
+
+	private initForExistingUserWithCache: InitWithCache =
+			async (address, storageKey) => {
+		const completeStorageInit = await this.storages.startInitFromCache(
+			address, storageKey);
+		if (!completeStorageInit) { return; }
+
+		const idManager = await IdManager.initFromLocalStore(address,
+			await this.storages.makeLocalFSForApp(MAILERID_APP_NAME));
+
+		if (idManager) {
+			const res = await completeStorageInit(idManager.getSigner);
+			await idManager.setStorages(
+				undefined,
+				await this.storages.makeSyncedFSForApp(MAILERID_APP_NAME));
+			return (res ? idManager : undefined);
+		}
+
+		return async (midLoginKey) => {
+			const idManager = await IdManager.initInOneStepWithoutStore(
+				address, midLoginKey);
+			if (!idManager) { return; }
+			const res = await completeStorageInit!(idManager.getSigner);
+			await idManager.setStorages(
+				await this.storages.makeLocalFSForApp(MAILERID_APP_NAME),
+				await this.storages.makeSyncedFSForApp(MAILERID_APP_NAME));
+			return (res ? idManager : undefined);
+		};
+
 	};
 
 	// XXX this should also produce session, based on manifest
@@ -120,33 +195,16 @@ export class Core {
 		this.closeBroadcast.next();
 	}
 	
-	private initExistingStorage(user: string,
-			genMasterCrypt: GenerateKey): Promise<boolean> {
-		return this.storages.initExisting(
-			user, this.idManager.getSigner, genMasterCrypt);
-	}
-	
-	private initStorageFromRemote(generateKey: GenerateKey): Promise<boolean> {
-		return this.storages.initFromRemote(
-			this.idManager.getId(), this.idManager.getSigner, generateKey);
-	}
-	
-	private async initCore(): Promise<void> {
+	private async initCore(idManager: IdManager): Promise<void> {
 		try {
-			const mailerIdFS = await this.storages.makeSyncedFSForApp(
-				MAILERID_APP_NAME);
-				mailerIdFS.type
-			await this.idManager.setStorage(mailerIdFS);
-
 			const inboxSyncedFS = await this.storages.makeSyncedFSForApp(
 				ASMAIL_APP_NAME);
 			const inboxLocalFS = await this.storages.makeLocalFSForApp(
 				ASMAIL_APP_NAME);
-			await this.asmail.init(this.idManager.getId(),
-				this.idManager.getSigner, inboxSyncedFS, inboxLocalFS,
+			await this.asmail.init(idManager.getId(),
+				idManager.getSigner, inboxSyncedFS, inboxLocalFS,
 				this.storages.storageGetterForASMail());
 			this.isInitialized = true;
-			this.storages.startSyncOfFilesInCache();
 		} catch (err) {
 			throw errWithCause(err, 'Failed to initialize core');
 		}
@@ -194,6 +252,8 @@ export function makeCAPs(appDomain: string, manifest: AppManifest,
 	addOpenViewerCAP(manifest, remotedW3N, viewerOpener);
 
 	addOpenWithOSAppCAP(manifest, remotedW3N, openerWithOSApp);
+
+	addOpenWithOSBrowserCAP(manifest, remotedW3N);
 	
 	addMailCAP(manifest, remotedW3N, closeFns, makeASMailCAP);
 
@@ -278,6 +338,16 @@ function addChildOpeningCAP(manifest: AppManifest,
 	setAppInstanceFns.push(caps.setAppInstance);
 }
 
+function addOpenWithOSBrowserCAP(manifest: AppManifest,
+		remotedW3N: web3n.ui.W3N): void {
+	if (manifest.capsRequested.openWithOSBrowser === 'all') {
+		remotedW3N.openWithOSBrowser = url => {
+			if (!url.startsWith('https://') || !url.startsWith('http://')) { return; }
+			shell.openExternal(url);
+		};
+	}
+}
+
 function addCloseSelfCAP(remotedW3N: web3n.ui.W3N,
 		setAppInstanceFns: ((app: AppInstance) => void)[]): void {
 	let self: AppInstance = undefined as any;
@@ -327,6 +397,10 @@ function makeStoragePolicy(manifest: AppManifest): StoragePolicy {
 		}
 	}
 
+	if (Array.isArray(capReq.filesOnDevice)) {
+		policy.canAccessDevicePath = devPathChecker(capReq.filesOnDevice);
+	}
+
 	return Object.freeze(policy);
 }
 
@@ -368,8 +442,6 @@ function severalDomainsAppFSChecker(appFSs: AppFSSetting[]): AppFSChecker {
 	};
 }
 
-type FSChecker = (type: web3n.storage.StorageType) => 'w'|'r'|false;
-
 const allFSs: FSChecker = () => 'w';
 
 function fsChecker(setting: FSSetting[]): FSChecker {
@@ -377,6 +449,32 @@ function fsChecker(setting: FSSetting[]): FSChecker {
 		const s = setting.find(s => (s.type === type));
 		if (!s) { return false; }
 		return (s.writable ? 'w' : 'r');
+	};
+}
+
+function devPathChecker(setting: FilesOnDeviceSetting[]): DevPathChecker {
+	const s = setting.map(p => {
+		const devPath: FilesOnDeviceSetting = {
+			writable: p.writable,
+			path: pathMod.normalize(p.path)
+		};
+		return devPath;
+	});
+	return (path: string) => {
+		if (!pathMod.isAbsolute(path)) { return false; }
+		const entry = s.find(p => {
+			if (p.path === '*') {
+				return true;
+			} else if (path.startsWith(p.path)) {
+				const relPath = pathMod.relative(p.path, path);
+				const pathInTree = !relPath.startsWith(`..${pathMod.sep}`);
+				return pathInTree;
+			} else {
+				return false;
+			}
+		});
+		if (!entry) { return false; }
+		return (entry.writable ? 'w' : 'r');
 	};
 }
 

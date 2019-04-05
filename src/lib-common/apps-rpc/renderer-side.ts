@@ -361,7 +361,7 @@ class Remote {
 				if (p.t === 'jnc') { return p.v; }
 				if (p.t === 'method') {
 					if (typeof p.v === 'object') {
-						p.v = this.makeRemoteFunc(id, prop, p.v);
+						p.v = this.makeRemoteFunc(id, prop as string, p.v);
 					}
 					return p.v;
 				}
@@ -561,7 +561,6 @@ class Local {
 		const args = this.unpackArgs(msg.params, funcReg);
 		const reqId = ((!funcReg.reply || (funcReg.reply === 'none')) ?
 			undefined : msg.reqId);
-		const f = (msg.method) ? { obj: obj!, method: msg.method } : func!;
 		try {
 			const result = await (msg.method ?
 				obj![msg.method](...args) : func!(...args));
@@ -680,7 +679,7 @@ class Local {
 				entity = { entity: local, name, deferredReg: { id, jncObj: local } };
 			} else {
 				const obj = this.prepareObjRegParams(local, objParams.fields);
-				const objMethods = this.makeObjMethods(local, obj);
+				const objMethods = this.makeObjMethods(obj);
 				entity = { entity: local, name, objMethods, deferredReg: { id, obj } };
 			}
 		} else {
@@ -712,7 +711,7 @@ class Local {
 		}
 	}
 
-	private makeObjMethods<T>(local: T, params: ObjRegistration<T>):
+	private makeObjMethods<T>(params: ObjRegistration<T>):
 			Map<string, FuncRegistration> {
 		const methodRegs = new Map<string, FuncRegistration>();
 		for (const field in params) {

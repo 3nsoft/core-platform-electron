@@ -18,11 +18,7 @@ import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { ByteSource } from '../../../lib-common/byte-streaming/common';
 import { syncWrapObjSource }
 	from '../../../lib-common/obj-streaming/concurrent';
-import { MailRecipient } from '../../../lib-client/asmail/recipient';
-import { InboxCache, PartialObjInfo as MsgPartialObjInfo, ObjSize }
-	from './cache';
-import { missingRegionsIn, splitBigRegions, Region }
-	from '../../../lib-client/local-files/regions';
+import { InboxCache, ObjSize } from './cache';
 import { Downloader } from './downloader';
 
 class CachedByteSource implements ByteSource {
@@ -75,8 +71,6 @@ Object.freeze(CachedByteSource);
 
 class CachedObjSource implements ObjSource {
 	
-	private segsPointer = 0;
-
 	segSrc: ByteSource;
 	
 	constructor(

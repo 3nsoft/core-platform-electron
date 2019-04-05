@@ -15,7 +15,7 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { CAPsMap } from '../caps-map';
-import { wrapRemoteFunc, wrapLocal } from '../wrapping';
+import { wrapRemoteFunc } from '../wrapping';
 import { wrapRemoteRPC } from './parent';
 
 export type ChildWindow = web3n.ui.ChildWindow;

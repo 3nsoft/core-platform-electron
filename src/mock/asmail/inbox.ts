@@ -21,7 +21,7 @@ import { bind } from '../../lib-common/binding';
 import { ATTACHMENTS_FOLDER, MAIN_MSG_OBJ, MSGS_FOLDER, ServiceWithInitPhase }
 	from './common';
 import { ASMailMockConfig } from '../conf';
-import { Observable } from 'rxjs';
+import { Observable, Observer as RxObserver } from 'rxjs';
 
 type InboxException = web3n.asmail.InboxException;
 type Observer<T> = web3n.Observer<T>;
@@ -38,43 +38,9 @@ function makeMsgNotFoundException(msgId: string): InboxException {
 	};
 }
 
-function makeObjNotFoundException(msgId: string, objId: string):
-		InboxException {
-	return {
-		runtimeException: true,
-		type: 'inbox',
-		msgId, objId,
-		objNotFound: true
-	};
-}
-
-function makeMsgIsBrokenException(msgId: string): InboxException {
-	return {
-		runtimeException: true,
-		type: 'inbox',
-		msgId,
-		msgIsBroken: true
-	};
-}
-
 type IncomingMessage = web3n.asmail.IncomingMessage;
 type MsgInfo = web3n.asmail.MsgInfo;
 type InboxService = web3n.asmail.InboxService;
-
-async function getFolderContentSize(fs: WritableFS, folderPath: string):
-		Promise<number> {
-	let size = 0;
-	const lst = await fs.listFolder(folderPath);
-	for (const f of lst) {
-		if (f.isFile) {
-			const stats = await fs.statFile(f.name);
-			size += stats.size!;
-		} else if (f.isFolder) {
-			size += await getFolderContentSize(fs, `${folderPath}/${f.name}`);
-		}
-	}
-	return size;
-}
 
 export class InboxMock extends ServiceWithInitPhase implements InboxService {
 	
@@ -174,7 +140,7 @@ export class InboxMock extends ServiceWithInitPhase implements InboxService {
 			const msgId = newEntryEvent.entry.name;
 			return this.pickMsgFromDisk(msgId);
 		})
-		.subscribe(observer.next, observer.error, observer.complete);
+		.subscribe(observer as RxObserver<IncomingMessage>);
 		return () => subscription.unsubscribe();
 	}
 

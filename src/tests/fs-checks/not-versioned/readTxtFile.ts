@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readTxtFile',
@@ -28,42 +25,32 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails to read non-existent file' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'unknown-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		await testFS.readTxtFile(fName)
-		.then(() => {
-			cFail('reading text must fail, when file does not exist');
-		}, (err: FileException) => {
-			cExpect(err.notFound).toBe(true);
-			if (!err.notFound) { throw err; }
-		});
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let fName = 'unknown-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
+	await testFS.readTxtFile(fName)
+	.then(() => {
+		fail('reading text must fail, when file does not exist');
+	}, (err: FileException) => {
+		expect(err.notFound).toBe(true);
+		if (!err.notFound) { throw err; }
+	});
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'reads json file' };
-it.func = async function(done: Function) {
-	try {
-		let original = 'Should I be at BlackHat conference or working?';
-		let fName = 'file1';
-		await testFS.writeTxtFile(fName, original);
-		let txt = await testFS.readTxtFile(fName);
-		cExpect(txt).toBe(original, 'file read should produce original text');
-		
-		fName = 'file2';
-		await testFS.writeBytes(fName, new Uint8Array(0));
-		txt = await testFS.readTxtFile(fName);
-		cExpect(txt).toBe('');
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let original = 'Should I be at BlackHat conference or working?';
+	let fName = 'file1';
+	await testFS.writeTxtFile(fName, original);
+	let txt = await testFS.readTxtFile(fName);
+	expect(txt).toBe(original, 'file read should produce original text');
+	
+	fName = 'file2';
+	await testFS.writeBytes(fName, new Uint8Array(0));
+	txt = await testFS.readTxtFile(fName);
+	expect(txt).toBe('');
 };
 it.numOfExpects = 2;
 specs.its.push(it);

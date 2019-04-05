@@ -16,7 +16,6 @@
 
 import { BytesFIFOBuffer, ByteSink, ByteSource, wrapByteSinkImplementation,
 	wrapByteSourceImplementation } from './common';
-import { bind } from '../binding';
 
 interface Deferred {
 	resolve(result?: any): void;

@@ -29,7 +29,6 @@ export class ViewerInstance {
 	window: BrowserWindow;
 
 	private constructor(
-			private fs: FS,
 			private path: string,
 			private itemType: 'file'|'folder',
 			opts: Electron.BrowserWindowConstructorOptions) {
@@ -60,7 +59,7 @@ export class ViewerInstance {
 		}
 		const session = await makeSessionForViewer(fs, path, itemType);
 		const opts = prepareWindowOpts(session, winOpts);
-		return new ViewerInstance(fs, path, itemType, opts);
+		return new ViewerInstance(path, itemType, opts);
 	}
 
 	loadContent(): void {

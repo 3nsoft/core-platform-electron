@@ -20,22 +20,19 @@ import { SyncedStorage as ISyncedStorage, wrapSyncStorageImplementation,
 	NodesContainer, wrapStorageImplementation, Storage as IStorage,
 	StorageGetter }
 	from '../../../lib-client/3nstorage/xsp-fs/common';
-import { makeObjExistsExc, makeObjNotFoundExc, StorageException }
+import { makeObjNotFoundExc }
 	from '../../../lib-client/3nstorage/exceptions';
 import { StorageOwner as RemoteStorage }
 	from '../../../lib-client/3nstorage/service';
 import { ScryptGenParams } from '../../../lib-client/key-derivation';
 import { makeObjs, ObjId, ObjFiles } from './files/objs';
-import { ReencryptHeader } from './files/local-versions';
 import { makeCachedObjSource } from './cached-obj-source';
 import { makeLocalObjSource } from './local-obj-source';
 import { ObjProcs } from './obj-procs/obj-proc';
 import { SyncedVersionsDownloader } from './synced-versions-downloader';
-import { NamedProcs } from '../../../lib-common/processes';
 import { bytesSync as randomBytes } from '../../../lib-common/random-node';
 import { base64urlSafe } from '../../../lib-common/buffer-utils';
 import { logError } from '../../../lib-client/logging/log-to-file';
-import { Subscription } from 'rxjs';
 import { makeStorageEventsProc, StorageEventsProc } from './storage-events';
 import { AsyncSBoxCryptor, NONCE_LENGTH } from 'xsp-files';
 
@@ -52,9 +49,10 @@ class SyncedStorage implements ISyncedStorage {
 	private syncedVersionDownloader: SyncedVersionsDownloader = (undefined as any);
 	private storageEventsProc: StorageEventsProc = (undefined as any);
 	
-	constructor(devFS: WritableFS, user: string, getSigner: IGetMailerIdSigner,
-			private getStorages: StorageGetter,
-			public cryptor: AsyncSBoxCryptor) {
+	constructor(
+		private getStorages: StorageGetter,
+		public cryptor: AsyncSBoxCryptor
+	) {
 		Object.seal(this);
 	}
 
@@ -62,7 +60,7 @@ class SyncedStorage implements ISyncedStorage {
 			getSigner: IGetMailerIdSigner, getStorages: StorageGetter,
 			cryptor: AsyncSBoxCryptor, remoteServiceUrl: () => Promise<string>):
 			Promise<SyncedStorage> {
-		const s = new SyncedStorage(devFS, user, getSigner, getStorages, cryptor);
+		const s = new SyncedStorage(getStorages, cryptor);
 		s.remoteStorage = new RemoteStorage(user, getSigner, remoteServiceUrl);
 		s.objFiles = await makeObjs(devFS);
 		const fsNodes = (objId: ObjId) => s.nodes.get(objId);
@@ -160,12 +158,12 @@ export async function makeSyncedStorage(user: string,
 		getMidSigner: IGetMailerIdSigner, storeDevFS: WritableFS,
 		remoteServiceUrl: () => Promise<string>,
 		getStorages: StorageGetter, cryptor: AsyncSBoxCryptor):
-		Promise<{ store: ISyncedStorage; startSyncOfFilesInCache: () => void; }> {
+		Promise<{ syncedStore: ISyncedStorage; startSyncOfFiles: () => void; }> {
 	const s = await SyncedStorage.makeAndStart(
 		storeDevFS, user, getMidSigner, getStorages, cryptor, remoteServiceUrl);
 	return {
-		store: wrapSyncStorageImplementation(s),
-		startSyncOfFilesInCache: () => s.startSyncOfFilesInCache()
+		syncedStore: wrapSyncStorageImplementation(s),
+		startSyncOfFiles: () => s.startSyncOfFilesInCache()
 	};
 }
 

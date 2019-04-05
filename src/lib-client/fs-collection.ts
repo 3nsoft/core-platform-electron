@@ -15,17 +15,13 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { bind } from '../lib-common/binding';
-import { Subject } from 'rxjs';
+import { Subject, Observer as RxObserver } from 'rxjs';
 
-type FS = web3n.files.FS;
-type File = web3n.files.File;
 type FSCollection = web3n.files.FSCollection;
 type FSItem = web3n.files.FSItem;
 type Transferable = web3n.implementation.Transferable;
 type AsyncIterator<T> = web3n.AsyncIterator<T>;
 type CollectionEvent = web3n.files.CollectionEvent;
-type CollectionItemAdditionEvent = web3n.files.CollectionItemAdditionEvent;
-type CollectionItemRemovalEvent = web3n.files.CollectionItemRemovalEvent;
 type Observer<T> = web3n.Observer<T>;
 
 class FSItemsCollection {
@@ -84,7 +80,7 @@ class FSItemsCollection {
 	}
 
 	watch(observer: Observer<CollectionEvent>): () => void {
-		const sub = this.change$.subscribe(observer as any);
+		const sub = this.change$.subscribe(observer as RxObserver<CollectionEvent>);
 		return () => sub.unsubscribe();
 	}
 

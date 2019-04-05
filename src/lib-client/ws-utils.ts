@@ -31,7 +31,7 @@ export function openSocket(url: string, sessionId: string):
 	const initOnError = err => opening.reject(makeConnectionException(
 		url, undefined,
 		`Cannot open websocket connection due to error: ${err.message}`));
-	const onNonOkReply = (req, res: IncomingMessage) => {
+	const onNonOkReply = (_, res: IncomingMessage) => {
 		const errReply: Reply<WebSocket> = {
 			url,
 			method: 'GET',

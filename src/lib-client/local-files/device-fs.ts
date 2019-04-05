@@ -109,7 +109,6 @@ class FileByteSink implements ByteSink {
 		let fd: number|undefined = undefined;
 		try {
 			fd = await fs.open(this.path, 'r+');
-			const bytesWritten = 0;
 			const buf = ((bytes instanceof Buffer) ? bytes : Buffer.from(
 				bytes.buffer as ArrayBuffer, bytes.byteOffset, bytes.length));
 			await fs.writeFromBuf(fd, this.offset, buf);
@@ -232,7 +231,7 @@ function splitPathIntoParts(path: string): string[] {
 	return pathMod.join(sep, path).split(sep).filter(part => (part.length > 0));
 }
 
-export type FileStats = web3n.files.FileStats;
+export type Stats = web3n.files.Stats;
 export type FS = web3n.files.FS;
 export type WritableFS = web3n.files.WritableFS;
 export type ReadonlyFS = web3n.files.ReadonlyFS;
@@ -243,6 +242,7 @@ export type FSType = web3n.files.FSType;
 export type ListingEntry = web3n.files.ListingEntry;
 export type SymLink = web3n.files.SymLink;
 export type FolderEvent = web3n.files.FolderEvent;
+export type FileEvent = web3n.files.FileEvent;
 export type EntryAdditionEvent = web3n.files.EntryAdditionEvent;
 export type EntryRemovalEvent = web3n.files.EntryRemovalEvent;
 export type Observer<T> = web3n.Observer<T>;
@@ -286,6 +286,7 @@ namespace linkPath {
 Object.freeze(linkPath);
 
 type Transferable = web3n.implementation.Transferable;
+type FSItem = web3n.files.FSItem;
 
 export class DeviceFS implements WritableFS, Linkable {
 
@@ -338,7 +339,7 @@ export class DeviceFS implements WritableFS, Linkable {
 			isFolder: true,
 			readonly,
 			target: () => (readonly ?
-				DeviceFS.makeReadonly(path) : DeviceFS.makeWritable(path))
+				DeviceFS.makeReadonlyFS(path) : DeviceFS.makeWritableFS(path))
 		};
 		(sl as any as Transferable).$_transferrable_type_id_$ = 'SimpleObject';
 		return Object.freeze(sl);
@@ -354,10 +355,10 @@ export class DeviceFS implements WritableFS, Linkable {
 			readonly,
 			target: async () => {
 				if (readonly) {
-					const fs = await DeviceFS.makeReadonly(parentPath);
+					const fs = await DeviceFS.makeReadonlyFS(parentPath);
 					return fs.readonlyFile(fName);
 				} else {
-					const fs = await DeviceFS.makeWritable(parentPath);
+					const fs = await DeviceFS.makeWritableFS(parentPath);
 					return fs.writableFile(fName);
 				}
 			}
@@ -366,7 +367,7 @@ export class DeviceFS implements WritableFS, Linkable {
 		return Object.freeze(sl);
 	}
 
-	static async makeWritable(root: string, create = false,
+	static async makeWritableFS(root: string, create = false,
 			exclusive = false): Promise<WritableFS> {
 		await fs.lstat(root)
 		.then(stat => {
@@ -394,10 +395,45 @@ export class DeviceFS implements WritableFS, Linkable {
 		return roFS;
 	}
 
-	static async makeReadonly(root: string): Promise<ReadonlyFS> {
+	static async makeReadonlyFS(root: string): Promise<ReadonlyFS> {
 		await checkFolderPresence(root);
 		const folderName = pathMod.basename(root);
 		return DeviceFS.makeAndWrapRoFS(root, folderName);
+	}
+
+	static async makeFSItemFor(path: string, writable: boolean):
+			Promise<FSItem> {
+		const stats = await fs.stat(path)
+		.catch((e: FileException) => {
+			throw maskPathInExc(0, e);
+		});
+		if (stats.isDirectory()) {
+			const fsItem: FSItem = {
+				isFolder: true,
+				item: await (writable ?
+					DeviceFS.makeWritableFS(path) :
+					DeviceFS.makeReadonlyFS(path))
+			}
+			return fsItem;
+		} else if (stats.isFile()) {
+			const parentPath = pathMod.dirname(path);
+			const fileName = pathMod.basename(path);
+			let file: File;
+			if (writable) {
+				const parent = await DeviceFS.makeWritableFS(parentPath);
+				file = await parent.writableFile(fileName);
+			} else {
+				const parent = await DeviceFS.makeReadonlyFS(parentPath)
+				file = await parent.readonlyFile(fileName);
+			}
+			const fsItem: FSItem = {
+				isFile: true,
+				item: file
+			};
+			return fsItem;
+		} else {
+			throw makeFileException(excCode.notFile, path);
+		}
 	}
 	
 	async readonlySubRoot(folder: string): Promise<ReadonlyFS> {
@@ -431,15 +467,38 @@ export class DeviceFS implements WritableFS, Linkable {
 		return pathUnderRoot(this.root, path, canBeRoot);
 	}
 	
-	async statFile(path: string): Promise<FileStats> {
+	async stat(path: string): Promise<Stats> {
 		const stats = await fs.lstat(this.fullPath(path)).catch((e) => {
 			throw maskPathInExc(this.root.length, e);
 		});
-		if (!stats.isFile()) { throw makeFileException(excCode.notFound, path); }
-		return {
-			mtime: stats.atime,
-			size: stats.size
-		};
+		if (stats.isFile()) {
+			return {
+				isFile: true,
+				writable: this.writable,
+				mtime: stats.mtime,
+				atime: stats.atime,
+				ctime: stats.ctime,
+				size: stats.size
+			};
+		} else if (stats.isDirectory()) {
+			return {
+				isFolder: true,
+				writable: this.writable,
+				mtime: stats.mtime,
+				atime: stats.atime,
+				ctime: stats.ctime,
+			};
+		} else if (stats.isSymbolicLink()) {
+			return {
+				isLink: true,
+				writable: false,
+				mtime: stats.mtime,
+				atime: stats.atime,
+				ctime: stats.ctime,
+			};
+		} else {
+			throw new Error(`File system element has device-specific type.`);
+		}
 	}
 
 	select(path: string, criteria: SelectCriteria):
@@ -622,7 +681,7 @@ export class DeviceFS implements WritableFS, Linkable {
 			const pathStr = this.fullPath(folder, true);
 			const lst: ListingEntry[] = [];
 			for (const fName of await fs.readdir(pathStr)) {
-				const stats = await fs.lstat(pathStr+'/'+fName).catch((exc) => {});
+				const stats = await fs.lstat(pathStr+'/'+fName).catch(() => {});
 				if (!stats) { continue; }
 				if (stats.isFile()) {
 					lst.push({
@@ -883,11 +942,12 @@ export class DeviceFS implements WritableFS, Linkable {
 		return detach;
 	}
 
-	watchFile(): never {
+	watchFile(path: string, observer: Observer<FileEvent>): () => void {
 		throw new Error('Not implemented, yet');
 	}
 
-	watchTree(): never {
+	watchTree(path: string, observer: Observer<FolderEvent|FileEvent>):
+			() => void {
 		throw new Error('Not implemented, yet');
 	}
 
@@ -1064,9 +1124,9 @@ class FileObject implements WritableFile, Linkable {
 		}
 	}
 
-	stat(): Promise<FileStats> {
+	stat(): Promise<Stats> {
 		try {
-			return this.fs.statFile(this.path);
+			return this.fs.stat(this.path);
 		} catch (e) {
 			throw maskPathInExc(this.pathPrefixMaskLen, e);
 		}
@@ -1077,6 +1137,10 @@ class FileObject implements WritableFile, Linkable {
 		const src = await file.getByteSource();
 		await pipe(src, sink);
 	}
+
+	watch(observer: Observer<FileEvent>): () => void {
+		return this.fs.watchFile(this.path, observer);
+	}	
 
 }
 Object.freeze(FileObject.prototype);

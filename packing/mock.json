@@ -1,0 +1,26 @@
+{
+	"appId": "computer.3nweb",
+	"productName": "3NWeb",
+	"copyright": "Copyright © 2017 - 2019 ${author}",
+	"artifactName": "${productName}-mock-${version}-${os}-${arch}.${ext}",
+	"directories": {
+		"app": "./build/mock",
+		"output": "./dist/mock"
+	},
+	"win": {
+		"target": [
+			{
+				"target": "zip",
+				"arch": [ "x64", "ia32" ]
+			}
+		]
+	},
+	"linux": {
+		"target": [
+			{
+				"target": "tar.gz",
+				"arch": [ "x64" ]
+			}
+		]
+	}
+}

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,7 +19,7 @@
  * reliance set.
  */
 
-import { FileException, makeFileException, Code as excCode }
+import { makeFileException, Code as excCode }
 	from '../../../lib-common/exceptions/file';
 import { Linkable, LinkParameters, wrapReadonlyFile,
 	wrapWritableFile }
@@ -28,14 +28,15 @@ import { FileNode, FileLinkParams } from './file-node';
 import { utf8 } from '../../../lib-common/buffer-utils';
 import { Storage } from './common';
 import { pipe } from '../../../lib-common/byte-streaming/pipe';
-import { bind } from '../../../lib-common/binding';
+import { Observer as RxObserver } from 'rxjs';
 
 type ByteSource = web3n.ByteSource;
-type ByteSink = web3n.ByteSink;
-type FileStats = web3n.files.FileStats;
+type Stats = web3n.files.Stats;
 type File = web3n.files.File;
 type WritableFile = web3n.files.WritableFile;
 type ReadonlyFile = web3n.files.ReadonlyFile;
+type FileEvent = web3n.files.FileEvent;
+type Observer<T> = web3n.Observer<T>;
 
 export async function readBytesFrom(src: ByteSource,
 		start: number|undefined, end: number|undefined):
@@ -108,16 +109,25 @@ export class FileObject implements WritableFile, Linkable {
 		return linkParams;
 	}
 
-	async stat(): Promise<FileStats> {
+	async stat(): Promise<Stats> {
 		if (!this.v.node) { throw makeFileException(excCode.notFound, this.name); }
 		const { src } = await this.v.node.readSrc();
-		const stat: FileStats = {
+		const stat: Stats = {
+			writable: this.writable,
 			size: await src.getSize(),
 			version: this.v.node.version
 		};
 		return stat;
 	}
 
+	watch(observer: Observer<FileEvent>): () => void {
+		if (!this.v.node) { throw new Error(
+			`Node for file ${this.name} is not yet initialized`); }
+		const sub = this.v.node.event$
+		.subscribe(observer as RxObserver<FileEvent>);
+		return () => sub.unsubscribe();
+	}
+	
 	async readBytes(start?: number, end?: number):
 			Promise<Uint8Array|undefined> {
 		const { bytes } = await this.v.readBytes(start, end);

@@ -15,64 +15,20 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { makeStorageFS } from './mock-files';
-import { bind } from '../lib-common/binding';
-import { StorageException, initSysFolders, sysFolders, FactoryOfAppFSs,
-	PerWinStorage, sysFilesOnDevice, userFilesOnDevice }
+import { initSysFolders, sysFolders, FactoryOfAppFSs, PerWinStorage,
+	sysFilesOnDevice, userFilesOnDevice }
 	from '../main/storage/index';
 import { StoragePolicy } from '../ui/app-settings';
 import { defer } from '../lib-common/processes';
 import { makeFSCollection } from '../lib-client/fs-collection';
 import { DeviceFS } from '../lib-client/local-files/device-fs';
 
-type FSType = web3n.files.FSType;
 type WritableFS = web3n.files.WritableFS;
 type FS = web3n.files.FS;
 type StorageService = web3n.storage.Service;
 type StorageType = web3n.storage.StorageType;
 type FSCollection = web3n.files.FSCollection;
 type FSItem = web3n.files.FSItem;
-
-function makeBadAppNameExc(appName: string): StorageException {
-	return {
-		runtimeException: true,
-		type: 'storage',
-		storageSegment: 'app',
-		badAppName: true,
-		appName
-	};
-}
-
-function makeNotAllowedToOpenAppFSExc(appName: string): StorageException {
-	return {
-		runtimeException: true,
-		type: 'storage',
-		storageSegment: 'app',
-		notAllowedToOpenFS: true,
-		appName
-	};
-}
-
-function makeNotAllowedToOpenUserFSExc(storageType: StorageType):
-		StorageException {
-	return {
-		runtimeException: true,
-		type: 'storage',
-		storageSegment: 'user',
-		notAllowedToOpenFS: true,
-		storageType
-	};
-}
-
-function makeNotAllowedToOpenSysFSExc(storageType: StorageType):
-		StorageException {
-	return {
-		runtimeException: true,
-		type: 'storage',
-		storageSegment: 'system',
-		notAllowedToOpenFS: true,
-		storageType
-	};
-}
 
 export class Storages implements FactoryOfAppFSs {
 	
@@ -182,7 +138,7 @@ export class Storages implements FactoryOfAppFSs {
 		return c;
 	}
 
-	addPreCloseWait(wait: Promise<void>): void {}
+	addPreCloseWait(): void {}
 
 	/**
 	 * This method mounts given file on device fs, returning respective device

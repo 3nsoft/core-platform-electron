@@ -18,7 +18,6 @@ import { CacheOfFolders, Exception as CacheExc, makeNotFoundExc }
 	from '../../../../lib-client/local-files/generational-cache';
 import { FileException } from '../../../../lib-common/exceptions/file';
 import { TimeWindowCache } from '../../../../lib-common/time-window-cache';
-import { DiffInfo } from '../../../../lib-common/service-api/3nstorage/owner';
 import { parseDiffAndOffsets } from '../../../../lib-client/obj-file-on-dev-fs';
 import { bind } from '../../../../lib-common/binding';
 import { GC, makeGC } from './gc';
@@ -346,11 +345,11 @@ export class Objs implements ObjFiles {
 		if (countBase && diff) {
 			return diff.segsSize;
 		} else {
-			const stats = await this.fs.statFile(path)
+			const stats = await this.fs.stat(path)
 			.catch((exc: FileException) => {
 				if (!exc.notFound) { throw exc; }
 				path = `${objFolder}/${version}.`;
-				return this.fs.statFile(path)
+				return this.fs.stat(path)
 			});
 			if (typeof stats.size !== 'number') { throw new Error(
 				`Stat of file on disk didn't return a numeric size.`); }
@@ -422,7 +421,6 @@ function checkToOkCacheMove(objFolderList: ListingEntry[]): boolean {
 export async function makeObjs(fs: WritableFS): Promise<ObjFiles> {
 	const objFiles = new Objs(fs);
 	await objFiles.init();
-	const synced = (new SyncedVersions(objFiles)).wrap();
 	return objFiles.wrap();
 }
 

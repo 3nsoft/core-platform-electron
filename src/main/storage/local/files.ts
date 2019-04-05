@@ -21,7 +21,6 @@ import { pipe } from '../../../lib-common/byte-streaming/pipe';
 import { makeObjExistsExc } from '../../../lib-client/3nstorage/exceptions';
 import { TimeWindowCache } from '../../../lib-common/time-window-cache';
 import { DiffInfo } from '../../../lib-common/service-api/3nstorage/owner';
-import { toBuffer } from '../../../lib-common/buffer-utils';
 import { bind } from '../../../lib-common/binding';
 import { makeNotFoundExc }
 	from '../../../lib-client/local-files/generational-cache';
@@ -417,7 +416,7 @@ class FilesOnDisk implements Files {
 		if (countBase && diff) {
 			return diff.segsSize;
 		} else {
-			const stats = await this.fs.statFile(path);
+			const stats = await this.fs.stat(path);
 			if (typeof stats.size !== 'number') { throw new Error(
 				`Stat of file on disk didn't return a numeric size.`); }
 			return stats.size - segsOffset;

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -50,6 +50,15 @@ declare namespace web3n.storage {
 		 * @param path is an optional to get more specific fs.
 		 */
 		getSysFS?: (type: StorageType, path?: string) => Promise<files.FSItem>;
+
+		/**
+		 * This returns a promise, resolvable to fs item that corresponds to
+		 * given path on a device fs.
+		 * @param path is a path of thing on a device fs.
+		 * @param readonly is an optional flag that forces returned items to be
+		 * readonly.
+		 */
+		getOnDevice?: (path: string, readonly?: boolean) => Promise<files.FSItem>;
 
 	}
 

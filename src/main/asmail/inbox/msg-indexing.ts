@@ -17,7 +17,7 @@
 import { FileException } from '../../../lib-common/exceptions/file';
 import { SingleProc } from '../../../lib-common/processes';
 import { MsgKeyInfo, MsgKeyRole } from '../keyring';
-import { base64, utf8 } from '../../../lib-common/buffer-utils';
+import { base64 } from '../../../lib-common/buffer-utils';
 import { TimeWindowCache } from '../../../lib-common/time-window-cache';
 	
 type WritableFS = web3n.files.WritableFS;

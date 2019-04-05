@@ -16,7 +16,7 @@
  
 import { net } from 'electron';
 import * as https from 'https';
-import { RequestOpts, Reply, ContentType, processRequest, formHttpsReqOpts, NetRequester }
+import { RequestOpts, Reply, ContentType, processRequest, formHttpsReqOpts }
 	from '../request-utils';
 import { utf8 } from '../../lib-common/buffer-utils';
 import { BytesFIFOBuffer } from '../../lib-common/byte-streaming/common';

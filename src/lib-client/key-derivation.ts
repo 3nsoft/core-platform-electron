@@ -16,7 +16,7 @@
 
 import { JsonKey, keyToJson } from '../lib-common/jwkeys';
 import { utf8, base64 } from '../lib-common/buffer-utils';
-import { scrypt, box, secret_box as sbox } from 'ecma-nacl';
+import { box, secret_box as sbox } from 'ecma-nacl';
 import { Cryptor } from './cryptor/cryptor';
 
 export interface ScryptGenParams {

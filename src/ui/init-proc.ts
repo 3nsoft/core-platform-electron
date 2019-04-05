@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,12 +14,11 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { AppInstance, FS, RequestFilter, ExposeW3N } from './app-instance';
+import { AppInstance, FS, ExposeW3N } from './app-instance';
 import { ViewerInstance } from './viewer-instance';
-import { AppManifest, CLIENT_APP_DOMAIN, STARTUP_APP_DOMAIN }
-	from './app-settings';
+import { AppManifest, STARTUP_APP_DOMAIN } from './app-settings';
 import { NamedProcs } from '../lib-common/processes';
-import { Core, CAPs, reverseDomain } from '../main/core';
+import { CAPs, reverseDomain } from '../main/core';
 import { normalize } from 'path';
 import { DeviceFS } from '../lib-client/local-files/device-fs';
 import { errWithCause } from '../lib-common/exceptions/error';
@@ -101,7 +100,7 @@ export class InitProc {
 		try {
 			const appFolder = normalize(
 				`${APPS_FOLDER}/${reverseDomain(STARTUP_APP_DOMAIN)}`);
-			const appFS = await DeviceFS.makeReadonly(appFolder);
+			const appFS = await DeviceFS.makeReadonlyFS(appFolder);
 			
 			const manifest = await appFS.readJSONFile<AppManifest>(MANIFEST_FILE);
 			const appRoot = await appFS.readonlySubRoot(APP_ROOT_FOLDER);
@@ -120,7 +119,7 @@ export class InitProc {
 		try {
 			const appFolder = normalize(
 				`${APPS_FOLDER}/${reverseDomain(appDomain)}`);
-			const appFS = await DeviceFS.makeReadonly(appFolder);
+			const appFS = await DeviceFS.makeReadonlyFS(appFolder);
 			
 			const manifest = await appFS.readJSONFile<AppManifest>(MANIFEST_FILE);
 			const appRoot = await appFS.readonlySubRoot(APP_ROOT_FOLDER);
@@ -133,6 +132,27 @@ export class InitProc {
 			app.loadContent(manifest.content);
 		} catch (err) {
 			throw errWithCause(err, `Cannot open an inbuilt app with domain ${appDomain}`);
+		}
+	}
+
+	async openAppInFolder(path: string,
+			makeCAPs: (appDomain: string, manifest: AppManifest) => CAPs):
+			Promise<void> {
+		try {
+			const appFS = await DeviceFS.makeReadonlyFS(path);
+			
+			const manifest = await appFS.readJSONFile<AppManifest>(MANIFEST_FILE);
+			const appDomain = manifest.appDomain;
+			const appRoot = await appFS.readonlySubRoot(APP_ROOT_FOLDER);
+
+			const caps = makeCAPs(appDomain, manifest);
+			
+			const app = await this.openApp(
+				appDomain, appRoot, caps, undefined, manifest.windowOpts);
+			
+			app.loadContent(manifest.content);
+		} catch (err) {
+			throw errWithCause(err, `Cannot open an app from folder ${path}`);
 		}
 	}
 

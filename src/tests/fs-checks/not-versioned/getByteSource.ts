@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -23,9 +23,6 @@ type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
 let testRandomBytes = randomBytes;
 let bytesEqual = byteArraysEqual;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.getByteSource',
@@ -33,64 +30,54 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails to read non-existent file' };
-it.func = async function(done: Function) {
-	try {
-		await testFS.getByteSource('non-existing-file')
-		.then(() => {
-			cFail('should fail for missing file');
-		}, (e: FileException) => {
-			cExpect(e.notFound).toBe(true);
-		});
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	await testFS.getByteSource('non-existing-file')
+	.then(() => {
+		fail('should fail for missing file');
+	}, (e: FileException) => {
+		expect(e.notFound).toBe(true);
+	});
 };
 it.numOfExpects = 1;
 specs.its.push(it);
 
 it = { expectation: 'reads file bytes with seeking available' };
-it.func = async function(done: Function) {
-	try {
-		let original = testRandomBytes(12*1024+3);
-		let fName = 'file1';
-		await testFS.writeBytes(fName, original);
+it.func = async function() {
+	let original = testRandomBytes(12*1024+3);
+	let fName = 'file1';
+	await testFS.writeBytes(fName, original);
 
-		let src = await testFS.getByteSource(fName);
-		cExpect(src.seek).toBeTruthy();
-		cExpect(await src.getPosition!()).toBe(0);
+	let src = await testFS.getByteSource(fName);
+	expect(src.seek).toBeTruthy();
+	expect(await src.getPosition!()).toBe(0);
 
-		let chunk = await src.read(200);
-		cExpect(bytesEqual(chunk!, original.subarray(0, 200))).toBe(true);
+	let chunk = await src.read(200);
+	expect(bytesEqual(chunk!, original.subarray(0, 200))).toBe(true);
 
-		await src.seek!(3000);
-		cExpect(await src.getPosition!()).toBe(3000, 'seek method changes position in file.');
-		chunk = await src.read(200);
-		cExpect(bytesEqual(chunk!, original.subarray(3000, 3200))).toBe(true);
+	await src.seek!(3000);
+	expect(await src.getPosition!()).toBe(3000, 'seek method changes position in file.');
+	chunk = await src.read(200);
+	expect(bytesEqual(chunk!, original.subarray(3000, 3200))).toBe(true);
 
-		await src.seek!(11000);
-		cExpect(await src.getPosition!()).toBe(11000, 'seek method changes position in file.');
-		chunk = await src.read(200);
-		cExpect(bytesEqual(chunk!, original.subarray(11000, 11200))).toBe(true);
-		
-		await src.seek!(1000);
-		cExpect(await src.getPosition!()).toBe(1000);
-		chunk = await src.read(200);
-		cExpect(bytesEqual(chunk!, original.subarray(1000, 1200))).toBe(true);
+	await src.seek!(11000);
+	expect(await src.getPosition!()).toBe(11000, 'seek method changes position in file.');
+	chunk = await src.read(200);
+	expect(bytesEqual(chunk!, original.subarray(11000, 11200))).toBe(true);
+	
+	await src.seek!(1000);
+	expect(await src.getPosition!()).toBe(1000);
+	chunk = await src.read(200);
+	expect(bytesEqual(chunk!, original.subarray(1000, 1200))).toBe(true);
 
-		chunk = await src.read(undefined);
-		cExpect(bytesEqual(chunk!, original.subarray(1200))).toBe(true, 'read should be from current position to file\'s end');
-		
-		cExpect(typeof (await src.read(100))).toBe('undefined', 'null is returned, whewn there are no more bytes to read');
+	chunk = await src.read(undefined);
+	expect(bytesEqual(chunk!, original.subarray(1200))).toBe(true, 'read should be from current position to file\'s end');
+	
+	expect(typeof (await src.read(100))).toBe('undefined', 'null is returned, whewn there are no more bytes to read');
 
-		fName = 'file2';
-		await testFS.writeBytes(fName, new Uint8Array(0));
-		src = await testFS.getByteSource(fName);
-		cExpect(typeof (await src.read(100))).toBe('undefined', 'reading empty file should produce empty array');
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	fName = 'file2';
+	await testFS.writeBytes(fName, new Uint8Array(0));
+	src = await testFS.getByteSource(fName);
+	expect(typeof (await src.read(100))).toBe('undefined', 'reading empty file should produce empty array');
 };
 it.numOfExpects = 12;
 specs.its.push(it);

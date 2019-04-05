@@ -21,7 +21,7 @@
 
 import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
-import { makeDecryptedByteSource, idToHeaderNonce }
+import { idToHeaderNonce }
 	from '../../../lib-common/obj-streaming/crypto';
 import { utf8 } from '../../../lib-common/buffer-utils';
 import { errWithCause } from '../../../lib-common/exceptions/error';

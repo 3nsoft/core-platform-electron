@@ -50,7 +50,7 @@ function npm_update {
 	echo;
 	echo "Updating npm modules in $REPO ...";
 	cd $REPO
-	npm install
+	npm ci
 	if [ $? -ne 0 ]; then
 		echo "Problems updating npm modules in $REPO. Check above, if npm produced any errors.";
 		cd ..

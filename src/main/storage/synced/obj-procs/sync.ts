@@ -21,7 +21,6 @@ import { ConnectException } from '../../../../lib-common/exceptions/http';
 import { StorageOwner } from '../../../../lib-client/3nstorage/service';
 import { logError } from '../../../../lib-client/logging/log-to-file';
 import { LocalObjVersions, ObjId } from '../files/objs';
-import { utf8 } from '../../../../lib-common/buffer-utils';
 import { CompleteVersion, Changes, ReturnToQueue, RemoveObjCurrentVersion }
 	from './queue';
 import { uploadProc } from './upload';

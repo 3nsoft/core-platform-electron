@@ -5,7 +5,7 @@
 This repository contains client-side 3NWeb platform.
 Platform's core talks 3NWeb protocols with servers, does all of crypto, keeps all user's keys, and provides an easy-to-use API for apps that run in 3NWeb platform.
 
-This is a destop implementation of 3NWeb platform, and it uses [Electron](http://electron.atom.io/).
+This is a desktop implementation of 3NWeb platform, and it uses [Electron](http://electron.atom.io/).
 Platform's core runs as a main process, while apps run in renderer processes.
 
 ## Usage

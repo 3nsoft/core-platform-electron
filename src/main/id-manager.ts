@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,17 +14,16 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { arrays, box } from 'ecma-nacl';
+import { box } from 'ecma-nacl';
 import { MailerIdProvisioner } from '../lib-client/mailer-id/provisioner';
 import { user as mid } from '../lib-common/mid-sigs-NaCl-Ed';
 import { JsonKey, keyFromJson, use as keyUse }
 	from '../lib-common/jwkeys';
-import { bind } from '../lib-common/binding';
-import { errWithCause } from '../lib-common/exceptions/error';
 import { getMailerIdServiceFor } from '../lib-client/service-locator';
 import { PKLoginException } from '../lib-client/user-with-pkl-session';
-import { areAddressesEqual } from '../lib-common/canonical-address';
-import { SingleProc, defer, Deferred } from '../lib-common/processes';
+import { SingleProc } from '../lib-common/processes';
+import { GenerateKey } from './sign-in';
+import { logError, logWarning } from '../lib-client/logging/log-to-file';
 
 type WritableFS = web3n.files.WritableFS;
 
@@ -43,156 +42,133 @@ export interface CompleteProvisioning {
 	complete(defaultSKey: Uint8Array): Promise<boolean>;
 }
 
-export interface IdManager {
-
-	/**
-	 * This returns a promise, resolvable either to provisioning completion
-	 * function, or to undefined, if given address is unknown.
-	 * @param address
-	 */
-	provisionNew(address: string): Promise<CompleteProvisioning|undefined>;
-	
-	/**
-	 * This sets address for those situations, when provisioning is done from
-	 * locally saved key.
-	 */
-	setAddress(address: string): void;
-	
-	/**
-	 * This returns user id, address, for which this id manager is provisioned.
-	 */
-	getId(): string;
-	
-	/**
-	 * This returns a promise, resolvable to mailerId signer.
-	 */
-	getSigner(): Promise<mid.MailerIdSigner>;
-	
-	/**
-	 * This returns true, if signer for a given id has been provisioned, and
-	 * shall be valid at least for the next minute, and false, otherwise.
-	 */
-	isProvisionedAndValid(): boolean;
-	
-	/**
-	 * This sets manager's storage file system.
-	 * If an identity has already been provisioned, this method ensures that
-	 * key is recorded in the storage, else, if identity hasn't been set, this
-	 * method tries to read key file, and set identity with it.
-	 */
-	setStorage(fs: WritableFS): Promise<void>;
-
-	/**
-	 * This function should be used when user is created, and login non-default
-	 * keys should be recorded for future use, as corresponding public keys have
-	 * been set on server.
-	 */
-	setLoginKeys(keysToSave: JsonKey[]): void;
-
-}
-
+/**
+ * This returns a promise, resolvable to mailerId signer.
+ */
 export type GetSigner = () => Promise<mid.MailerIdSigner>;
 
 const LOGIN_KEY_FILE_NAME = 'login-keys';
-
-const PROVISIONING_LOGIN_KEY_USE = 'malierid-prov-login';
-const DEFAULT_KEY_ID = 'default';
 
 interface LoginKeysJSON {
 	address: string;
 	keys: JsonKey[];
 }
 
-class Manager implements IdManager {
+export class IdManager {
 	
-	private address: string = (undefined as any);
 	private signer: mid.MailerIdSigner = (undefined as any);
-	private fs: WritableFS = (undefined as any);
-	private fsInit: Deferred<void>|undefined = defer<void>();
+	private localFS: WritableFS|undefined = undefined;
+	private syncedFS: WritableFS|undefined = undefined;
 	private provisioningProc = new SingleProc();
 
-	/**
-	 * These keys should be set only when user is created.
-	 */
-	private keysToSave: JsonKey[]|undefined = undefined;
-	
-	constructor() {
+	private constructor(
+		private address: string,
+		localFS?: WritableFS
+	) {
+		if (localFS) {
+			this.localFS = localFS;
+		}
 		Object.seal(this);
 	}
-	
-	setAddress(address: string): void {
-		this.clear();
-		this.address = address;
+
+	static async initInOneStepWithoutStore(address: string,
+			midLoginKey: GenerateKey|Uint8Array): Promise<IdManager|undefined> {
+		const stepTwo = await IdManager.initWithoutStore(address);
+		if (!stepTwo) { throw new Error(
+			`MailerId server doesn't recognize identity ${address}`); }
+		return stepTwo(midLoginKey);
 	}
 
-	private clear(): void {
-		this.address = (undefined as any);
-		this.signer = (undefined as any);
-		this.fs = (undefined as any);
-		this.fsInit = defer();
-		this.keysToSave = (undefined as any);
+	static async initWithoutStore(address: string):
+			Promise<((midLoginKey: GenerateKey|Uint8Array) => Promise<IdManager|undefined>) | undefined> {
+		const idManager = new IdManager(address);
+		const completion = await idManager.provisionWithGivenKey(address);
+		if (!completion) { return; }
+		return async (midLoginKey) => {
+			const key = ((typeof midLoginKey === 'function') ?
+				await midLoginKey(completion.keyParams) :
+				midLoginKey);
+			const isDone = await completion.complete(key);
+			key.fill(0);
+			return (isDone ? idManager : undefined);
+		}
 	}
 
-	setLoginKeys(keysToSave: JsonKey[]): void {
-		if (this.fs) { throw new Error(`Setting keys for saving must be done before setting fs, in this implementation.`); }
-		this.keysToSave = keysToSave;
+	static async initFromLocalStore(address: string, localFS: WritableFS):
+			Promise<IdManager|undefined> {
+		const idMan = new IdManager(address);
+		if (localFS.type !== 'local') { throw new Error(
+			`Expected local storage is typed as ${localFS.type}`); }
+		idMan.localFS = localFS;
+		try {
+			await idMan.provisionUsingSavedKey();
+		} catch (err) {
+			logError(err, `Can't initialize id manager from local store`);
+			return;
+		}
+		return idMan;
 	}
-	
-	private async checkKeyFile(): Promise<void> {
-		const json = await this.fs.readJSONFile<LoginKeysJSON>(
+
+	private async ensureLocalCacheOfKeys(): Promise<void> {
+		if (!this.localFS || !this.syncedFS) { throw new Error(
+			`Id manager's storages are not set.`); }
+		const keysCached = await this.localFS.checkFilePresence(
 			LOGIN_KEY_FILE_NAME);
-		if (!areAddressesEqual(json.address, this.address)) { throw new Error(
-			'Address for login keys on file does not match address set in id manager.'); }
-		if (!Array.isArray(json.keys) || (json.keys.length < 1)) {
-			throw new Error('Missing login keys on file.'); }
+		if (keysCached) { return; }
 		try {
-			for (const jkey of json.keys) {
-				keyFromJson(jkey, keyUse.MID_PKLOGIN, box.JWK_ALG_NAME, box.KEY_LENGTH);
-			}
+			const bytes = await this.syncedFS.readBytes(LOGIN_KEY_FILE_NAME);
+			await this.localFS.writeBytes(LOGIN_KEY_FILE_NAME, bytes!);
+			bytes!.fill(0);
 		} catch (err) {
-			throw errWithCause(err, 'Invalid login key(s) on file.');
+			logError(err, `Fail to ensure local cache of MailerId login keys.`);
 		}
 	}
 
-	async setStorage(fs: WritableFS): Promise<void> {
-		if (this.fs) { throw new Error('Storage fs is already set.'); }
-		this.fs = fs;
-		this.fsInit!.resolve();
-		this.fsInit = undefined;
-		try {
-
-			// Signer is provisioned before setting fs only when initialization
-			// is performed with a default key, derived from password.
-			if (this.isProvisionedAndValid()) {
-				// We have two cases here:
-				// 1) this is a creation of the user, and we want to save login
-				// keys.
-				// 2) this is an initialization on a new device, and we want to
-				// only check key file.
-				if (this.keysToSave) {
-					const json: LoginKeysJSON = {
-						address: this.address,
-						keys: this.keysToSave
-					};
-					await this.fs.writeJSONFile(
-						LOGIN_KEY_FILE_NAME, json, true, true);
-				} else {
-					await this.checkKeyFile();
-				}
+	private async getSavedKey(): Promise<JsonKey|undefined> {
+		if (!this.localFS) { throw new Error(
+			`Id manager's local storage is not set.`); }
+		const json = await this.localFS.readJSONFile<LoginKeysJSON>(
+			LOGIN_KEY_FILE_NAME).catch(notFoundOrReThrow);
+		if (json) { return json.keys[0]; }
+		if (this.syncedFS) {
+			const json = await this.syncedFS.readJSONFile<LoginKeysJSON>(
+				LOGIN_KEY_FILE_NAME).catch(notFoundOrReThrow);
+			if (json) {
+				await this.ensureLocalCacheOfKeys();
+				return json.keys[0];
 			} else {
-				// Initialization is performed from an existing storage, and we
-				// only want to check file with keys.
-				await this.checkKeyFile();
+				logWarning(`IdManager: there is no login MailerId login keys`);
 			}
-
-		} catch (err) {
-			throw errWithCause(err, 'Failed to set storage for MailerId.');
+		}
+		return;
+	}
+	
+	async setStorages(localFS: WritableFS|undefined, syncedFS: WritableFS,
+		 keysToSave?: JsonKey[]): Promise<void> {
+		if (localFS) {
+			if (localFS.type !== 'local') { throw new Error(
+				`Expected local storage is typed as ${localFS.type}`); }
+				this.localFS = localFS;
+		} else {
+			if (!this.localFS) { throw new Error(`Local storage is not given`); }
+		}
+		if (syncedFS.type !== 'synced') { throw new Error(
+			`Expected synced storage is typed as ${syncedFS.type}`); }
+		this.syncedFS = syncedFS;
+		if (keysToSave) {
+			const json: LoginKeysJSON = {
+				address: this.address,
+				keys: keysToSave
+			};
+			await this.localFS.writeJSONFile(LOGIN_KEY_FILE_NAME, json);
+			await this.syncedFS.writeJSONFile(LOGIN_KEY_FILE_NAME, json);
+		} else {
+			await this.ensureLocalCacheOfKeys();
 		}
 	}
 	
-	async provisionNew(address: string):
+	private async provisionWithGivenKey(address: string):
 			Promise<CompleteProvisioning|undefined> {
-		this.clear();
 		const midUrl = await getMailerIdServiceFor(address);
 		const provisioner = new MailerIdProvisioner(address, midUrl);
 		try {
@@ -202,7 +178,7 @@ class Manager implements IdManager {
 					this.signer = await provisioning.complete(() => {
 							const dhshared = box.calc_dhshared_key(
 								provisioning.serverPKey, defaultSKey);
-							arrays.wipe(defaultSKey);
+							defaultSKey.fill(0);
 							return dhshared;
 						},
 						CERTIFICATE_DURATION_SECONDS, ASSERTION_VALIDITY);
@@ -232,21 +208,19 @@ class Manager implements IdManager {
 	private async provisionUsingSavedKey(): Promise<mid.MailerIdSigner> {
 		let proc = this.provisioningProc.getP<mid.MailerIdSigner>();
 		if (proc) { return proc; }
-		if (this.fsInit) {
-			await this.fsInit.promise;
-		}
 		proc = this.provisioningProc.start(async () => {
 			const midUrl = await getMailerIdServiceFor(this.address);
 			const provisioner = new MailerIdProvisioner(this.address, midUrl);
-			const json = await this.fs.readJSONFile<LoginKeysJSON>(
-				LOGIN_KEY_FILE_NAME);
-			const skey = keyFromJson(json.keys[0], keyUse.MID_PKLOGIN,
+			const key = await this.getSavedKey();
+			if (!key) { throw new Error(
+				`No saved MailerId login key can be found`); }
+			const skey = keyFromJson(key, keyUse.MID_PKLOGIN,
 				box.JWK_ALG_NAME, box.KEY_LENGTH);
 			const provisioning = await provisioner.provisionSigner(skey.kid);
 			this.signer = await provisioning.complete(() => {
 				const dhshared = box.calc_dhshared_key(
 					provisioning.serverPKey, skey.k);
-				arrays.wipe(skey.k);
+				skey.k.fill(0);
 				return dhshared;
 			}, CERTIFICATE_DURATION_SECONDS, ASSERTION_VALIDITY);
 			return this.signer;
@@ -258,14 +232,14 @@ class Manager implements IdManager {
 		return this.address;
 	}
 	
-	async getSigner(): Promise<mid.MailerIdSigner> {
+	getSigner: GetSigner = async () => {
 		if (!this.address) { throw new Error(
 			'Address is not set in id manager'); }
 		if (!this.isProvisionedAndValid()) {
 			await this.provisionUsingSavedKey();
 		}
 		return this.signer;
-	}
+	};
 	
 	isProvisionedAndValid(): boolean {
 		if (!this.signer) { return false; }
@@ -278,23 +252,16 @@ class Manager implements IdManager {
 		}
 	}
 
-	wrap(): IdManager {
-		const w: IdManager = {
-			setStorage: bind(this, this.setStorage),
-			provisionNew: bind(this, this.provisionNew),
-			getId: bind(this, this.getId),
-			getSigner: bind(this, this.getSigner),
-			isProvisionedAndValid: bind(this, this.isProvisionedAndValid),
-			setAddress: bind(this, this.setAddress),
-			setLoginKeys: bind(this, this.setLoginKeys)
-		};
-		return Object.freeze(w);
-	}
-	
 }
 
-export function makeManager(): IdManager {
-	return (new Manager()).wrap();
+type FileException = web3n.files.FileException;
+
+/**
+ * This is a catch callback, which returns undefined on file(folder) not found
+ * exception, and re-throws all other exceptions/errors.
+ */
+function notFoundOrReThrow(exc: FileException): void {
+	if (!exc.notFound) { throw exc; }
 }
 
 Object.freeze(exports);

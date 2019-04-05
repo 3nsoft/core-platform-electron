@@ -22,9 +22,8 @@
 import { AsyncSBoxCryptor, SegmentsWriter, makeSegmentsWriter, SegmentsReader,
 	makeSegmentsReader, compareVectors, calculateNonce }
 	from 'xsp-files';
-import { FolderNode } from './folder-node';
 import { base64 } from '../../../lib-common/buffer-utils';
-import { SingleProc, Deferred, defer } from '../../../lib-common/processes';
+import { SingleProc } from '../../../lib-common/processes';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { makeObjSourceFromArrays, makeDecryptedByteSource }
 	from '../../../lib-common/obj-streaming/crypto';
@@ -110,7 +109,6 @@ Object.freeze(NodeCrypto);
 export type FSEvent = web3n.files.FolderEvent | web3n.files.FileEvent;
 type FileChangeEvent = web3n.files.FileChangeEvent;
 type RemovedEvent = web3n.files.RemovedEvent;
-type MovedEvent = web3n.files.MovedEvent;
 
 export abstract class NodeInFS<TCrypto extends NodeCrypto>
 		implements Node {

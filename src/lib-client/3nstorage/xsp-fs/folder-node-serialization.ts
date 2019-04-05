@@ -21,7 +21,7 @@
 
 import { utf8 } from '../../../lib-common/buffer-utils';
 import { FolderInfo, NodeInfo } from './folder-node';
-import { KEY_LENGTH, NONCE_LENGTH } from 'xsp-files';
+import { KEY_LENGTH } from 'xsp-files';
 import { errWithCause } from '../../../lib-common/exceptions/error';
 
 const ver1Serialization = new Uint8Array([ 1 ]);

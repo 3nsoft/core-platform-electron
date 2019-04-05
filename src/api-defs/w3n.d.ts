@@ -25,8 +25,8 @@ declare namespace web3n.ui {
 
 	/**
 	 * This is a definition of capabilities' object, injected into the DOM.
-	 * One has ensure that any particular capability is given, before trying to
-	 * use it.
+	 * One has to ensure that any particular capability is given, before trying
+	 * to use it.
 	 */
 	interface W3N {
 		device?: {
@@ -40,6 +40,7 @@ declare namespace web3n.ui {
 		openChildWindow?: OpenChildWindow;
 		parent?: rpc.RPC;
 		openViewer?: OpenViewer;
+		openWithOSBrowser?: OpenWithOSBrowser;
 		openWithOSApp?: OpenWithOSApp;
 		log?: Logger;
 		closeSelf?: () => void;

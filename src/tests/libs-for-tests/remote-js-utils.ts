@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -17,13 +17,59 @@
 import { SpectronClient } from 'spectron';
 import { ErrorWithCause } from '../../lib-common/exceptions/error';
 
+export async function exec<T>(c: SpectronClient,
+		fn: (...args: any[]) => Promise<T>, ...args: any[]): Promise<T> {
+	const script = `
+	const done = arguments[arguments.length-1];
+	try {
+		(${fn}).apply(null,arguments)
+		.then(result => done({ result }))
+		.catch(err => done({ err: stringifyErr(err) }));
+	} catch (err) {
+		done({ err: stringifyErr(err) });
+	}
+	`;
+	const out: { result: T, err?: any } =
+		(await c.executeAsync(script, ...args)).value;
+	if (out.err) {
+		throw out.err;
+	} else {
+		return out.result;
+	}
+}
+
+export async function execExpects<T>(c: SpectronClient,
+		fn: (...args: any[]) => Promise<T>, args: any[] = [],
+		numOfExps?: number): Promise<T> {
+	const script = `
+	const done = arguments[arguments.length-1];
+	try {
+		(${fn}).apply(null,arguments)
+		.then(result => done({ exps: collectAllExpectations(), result }))
+		.catch(err => done(
+			{ exps: collectAllExpectations(), err: stringifyErr(err) }));
+	} catch (err) {
+		done(
+			{ exps: collectAllExpectations(), err: stringifyErr(err) });
+	}
+	`;
+	const out: { exps: any, result: T, err?: any } =
+		(await c.executeAsync(script, ...args)).value;
+	checkRemoteExpectations(out.exps, numOfExps);
+	if (out.err) {
+		throw out.err;
+	} else {
+		return out.result;
+	}
+}
+
 type CollectedExpectations = (any[] | { isFail: boolean; e: string; })[];
 
 /**
  * @param exps is an array of jasmine expectations from client side, assembled
  * by inject in setRemoteJasmineInClient(app) function; 
  */
-export function checkRemoteExpectations(exps: CollectedExpectations,
+function checkRemoteExpectations(exps: CollectedExpectations,
 		numOfExpectations?: number): void {
 	for (let exp of exps) {
 		if (Array.isArray(exp)) {
@@ -61,14 +107,14 @@ export async function setRemoteJasmineInClient(c: SpectronClient):
 			return exps;
 		};
 
-		(<any> window).cFail = (e?: any) => {
+		(<any> window).fail = (e?: any) => {
 			collectedExpectations.push({
 				isFail: true,
 				e: e.stack ? e.stack : JSON.stringify(e, null, '  ')
 			});
 		};
 
-		(<any> window).cExpect = <T>(actual: any): jasmine.Matchers<T> => {
+		(<any> window).expect = <T>(actual: any): jasmine.Matchers<T> => {
 		
 			let expectation: any[] = [ actual ];
 			collectedExpectations.push(expectation);
@@ -142,21 +188,61 @@ export async function setRemoteJasmineInClient(c: SpectronClient):
 export async function setStringifyErrInClient(c: SpectronClient):
 		Promise<void> {
 	await c.execute(function() {
-		function stringifyErr(err: any): string {
-			if ((err as web3n.RuntimeException).runtimeException || !err
-			|| (typeof err !== 'object')) {
-				return `${JSON.stringify(err, null, '  ')}
-`;
+
+		function recursiveJSONify(err: any): any {
+			if (!err) { return ''; }
+			if ((err as web3n.RuntimeException).runtimeException) {
+				if (err.cause) {
+					err.cause = recursiveJSONify(err.cause);
+				}
+				return err;
+			} else if (!err || (typeof err !== 'object')) {
+				return err;
 			} else {
-				return `Error message: ${err.message}
-		Error stack: ${err.stack}${
-			((err as ErrorWithCause).cause ? `
-		Caused by:
-		${stringifyErr((err as ErrorWithCause).cause)}` :
-			'')}
-`;
+				const jsonErr: any = {
+					error: err.message,
+					stack: err.stack
+				};
+				if ((err as ErrorWithCause).cause) {
+					jsonErr.cause = recursiveJSONify((err as ErrorWithCause).cause);
+				}
+				return jsonErr;
 			}
 		}
+
+		function stringifyErr(err: any): string {
+			if (!err) { return ''; }
+			
+			let errStr: string;
+			if ((err as web3n.RuntimeException).runtimeException) {
+				if (err.cause) {
+					err.cause = recursiveJSONify(err.cause);
+				}
+				try {
+					errStr = `${JSON.stringify(err, null, '  ')}
+`;
+				} catch (jsonErr) {
+					errStr = `<report-error>${jsonErr.message}</report-error>
+`;
+				}
+			} else if (!err || (typeof err !== 'object')) {
+				errStr = `${JSON.stringify(err, null, '  ')}
+`;
+			} else {
+				errStr = `Error message: ${err.message}
+Error stack: ${err.stack}${
+			((err as ErrorWithCause).cause ? `
+Caused by:
+${JSON.stringify(recursiveJSONify((err as ErrorWithCause).cause), null, '  ')}` :
+	'')}
+`;
+			}
+			errStr = errStr
+			.split('\\n').join('\n')
+			.split('\\\\').join('\\');
+			return errStr;
+		}
+
 		(<any> window).stringifyErr = stringifyErr;
 	});
 }

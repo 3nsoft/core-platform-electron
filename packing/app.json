@@ -1,0 +1,41 @@
+{
+	"appId": "computer.3nweb",
+	"productName": "3NWeb",
+	"copyright": "Copyright © 2017 - 2019 ${author}",
+	"artifactName": "${productName}-${version}-${os}-${arch}.${ext}",
+	"directories": {
+		"app": "./build/app",
+		"output": "./dist/app"
+	},
+	"win": {
+		"target": [
+			{
+				"target": "nsis",
+				"arch": [ "x64", "ia32" ]
+			},
+			{
+				"target": "zip",
+				"arch": [ "x64", "ia32" ]
+			}
+		]
+	},
+	"nsis": {
+		"artifactName": "${productName}-Setup-${version}-${os}-${arch}.${ext}"
+	},
+	"linux": {
+		"target": [
+			{
+				"target": "AppImage",
+				"arch": [ "x64", "ia32" ]
+			},
+			{
+				"target": "tar.gz",
+				"arch": [ "x64", "ia32" ]
+			},
+			{
+				"target": "deb",
+				"arch": [ "x64", "ia32" ]
+			}
+		]
+	}
+}

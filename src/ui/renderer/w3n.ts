@@ -23,9 +23,11 @@ import { wrapRemoteRPC } from './w3n-caps/parent';
 import { wrapRemoteChildWindowOpener } from './w3n-caps/child-window';
 
 type CAPWrapper<T> = (cap: T, capsMap: CAPsMap) => T;
+type W3N = web3n.ui.W3N;
+type CAPNames = keyof W3N | 'signIn' | 'signUp';
 
 // triplets contain cap's: name, is-transferable-to-child flag, wrapper function
-const capWrappers: [ string, boolean, CAPWrapper<any> ][] = [
+const capWrappers: [ CAPNames, boolean, CAPWrapper<any> ][] = [
 	[ 'signIn', false, wrapRemoteSignIn ],
 	[ 'signUp', false, wrapRemoteSignUp ],
 	[ 'device', true, wrapSimpleCAP ],
@@ -35,11 +37,10 @@ const capWrappers: [ string, boolean, CAPWrapper<any> ][] = [
 	[ 'parent', false, wrapRemoteRPC ],
 	[ 'openViewer', true, wrapSimpleCAP ],
 	[ 'openWithOSApp', true, wrapSimpleCAP ],
+	[ 'openWithOSBrowser', true, wrapSimpleCAP ],
 	[ 'log', true, wrapSimpleCAP ],
 	[ 'closeSelf', false, wrapSimpleCAP ],
 ];
-
-type W3N = web3n.ui.W3N;
 
 export function makeW3NProxy(remoteW3N: W3N): W3N {
 	const capsMap = makeCAPsMap();

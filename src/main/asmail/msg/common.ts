@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,7 +15,8 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { JsonKeyShort } from '../../../lib-common/jwkeys';
-import { FolderInfo } from '../../3nstorage/xsp-fs/common';
+import { FolderInfo } from '../../../lib-client/3nstorage/xsp-fs/common';
+import * as confApi from '../../../lib-common/service-api/asmail/config';
 
 /**
  * Metadata for message that uses established key pair. 
@@ -38,8 +39,19 @@ export interface MetaForNewKey {
  * Main (zeroth) object json.
  * It is an encrypted part of a message.
  */
-export interface MainData {
-	[field: string]: any;
+export interface MsgEnvelope {
+	'Msg Type': string;
+	'Subject'?: string;
+	'Body': MainBody;
+	'Attachments'?: FolderInfo;
+
+	'Flow Params': FlowParams;
+
+	'From': string;
+	'To'?: string[];
+	'Cc'?: string[],
+
+	'Do Not Reply'?: true;
 }
 
 /**
@@ -49,44 +61,24 @@ export interface MainData {
 export interface SuggestedNextKeyPair {
 	pids: string[];
 	senderKid: string;
+	isSenderIntroKey?: boolean;
 	recipientPKey: JsonKeyShort;
+	timestamp: number;
+}
+
+/**
+ * Object with next sending parameter that correspondent should use for
+ * replies.
+ * Located in main object.
+ */
+export interface SendingParams {
+	timestamp: number;
+	auth?: boolean;
 	invitation?: string;
 }
 
 /**
- * Common fields in main object.
- */
-export const headers = {
-	FROM: 'From',
-	TO: 'To',
-	CC: 'Cc',
-	SUBJECT: 'Subject',
-	DO_NOT_REPLY: 'Do Not Reply',
-	MSG_TYPE: 'Msg Type'
-};
-Object.freeze(headers);
-
-/**
- * Common fields in a main object, managed by api a little closer.
- */
-export const managedFields = {
-	BODY: 'Body',
-	NEXT_CRYPTO: 'Next Crypto',
-	CRYPTO_CERTIF: 'Crypto Certification',
-	ATTACHMENTS: 'Attachments'
-};
-Object.freeze(managedFields);
-
-const fieldsInLowCase: string[] = [];
-for (const fName of Object.keys(managedFields)) {
-	fieldsInLowCase.push(managedFields[fName].toLowerCase());
-}
-export function isManagedField(name: string): boolean {
-	return (fieldsInLowCase.indexOf(name.toLowerCase()) > -1);
-}
-
-/**
- * 
+ * Classical body of the message.
  */
 export interface MainBody {
 	text?: {
@@ -94,6 +86,16 @@ export interface MainBody {
 		html?: string;
 	},
 	json?: any;
+}
+
+/**
+ * Flow parameters a parameters related to sending or message flow process.
+ */
+export interface FlowParams {
+	msgCount: number;
+	introCerts?: confApi.p.initPubKey.Certs;
+	nextCrypto?: SuggestedNextKeyPair;
+	nextSendingParams?: SendingParams;
 }
 
 Object.freeze(exports);

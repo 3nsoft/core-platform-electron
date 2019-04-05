@@ -21,7 +21,7 @@ import { syncWrapObjSource }
 	from '../../../lib-common/obj-streaming/concurrent';
 import { ObjFiles, DiffInfo, ObjId, ObjReader } from './files/objs';
 import { SyncCompletion } from './obj-procs/sync';
-import { Observable, Subscription } from 'rxjs';
+import { Observable } from 'rxjs';
 import { sleep } from '../../../lib-common/processes';
 
 function addPrecomputedValuesToDiff(diff: DiffInfo): void {
@@ -194,13 +194,13 @@ type FileException = web3n.files.FileException;
 class LocalAndSyncedObjReader implements ObjReader {
 
 	private syncedVersion: number|undefined = undefined;
-	private syncSub: Subscription;
 
 	constructor(
 			private objFiles: ObjFiles,
 			syncCompletion$: Observable<SyncCompletion>,
 			private localVersion: number) {
-		this.syncSub = syncCompletion$
+		// start observing object's sync completion
+		syncCompletion$
 		.filter(sc => (sc.localVersion === localVersion))
 		.take(1)
 		.subscribe(sc => { this.syncedVersion = sc.syncedVersion; });
@@ -211,18 +211,15 @@ class LocalAndSyncedObjReader implements ObjReader {
 		return (this.syncedVersion ? this.syncedVersion : this.localVersion);
 	}
 
-	private doRead<T>(readOp: (reader: ObjReader, version: number) => Promise<T>,
+	private doRead<T>(readOp: (reader: ObjReader) => Promise<T>,
 			secondAttempt = false): Promise<T> {
-		let version: number;
 		let reader: ObjReader;
 		if (this.syncedVersion) {
-			version = this.syncedVersion;
 			reader = this.objFiles.synced.reader;
 		} else {
-			version = this.localVersion;
 			reader = this.objFiles.local.reader;
 		}
-		return readOp(reader, version)
+		return readOp(reader)
 		.catch(async (exc: FileException) => {
 			// Local version object can be renamed into synced object, at any time.
 			// Hence, we may want to try reading operation second time, if rename
@@ -236,32 +233,32 @@ class LocalAndSyncedObjReader implements ObjReader {
 	}
 
 	getSegsSize(objId: ObjId, v: number, countBase?: boolean) {
-		return this.doRead(async (reader, version) =>
-			reader.getSegsSize(objId, version, countBase));
+		return this.doRead(async (reader) =>
+			reader.getSegsSize(objId, v, countBase));
 	}
 
 	readObjDiff(objId: ObjId, v: number) {
-		return this.doRead(async (reader, version) =>
-			reader.readObjDiff(objId, version));
+		return this.doRead(async (reader) =>
+			reader.readObjDiff(objId, v));
 	}
 
 	readObjHeader(objId: ObjId, v: number) {
-		return this.doRead(async (reader, version) =>
-			reader.readObjHeader(objId, version));
+		return this.doRead(async (reader) =>
+			reader.readObjHeader(objId, v));
 	}
 
 	readObjSegments(objId: ObjId, v: number, start: number, end: number) {
-		return this.doRead(async (reader, version) =>
-			reader.readObjSegments(objId, version, start, end));
+		return this.doRead(async (reader) =>
+			reader.readObjSegments(objId, v, start, end));
 	}
 
 	readFirstRawChunk(objId: ObjId, version: number, chunkSize: number) {
-		return this.doRead(async (reader, version) =>
+		return this.doRead(async (reader) =>
 			reader.readFirstRawChunk(objId, version, chunkSize));
 	}
 
 	readObjInfo(objId: ObjId, version: number) {
-		return this.doRead(async (reader, version) =>
+		return this.doRead(async (reader) =>
 			reader.readObjInfo(objId, version));
 	}
 

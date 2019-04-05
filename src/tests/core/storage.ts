@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,10 +16,10 @@
 
 import { itAsync, afterEachAsync, beforeAllAsync }
 	from '../libs-for-tests/async-jasmine';
-import { setupWithUsers, checkRemoteExpectations }
+import { setupWithUsers, execExpects, exec }
 	from '../libs-for-tests/setups';
 import { AppRunner } from '../libs-for-tests/app-runner';
-import { fsSpecsForWebDrvCtx } from '../libs-for-tests/spec-module';
+import { loadSpecsForWebDrvCtx } from '../libs-for-tests/spec-module';
 import { resolve } from 'path';
 import { SpectronClient } from 'spectron';
 
@@ -31,32 +31,27 @@ declare var w3n: {
 		saveFileDialog: web3n.device.files.SaveFileDialog;
 	};
 }
-declare var cExpect: typeof expect;
-declare var cFail: typeof fail;
-declare function collectAllExpectations(): void;
 
 async function makeTestLocalFSIn(client: SpectronClient,
 		varName: string|null = null): Promise<void> {
-	await <any> client.executeAsync(async function(varName: string|null, done) {
+	await exec(client, async function(varName: string|null) {
 		if (varName === null) { varName = 'testFS'; }
 		(<any> window)[varName] = await w3n.storage.getAppLocalFS(
 			'computer.3nweb.test');
-		done();
 	}, varName);
 }
 
 async function makeTestSyncedFSIn(client: SpectronClient,
 		varName: string|null = null): Promise<void> {
-	await <any> client.executeAsync(async function(varName: string|null, done) {
+	await exec(client, async function(varName: string|null) {
 		if (varName === null) { varName = 'testFS'; }
 		(<any> window)[varName] = await w3n.storage.getAppSyncedFS(
 			'computer.3nweb.test');
-		done();
 	}, varName);
 }
 
 async function makeUtilFuncsIn(client: SpectronClient): Promise<void> {
-	await <any> client.executeAsync(async function(done) {
+	await client.execute(function() {
 		(<any> window).testRandomBytes = (n: number): Uint8Array => {
 			let arr = new Uint8Array(n);
 			window.crypto.getRandomValues(arr);
@@ -102,33 +97,27 @@ async function makeUtilFuncsIn(client: SpectronClient): Promise<void> {
 			return true;
 		};
 		(<any> window).deepEqual = deepEqual;
-		done();
 	});
 }
 
 async function clearTestFS(client: SpectronClient, varName = 'testFS'):	
 		Promise<void> {
-	await client.executeAsync(async function(varName: string, done) {
-		let testFS: web3n.files.WritableFS = (window as any)[varName];
-		try {
-			let items = await testFS.listFolder('');
-			let delTasks: Promise<void>[] = [];
-			for (let f of items) {
-				if (f.isFile) {
-					delTasks.push(testFS.deleteFile(f.name));
-				} else if (f.isFolder) {
-					delTasks.push(testFS.deleteFolder(f.name, true));
-				} else if (f.isLink) {
-					delTasks.push(testFS.deleteLink(f.name));
-				} else {
-					throw new Error(`File system item is neither file, nor folder`);
-				}
+	await exec(client, async function(varName: string) {
+		const testFS: web3n.files.WritableFS = (window as any)[varName];
+		const items = await testFS.listFolder('');
+		const delTasks: Promise<void>[] = [];
+		for (let f of items) {
+			if (f.isFile) {
+				delTasks.push(testFS.deleteFile(f.name));
+			} else if (f.isFolder) {
+				delTasks.push(testFS.deleteFolder(f.name, true));
+			} else if (f.isLink) {
+				delTasks.push(testFS.deleteLink(f.name));
+			} else {
+				throw new Error(`File system item is neither file, nor folder`);
 			}
-			await Promise.all(delTasks);
-		} catch (err) {
-			console.error(`Error occured in cleaning test fs: \n${JSON.stringify(err, null, '  ')}`);
 		}
-		done();
+		await Promise.all(delTasks);
 	}, varName);
 }
 
@@ -152,17 +141,14 @@ describe('3NStorage', () => {
 
 		itAsync('will not produce FS for an app, not associated with this window',
 				async () => {
-			let exps = (await app.c.executeAsync(
-			async function(appDomain, done) {
+			await execExpects(app.c, async function(appDomain: string) {
 				await w3n.storage.getAppSyncedFS(appDomain)
-				.then((fs) => {
-					cFail('should not produce FS for an arbitrary app');
+				.then(() => {
+					fail('should not produce FS for an arbitrary app');
 				}, (e) => {
-					cExpect(e).toBeTruthy();
+					expect(e).toBeTruthy();
 				});
-				done(collectAllExpectations());
-			}, 'com.app.unknown')).value;
-			checkRemoteExpectations(exps, 1);
+			}, [ 'com.app.unknown' ], 1);
 		});
 
 		const allowedAppFS = [
@@ -174,21 +160,17 @@ describe('3NStorage', () => {
 		itAsync('produces FS for an app, associated with this window',
 				async () => {
 			for (let appDomain of allowedAppFS) {
-				let exps = (await app.c.executeAsync(
-				async function(appDomain, done) {
+				await execExpects(app.c, async function(appDomain: string) {
 					let fs = await w3n.storage.getAppSyncedFS(appDomain);
-					cExpect(fs).toBeTruthy();
-					done(collectAllExpectations());
-				}, appDomain)).value;
-				checkRemoteExpectations(exps, 1);
+					expect(fs).toBeTruthy();
+				}, [ appDomain ], 1);
 			}
 		});
 
 		itAsync('concurrently produces FS for an app',
 				async () => {
 			let appDomain = allowedAppFS[0];
-			let exps = (await app.c.executeAsync(
-			async function(appDomain, done) {
+			await execExpects(app.c, async function(appDomain: string) {
 				let promises: Promise<web3n.files.FS>[] = [];
 				for (let i=0; i<10; i+=1) {
 					let promise = w3n.storage.getAppSyncedFS(appDomain);
@@ -197,14 +179,12 @@ describe('3NStorage', () => {
 				await Promise.all(promises)
 				.then((fss) => {
 					for (let fs of fss) {
-						cExpect(fs).toBeTruthy();
+						expect(fs).toBeTruthy();
 					}
-				}, (err) => {
-					cFail(`Fail to concurrently get app fs`);
+				}, () => {
+					fail(`Fail to concurrently get app fs`);
 				});
-				done(collectAllExpectations());
-			}, appDomain)).value;
-			checkRemoteExpectations(exps, 10);
+			}, [ appDomain ], 10);
 		});
 
 	});
@@ -213,17 +193,14 @@ describe('3NStorage', () => {
 
 		itAsync('will not produce FS for an app, not associated with this window',
 				async () => {
-			let exps = (await app.c.executeAsync(
-			async function(appDomain, done) {
+			await execExpects(app.c, async function(appDomain: string) {
 				await w3n.storage.getAppLocalFS(appDomain)
-				.then((fs) => {
-					cFail('should not produce FS for an arbitrary app');
+				.then(() => {
+					fail('should not produce FS for an arbitrary app');
 				}, (e) => {
-					cExpect(e).toBeTruthy();
+					expect(e).toBeTruthy();
 				});
-				done(collectAllExpectations());
-			}, 'com.app.unknown')).value;
-			checkRemoteExpectations(exps, 1);
+			}, [ 'com.app.unknown' ], 1);
 		});
 
 		const allowedAppFS = [
@@ -235,21 +212,17 @@ describe('3NStorage', () => {
 		itAsync('produces FS for an app, associated with this window',
 				async () => {
 			for (let appDomain of allowedAppFS) {
-				let exps = (await app.c.executeAsync(
-				async function(appDomain, done) {
+				await execExpects(app.c, async function(appDomain: string) {
 					let fs = await w3n.storage.getAppLocalFS(appDomain);
-					cExpect(fs).toBeTruthy();
-					done(collectAllExpectations());
-				}, appDomain)).value;
-				checkRemoteExpectations(exps, 1);
+					expect(fs).toBeTruthy();
+				}, [ appDomain ], 1);
 			}
 		});
 
 		itAsync('concurrently produces FS for an app',
 				async () => {
 			let appDomain = allowedAppFS[0];
-			let exps = (await app.c.executeAsync(
-			async function(appDomain, done) {
+			await execExpects(app.c, async function(appDomain: string) {
 				let promises: Promise<web3n.files.FS>[] = [];
 				for (let i=0; i<10; i+=1) {
 					let promise = w3n.storage.getAppLocalFS(appDomain);
@@ -258,14 +231,12 @@ describe('3NStorage', () => {
 				await Promise.all(promises)
 				.then((fss) => {
 					for (let fs of fss) {
-						cExpect(fs).toBeTruthy();
+						expect(fs).toBeTruthy();
 					}
-				}, (err) => {
-					cFail(`Fail to concurrently get app fs`);
+				}, () => {
+					fail(`Fail to concurrently get app fs`);
 				});
-				done(collectAllExpectations());
-			}, appDomain)).value;
-			checkRemoteExpectations(exps, 10);
+			}, [ appDomain ], 10);
 		});
 
 	});
@@ -281,7 +252,7 @@ describe('3NStorage', () => {
 			await clearTestFS(app.c);
 		});
 
-		fsSpecsForWebDrvCtx(
+		loadSpecsForWebDrvCtx(
 			() => app.c,
 			resolve(__dirname, '../fs-checks/not-versioned'),
 			'xsp-backed');
@@ -299,7 +270,7 @@ describe('3NStorage', () => {
 			await clearTestFS(app.c);
 		});
 
-		fsSpecsForWebDrvCtx(
+		loadSpecsForWebDrvCtx(
 			() => app.c,
 			resolve(__dirname, '../fs-checks/versioned'));
 
@@ -316,7 +287,7 @@ describe('3NStorage', () => {
 			await clearTestFS(app.c);
 		});
 
-		fsSpecsForWebDrvCtx(
+		loadSpecsForWebDrvCtx(
 			() => app.c,
 			resolve(__dirname, '../fs-checks/not-versioned'),
 			'xsp-backed');
@@ -334,7 +305,7 @@ describe('3NStorage', () => {
 			await clearTestFS(app.c);
 		});
 
-		fsSpecsForWebDrvCtx(
+		loadSpecsForWebDrvCtx(
 			() => app.c,
 			resolve(__dirname, '../fs-checks/versioned'));
 
@@ -356,7 +327,7 @@ describe('3NStorage', () => {
 			await clearTestFS(app.c, varWithLocalFS);
 		});
 
-		fsSpecsForWebDrvCtx(
+		loadSpecsForWebDrvCtx(
 			() => app.c,
 			resolve(__dirname, '../fs-checks/local-to-synced-linking'));
 

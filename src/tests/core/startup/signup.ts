@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,7 +16,7 @@
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
 import { minimalSetup } from '../../libs-for-tests/setups';
-import { setRemoteJasmineInClient, checkRemoteExpectations }
+import { setRemoteJasmineInClient, execExpects }
 	from '../../libs-for-tests/remote-js-utils';
 import { sleep } from '../../../lib-common/processes';
 import { checkSecondWindow, setKeyDerivNotifsChecker }
@@ -26,74 +26,51 @@ declare var w3n: {
 	signUp: web3n.startup.SignUpService;
 	signIn: web3n.startup.SignInService;
 }
-declare var cExpect: typeof expect;
-declare var cFail: typeof fail;
-declare function collectAllExpectations(): void;
 declare function checkKeyDerivNotifications(notifPerc: number[]): void;
 
 // NOTE: it-specs inside signUp process expect to run in a given order -- they
 //		change app's state, expected by following specs in this describe.
 describe('signUp process', () => {
 
-	let s = minimalSetup();
+	const s = minimalSetup();
 
 	beforeAllAsync(async () => {
 		await setRemoteJasmineInClient(s.app.c);
 		await setKeyDerivNotifsChecker(s.app.c);
 	});
 
-	let name = 'Mike Marlow ';
-	let pass = 'some long passphrase';
+	const name = 'Mike Marlow ';
+	const pass = 'some long passphrase';
 
 	itAsync('gets available addresses', async () => {
-		let exps = (await s.c.executeAsync(async function(
-				name: string, signupDomains: string[], done: Function) {
-			try {
-				let addresses = await w3n.signUp.getAvailableAddresses(name);
-				cExpect(Array.isArray(addresses)).toBe(true);
-				cExpect(addresses.length).toBe(signupDomains.length);
-				for (let d of signupDomains) {
-					cExpect(addresses).toContain(`${name}@${d}`);
-				}
-			} catch (err) {
-				cFail(err);
+		await execExpects(s.c, async function(name: string,
+				signupDomains: string[]) {
+			const addresses = await w3n.signUp.getAvailableAddresses(name);
+			expect(Array.isArray(addresses)).toBe(true);
+			expect(addresses.length).toBe(signupDomains.length);
+			for (let d of signupDomains) {
+				expect(addresses).toContain(`${name}@${d}`);
 			}
-			done(collectAllExpectations());
-		}, name, s.signupDomains)).value;
-		checkRemoteExpectations(exps, 2 + s.signupDomains.length);
+		}, [ name, s.signupDomains ], 2 + s.signupDomains.length);
 	});
 
 	itAsync('creates User parameters', async () => {
 		s.c.timeouts('script', 59000);
-		let exps = (await s.c.executeAsync(async function(
-				pass: string, done: Function) {
-			let notifications: number[] = [];
-			let notifier = (p) => { notifications.push(p); }
-			try {
-				await w3n.signUp.createUserParams(pass, notifier);
-				checkKeyDerivNotifications(notifications);
-			} catch (err) {
-				cFail(err);
-			}
-			done(collectAllExpectations());
-		}, pass)).value;
+		await execExpects(s.c, async function(pass: string) {
+			const notifications: number[] = [];
+			const notifier = (p) => { notifications.push(p); }
+			await w3n.signUp.createUserParams(pass, notifier);
+			checkKeyDerivNotifications(notifications);
+		}, [ pass ]);
 		s.c.timeouts('script', 5000);
-		checkRemoteExpectations(exps);
 	}, 60000);
 
 	itAsync('creates user account', async () => {
-		let userId = `${name}@${s.signupDomains[0]}`;
-		let exps = (await s.c.executeAsync(async function(
-				userId: string, done: Function) {
-			try {
-				let isCreated = await w3n.signUp.addUser(userId);
-				cExpect(isCreated).toBe(true);
-			} catch (err) {
-				cFail(err);
-			}
-			done(collectAllExpectations());
-		}, userId)).value;
-		checkRemoteExpectations(exps, 1);
+		const userId = `${name}@${s.signupDomains[0]}`;
+		await execExpects(s.c, async function(userId: string) {
+			const isCreated = await w3n.signUp.addUser(userId);
+			expect(isCreated).toBe(true);
+		}, [ userId ], 1);
 		await sleep(2000);
 	});
 

@@ -16,6 +16,7 @@
 		"dist",
 		"build",
 		"node_modules",
-		"src/api-defs/injected-w3n.d.ts"
+		"src/api-defs/injected-w3n.d.ts",
+		"src/api-defs/injected-test-libs"
 	]
 }

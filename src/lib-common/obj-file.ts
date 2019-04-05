@@ -147,7 +147,7 @@ export async function createObjFile(path: string, headerSize: number,
 		segsSize: number, diffBytes?: Uint8Array):
 		Promise<{ headerOffset: number; segsOffset: number; }> {
 	const { bytes, headerOffset, segsOffset} =
-		assembleFileHead(headerSize, segsSize, diffBytes);
+		assembleFileHead(headerSize, diffBytes);
 	const fileSize = segsOffset + ((segsSize > 0) ? segsSize : 0);
 
 	// create file and write initial parsable part into it
@@ -168,8 +168,7 @@ export async function createObjFile(path: string, headerSize: number,
  * @param segsSize 
  * @param diffBytes 
  */
-export function assembleFileHead(headerSize: number, segsSize: number,
-		diffBytes?: Uint8Array):
+export function assembleFileHead(headerSize: number, diffBytes?: Uint8Array):
 		{ bytes: Uint8Array; headerOffset: number; segsOffset: number; } {
 	// prepare elements of a parsable part of a file
 	const headerOffset = (diffBytes ? 13 + diffBytes.length : 8);

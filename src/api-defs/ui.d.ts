@@ -35,8 +35,10 @@ declare namespace web3n.ui {
 	
 	type OpenItemInFS = (fs: files.FS, path: string, itemType: 'file'|'folder',
 	opts?: WindowOptions) => Promise<void>;
-	
+
 	type OpenWithOSApp = (fs: files.FS, path: string) => Promise<boolean>;
+
+	type OpenWithOSBrowser = (path: string) => void;
 
 	/**
 	 * These options are a whitelisted subset of options for Electron's window.

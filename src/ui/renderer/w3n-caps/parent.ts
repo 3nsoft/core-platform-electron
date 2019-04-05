@@ -17,7 +17,6 @@
 import { makeRPC } from '../../../lib-common/apps-rpc/renderer-side';
 import { isObjectFromCore, findTransferableRemote } from '../wrapping';
 import { RPCLink } from '../../../lib-common/apps-rpc/core-side';
-import { bind } from '../../../lib-common/binding';
 
 export type RPC = web3n.rpc.RPC;
 

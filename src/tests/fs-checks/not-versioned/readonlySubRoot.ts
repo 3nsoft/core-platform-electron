@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readonlySubRoot',
@@ -28,41 +25,31 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'creates sub-root based on existing folder' };
-it.func = async function(done: Function) {
-	try {
-		let path = 'sub-root';
-		await testFS.makeFolder(path);
-		cExpect(await testFS.checkFolderPresence(path)).toBe(true);
-		let subRoot = await testFS.readonlySubRoot(path);
-		cExpect(subRoot).toBeTruthy();
-		cExpect(subRoot.writable).toBe(false);
-		cExpect(!!subRoot.v).toBe(!!testFS.v);
-		const lst = await subRoot.listFolder('');
-		cExpect(Array.isArray(lst)).toBe(true);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let path = 'sub-root';
+	await testFS.makeFolder(path);
+	expect(await testFS.checkFolderPresence(path)).toBe(true);
+	let subRoot = await testFS.readonlySubRoot(path);
+	expect(subRoot).toBeTruthy();
+	expect(subRoot.writable).toBe(false);
+	expect(!!subRoot.v).toBe(!!testFS.v);
+	const lst = await subRoot.listFolder('');
+	expect(Array.isArray(lst)).toBe(true);
 };
 it.numOfExpects = 5;
 specs.its.push(it);
 
 it = { expectation: 'fails to create a sub-root, whenfolder is missing' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let path = 'sub-root2';
+	expect(await testFS.checkFolderPresence(path)).toBe(false);
 	try {
-		let path = 'sub-root2';
-		cExpect(await testFS.checkFolderPresence(path)).toBe(false);
-		try {
-			await testFS.readonlySubRoot(path);
-			cFail('making a readonly sub-root on a missing folder should fail')
-		} catch (exc) {
-			cExpect((exc as FileException).notFound).toBe(true);
-			if (!exc.notFound) { throw exc; }
-		}
-	} catch (err) {
-		cFail(err);
+		await testFS.readonlySubRoot(path);
+		fail('making a readonly sub-root on a missing folder should fail')
+	} catch (exc) {
+		expect((exc as FileException).notFound).toBe(true);
+		if (!exc.notFound) { throw exc; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2;
 specs.its.push(it);

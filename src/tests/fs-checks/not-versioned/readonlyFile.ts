@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readonlyFile',
@@ -28,42 +25,32 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails for non-existent file' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let fName = 'unknown-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
 	try {
-		let fName = 'unknown-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		try {
-			await testFS.readonlyFile(fName);
-			cFail('getting file object must fail, when file does not exist');
-		} catch (err) {
-			cExpect((err as FileException).notFound).toBe(true);
-			if (!err.notFound) { throw err; }
-		}
+		await testFS.readonlyFile(fName);
+		fail('getting file object must fail, when file does not exist');
 	} catch (err) {
-		cFail(err);
+		expect((err as FileException).notFound).toBe(true);
+		if (!err.notFound) { throw err; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'gives file object' };
-it.func = async function(done: Function) {
-	try {
-		let original = 'Should I be at BlackHat conference or working?';
-		let fName = 'file';
-		await testFS.writeTxtFile(fName, original);
-		
-		let file = await testFS.readonlyFile(fName);
-		cExpect(typeof file).toBe('object');
-		cExpect(file.writable).toBe(false);
-		cExpect(!!file.v).toBe(!!testFS.v);
-		cExpect(file.name).toBe(fName, 'file object should have file name');
-		cExpect(file.isNew).toBe(false, 'readonly file must exist');		
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let original = 'Should I be at BlackHat conference or working?';
+	let fName = 'file';
+	await testFS.writeTxtFile(fName, original);
+	
+	let file = await testFS.readonlyFile(fName);
+	expect(typeof file).toBe('object');
+	expect(file.writable).toBe(false);
+	expect(!!file.v).toBe(!!testFS.v);
+	expect(file.name).toBe(fName, 'file object should have file name');
+	expect(file.isNew).toBe(false, 'readonly file must exist');		
 };
 it.numOfExpects = 5;
 specs.its.push(it);

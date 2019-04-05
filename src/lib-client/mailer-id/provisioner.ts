@@ -14,7 +14,7 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { makeException, NetClient, makeNetClient } from '../electron/net';
+import { makeException } from '../electron/net';
 import { mailerIdInfoAt } from '../service-locator';
 import { ServiceUser, ICalcDHSharedKey, LoginCompletion }
 	from '../user-with-pkl-session';

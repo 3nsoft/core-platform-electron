@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -23,9 +23,6 @@ type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
 let testRandomBytes = randomBytes;
 let bytesEqual = byteArraysEqual;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.writeBytes',
@@ -33,117 +30,92 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'if not allowed to create, fails for missing file' };
-it.func = async function(done: Function) {
-	try {
-		await testFS.writeBytes('non-existing-file', testRandomBytes(123), false)
-		.then(() => {
-			cFail('should fail for missing file');
-		}, (e: FileException) => {
-			cExpect(e.notFound).toBe(true);
-		});
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	await testFS.writeBytes('non-existing-file', testRandomBytes(123), false)
+	.then(() => {
+		fail('should fail for missing file');
+	}, (e: FileException) => {
+		expect(e.notFound).toBe(true);
+	});
 };
 it.numOfExpects = 1;
 specs.its.push(it);
 
 it = { expectation: 'creates file in existing folder' };
-it.func = async function(done: Function) {
-	try {
-		let path = 'file1';
-		let content = testRandomBytes(2*1024);
-		cExpect(await testFS.checkFilePresence(path)).toBe(false);
-		let v = await testFS.v!.writeBytes(path, content);
-		cExpect(await testFS.checkFilePresence(path)).toBe(true);
-		let { bytes, version } = await testFS.v!.readBytes(path);
-		cExpect(bytesEqual(content, bytes!)).toBe(true);
-		cExpect(version).toBe(v);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let path = 'file1';
+	let content = testRandomBytes(2*1024);
+	expect(await testFS.checkFilePresence(path)).toBe(false);
+	let v = await testFS.v!.writeBytes(path, content);
+	expect(await testFS.checkFilePresence(path)).toBe(true);
+	let { bytes, version } = await testFS.v!.readBytes(path);
+	expect(bytesEqual(content, bytes!)).toBe(true);
+	expect(version).toBe(v);
 };
 it.numOfExpects = 4;
 specs.its.push(it);
 
 it = { expectation: 'creates parent folder(s) on the way' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'file2';
-		let grParent = 'grand-parent';
-		let parent2 = 'grand-parent/parent2';
-		let path = `${parent2}/${fName}`;
-		cExpect(await testFS.checkFolderPresence(grParent)).toBe(false);
-		cExpect(await testFS.checkFolderPresence(parent2)).toBe(false);
-		cExpect(await testFS.checkFolderPresence(path)).toBe(false);
-		let content = testRandomBytes(2*1024);
-		let v = await testFS.v!.writeBytes(path, content);
-		cExpect(await testFS.checkFolderPresence(grParent)).toBe(true);
-		cExpect(await testFS.checkFolderPresence(parent2)).toBe(true);
-		cExpect(await testFS.checkFilePresence(path)).toBe(true);
-		let { bytes, version } = await testFS.v!.readBytes(path);
-		cExpect(bytesEqual(content, bytes!)).toBe(true);
-		cExpect(version).toBe(v);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let fName = 'file2';
+	let grParent = 'grand-parent';
+	let parent2 = 'grand-parent/parent2';
+	let path = `${parent2}/${fName}`;
+	expect(await testFS.checkFolderPresence(grParent)).toBe(false);
+	expect(await testFS.checkFolderPresence(parent2)).toBe(false);
+	expect(await testFS.checkFolderPresence(path)).toBe(false);
+	let content = testRandomBytes(2*1024);
+	let v = await testFS.v!.writeBytes(path, content);
+	expect(await testFS.checkFolderPresence(grParent)).toBe(true);
+	expect(await testFS.checkFolderPresence(parent2)).toBe(true);
+	expect(await testFS.checkFilePresence(path)).toBe(true);
+	let { bytes, version } = await testFS.v!.readBytes(path);
+	expect(bytesEqual(content, bytes!)).toBe(true);
+	expect(version).toBe(v);
 };
 it.numOfExpects = 8;
 specs.its.push(it);
 
 it = { expectation: 'over-writes existing file with a non-exclusive call' };
-it.func = async function(done: Function) {
-	try {
-		let path = 'file3';
-		// setup initial file
-		let initBytes = testRandomBytes(123);
-		let v1 = await testFS.v!.writeBytes(path, initBytes);
-		cExpect(await testFS.checkFilePresence(path)).toBe(true);
-		let { bytes, version } = await testFS.v!.readBytes(path);
-		cExpect(bytesEqual(initBytes, bytes!)).toBe(true);
-		cExpect(version).toBe(v1);
-		// write new file content
-		let newContent = testRandomBytes(3223);
-		let v2 = await testFS.v!.writeBytes(path, newContent);
-		cExpect(await testFS.checkFilePresence(path)).toBe(true);
-		cExpect(v2).toBeGreaterThan(v1);
-		({ bytes, version } = await testFS.v!.readBytes(path));
-		cExpect(version).toBe(v2);
-		cExpect(bytesEqual(newContent, bytes!)).toBe(true);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let path = 'file3';
+	// setup initial file
+	let initBytes = testRandomBytes(123);
+	let v1 = await testFS.v!.writeBytes(path, initBytes);
+	expect(await testFS.checkFilePresence(path)).toBe(true);
+	let { bytes, version } = await testFS.v!.readBytes(path);
+	expect(bytesEqual(initBytes, bytes!)).toBe(true);
+	expect(version).toBe(v1);
+	// write new file content
+	let newContent = testRandomBytes(3223);
+	let v2 = await testFS.v!.writeBytes(path, newContent);
+	expect(await testFS.checkFilePresence(path)).toBe(true);
+	expect(v2).toBeGreaterThan(v1);
+	({ bytes, version } = await testFS.v!.readBytes(path));
+	expect(version).toBe(v2);
+	expect(bytesEqual(newContent, bytes!)).toBe(true);
 };
 it.numOfExpects = 7;
 specs.its.push(it);
 
 it = { expectation: 'exclusive-create write throws when file already exists' };
-it.func = async function(done: Function) {
-	try {
-		let path = 'file4';
-		// setup initial file
-		let initBytes = testRandomBytes(123);
-		let v = await testFS.v!.writeBytes(path, initBytes);
-		cExpect(await testFS.checkFilePresence(path)).toBe(true);
-		// try an exclusive write
-		let newContent = testRandomBytes(3223);
-		await testFS.writeBytes(path, newContent, true, true)
-		.then(() => {
-			cFail('exclusive-create write operation must fail, when file exists.');
-		}, (exc: FileException) => {
-			cExpect(exc.alreadyExists).toBe(true);
-		});
-		let { bytes, version } = await testFS.v!.readBytes(path);
-		cExpect(bytesEqual(initBytes, bytes!)).toBe(true, 'initial file content stays intact');
-		cExpect(version).toBe(v, 'initial file version stays intact');
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let path = 'file4';
+	// setup initial file
+	let initBytes = testRandomBytes(123);
+	let v = await testFS.v!.writeBytes(path, initBytes);
+	expect(await testFS.checkFilePresence(path)).toBe(true);
+	// try an exclusive write
+	let newContent = testRandomBytes(3223);
+	await testFS.writeBytes(path, newContent, true, true)
+	.then(() => {
+		fail('exclusive-create write operation must fail, when file exists.');
+	}, (exc: FileException) => {
+		expect(exc.alreadyExists).toBe(true);
+	});
+	let { bytes, version } = await testFS.v!.readBytes(path);
+	expect(bytesEqual(initBytes, bytes!)).toBe(true, 'initial file content stays intact');
+	expect(version).toBe(v, 'initial file version stays intact');
 };
 it.numOfExpects = 4;
 specs.its.push(it);

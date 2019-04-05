@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,20 +14,44 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import installExtension, { VUEJS_DEVTOOLS, ANGULARJS_BATARANG }
-	from 'electron-devtools-installer';
 import { BrowserWindow } from 'electron';
+import * as shorts from 'electron-localshortcut';
 
-export async function addDevExtensions(): Promise<void> {
-	await installExtension(VUEJS_DEVTOOLS).catch(err => console.error(err));
-	await installExtension(ANGULARJS_BATARANG).catch(err => console.error(err));
+const openedDevTools = new WeakSet<BrowserWindow>();
+
+function devTools(): void {
+	const win = BrowserWindow.getFocusedWindow();
+	if (win.webContents.devToolsWebContents) {
+		win.webContents.devToolsWebContents.focus();
+		return;
+	} else if (openedDevTools.has(win)) {
+		return;
+	}
+	const devtools = new BrowserWindow({
+		webPreferences: {
+			session: win.webContents.session
+		}
+	});
+	win.webContents.setDevToolsWebContents(devtools.webContents);
+	win.webContents.openDevTools({ mode: 'detach' });
+	const closeDevTools = () => devtools.close();
+	win.on('close', closeDevTools);
+	devtools.on('close', () => win.removeListener('close', closeDevTools));
+	openedDevTools.add(devtools);
 }
 
-export function removeDevExtensions(): void {
-	const exts = BrowserWindow.getDevToolsExtensions();
-	for (const extName of Object.keys(exts)) {
-		BrowserWindow.removeDevToolsExtension(extName);
-	}
+function refresh(): void {
+	const win = BrowserWindow.getFocusedWindow();
+	win.webContents.reloadIgnoringCache();
+}
+
+const isMacOS = process.platform === 'darwin';
+
+export function addDevToolsShortcuts(): void {
+	shorts.register(isMacOS ? 'Cmd+Alt+I' : 'Ctrl+Shift+I', devTools);
+	shorts.register('F12', devTools);
+	shorts.register('CmdOrCtrl+R', refresh);
+	shorts.register('F5', refresh);
 }
 
 const chromeDevTools = 'chrome-devtools://';

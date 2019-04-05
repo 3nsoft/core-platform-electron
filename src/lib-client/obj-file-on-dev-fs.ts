@@ -34,8 +34,7 @@ type Sink = web3n.ByteSink;
 export async function writeObjTo(sink: Sink, diff: Uint8Array|undefined,
 		header: Uint8Array, segs?: Uint8Array, closeSink = false):
 		Promise<void> {
-	const { bytes } = assembleFileHead(
-		header.length, (segs ? segs.length : 0), diff);
+	const { bytes } = assembleFileHead(header.length, diff);
 	await sink.write(bytes);
 	await sink.write(header);
 	if (segs && (segs.length > 0)) {

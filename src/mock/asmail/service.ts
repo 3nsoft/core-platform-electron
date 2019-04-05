@@ -16,7 +16,6 @@
 
 import { sleep } from '../../lib-common/processes';
 import { bind } from '../../lib-common/binding';
-import { defer } from '../../lib-common/processes';
 import { DeliveryMock } from './delivery';
 import { InboxMock } from './inbox';
 import { ASMailMockConfig } from '../conf';

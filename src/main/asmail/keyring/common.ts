@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,9 +19,12 @@
  */
 
 import { box, secret_box as sbox } from 'ecma-nacl';
-import { utf8, base64 } from '../../../lib-common/buffer-utils';
+import { base64 } from '../../../lib-common/buffer-utils';
 import { JsonKey, JsonKeyShort } from '../../../lib-common/jwkeys';
 import * as random from '../../../lib-common/random-node';
+
+export type MsgKeyRole = 'suggested' | 'in_use' | 'old' |
+	'published_intro' | 'prev_published_intro' | 'introductory';
 
 export const KID_LENGTH = 16;
 export const PID_LENGTH = 2;
@@ -52,26 +55,26 @@ export const KEY_USE = {
 };
 Object.freeze(KEY_USE);
 
-export type MsgKeyRole = 'suggested' | 'in_use' | 'old' |
-	'published_intro' | 'prev_published_intro' | 'introductory';
-
 /**
  * This returns an object with two fields: skey & pkey, holding JWK form of
  * secret and public keys respectively.
  * These are to be used with NaCl's box (Curve+XSalsa+Poly encryption).
  * Key ids are the same in this intimate pair.
  */
-export function generateKeyPair(): JWKeyPair {
-	const skeyBytes = random.bytesSync(box.KEY_LENGTH);
+export async function generateKeyPair(): Promise<JWKeyPair> {
+	const skeyBytes = await random.bytes(box.KEY_LENGTH);
 	const pkeyBytes = box.generate_pubkey(skeyBytes);
-	const kid = random.stringOfB64CharsSync(KID_LENGTH);
-	const alg = box.JWK_ALG_NAME;
+	const kid = await random.stringOfB64Chars(KID_LENGTH);
 	const skey: JsonKey = {
-		use: KEY_USE.SECRET, alg: alg, kid: kid,
+		use: KEY_USE.SECRET,
+		alg: box.JWK_ALG_NAME,
+		kid,
 		k: base64.pack(skeyBytes),
 	};
 	const pkey: JsonKey = {
-		use: KEY_USE.PUBLIC, alg: alg, kid: kid,
+		use: KEY_USE.PUBLIC,
+		alg: box.JWK_ALG_NAME,
+		kid,
 		k: base64.pack(pkeyBytes)
 	};
 	return { skey: skey, pkey: pkey };
@@ -84,12 +87,12 @@ export function generateKeyPair(): JWKeyPair {
  * This returns a JWK form of a key for NaCl's secret box (XSalsa+Poly
  * encryption).
  */
-export function generateSymmetricKey(): JsonKey {
+export async function generateSymmetricKey(): Promise<JsonKey> {
 	return {
 		use: KEY_USE.SYMMETRIC,
-		k: base64.pack(random.bytesSync(sbox.KEY_LENGTH)),
+		k: base64.pack(await random.bytes(sbox.KEY_LENGTH)),
 		alg: sbox.JWK_ALG_NAME,
-		kid: random.stringOfB64CharsSync(KID_LENGTH)
+		kid: await random.stringOfB64Chars(KID_LENGTH)
 	};
 };
 
@@ -99,16 +102,13 @@ function getKeyBytesFrom(key: JsonKey, use: string, alg: string, klen: number):
 		if (key.alg === alg) {
 			const bytes = base64.open(key.k);
 			if (bytes.length !== klen) { throw new Error(
-					"Key "+key.kid+" has a wrong number of bytes"); }
+				`Key ${key.kid} has a wrong number of bytes`); }
 			return bytes;
 		} else {
-			throw new Error("Key "+key.kid+
-					", should be used with unsupported algorithm '"+
-					key.alg+"'");
+			throw new Error(`Key ${key.kid}, should be used with unsupported algorithm '${key.alg}'`);
 		}
 	} else {
-		throw new Error("Key "+key.kid+" has incorrect use '"+key.use+
-				"', instead of '"+use+"'");
+		throw new Error(`Key ${key.kid} has incorrect use '${key.use}', instead of '${use}'`);
 	}
 }
 
@@ -137,7 +137,7 @@ export function extractPKeyBytes(key: JsonKey): Uint8Array {
 export function extractKeyBytes(key: JsonKeyShort): Uint8Array {
 	const bytes = base64.open(key.k);
 	if (bytes.length !== box.KEY_LENGTH) { throw new Error(
-		"Key "+key.kid+" has a wrong number of bytes"); }
+		`Key ${key.kid} has a wrong number of bytes`); }
 	return bytes;
 }
 

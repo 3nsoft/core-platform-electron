@@ -15,14 +15,13 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { MailRecipient } from '../../../lib-client/asmail/recipient';
-import { Observable } from 'rxjs';
+import { Observable, Observer as RxObserver } from 'rxjs';
 import { msgRecievedCompletely }
 	from '../../../lib-common/service-api/asmail/retrieval';
 import { logError } from '../../../lib-client/logging/log-to-file';
 import { ServerEvents } from '../../../lib-client/server-events';
 
 type IncomingMessage = web3n.asmail.IncomingMessage;
-type InboxException = web3n.asmail.InboxException;
 type Observer<T> = web3n.Observer<T>;
 
 /**
@@ -56,7 +55,7 @@ export class InboxEvents {
 	subscribe<T>(event: string, observer: Observer<T>): () => void {
 		if (event === 'message') {
 			const subscription = (this.newMsg$ as Observable<any>).subscribe(
-				observer.next, observer.error, observer.complete);
+				observer as RxObserver<any>);
 			return () => subscription.unsubscribe();
 		} else {
 			throw new Error(`Event type ${event} is unknown to inbox`);

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2016 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -20,13 +20,13 @@ import { makeDecryptedByteSource, idToHeaderNonce }
 	from '../../../lib-common/obj-streaming/crypto';
 import { errWithCause } from '../../../lib-common/exceptions/error';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
-import { MainData, headers, managedFields, MainBody, SuggestedNextKeyPair }
+import { MsgEnvelope, MainBody, SuggestedNextKeyPair, SendingParams }
 	from './common';
-import { MsgKeyRole } from '../keyring/index';
 import { makeSegmentsReader, AsyncSBoxCryptor } from 'xsp-files';
-import { FolderInfo } from '../../3nstorage/xsp-fs/common';
+import { FolderInfo } from '../../../lib-client/3nstorage/xsp-fs/common';
+import { MsgKeyRole } from '../keyring';
 
-export { SuggestedNextKeyPair, headers } from './common';
+export { SuggestedNextKeyPair } from './common';
 
 export class OpenedMsg {
 	
@@ -34,7 +34,7 @@ export class OpenedMsg {
 
 	constructor(
 			public msgId: string,
-			private main: MainData) {
+			private main: MsgEnvelope) {
 		Object.seal(this);
 	}
 	
@@ -52,29 +52,40 @@ export class OpenedMsg {
 		this.msgKeyRole = msgKeyRole;
 	}
 
-	getHeader(name: string): any {
+	getSection<N extends keyof MsgEnvelope>(name: N): MsgEnvelope[typeof name] {
 		return this.main[name];
 	}
 
-	getSender(): string {
-		return this.getHeader(headers.FROM);
+	get sender(): string {
+		return this.main['From'];
 	}
 	
-	getMainBody(): MainBody {
-		const body: MainBody = this.getHeader(managedFields.BODY);
+	get mainBody(): MainBody {
+		const body = this.getSection('Body');
 		return (body ? body : {});
 	}
 	
-	getNextCrypto(): SuggestedNextKeyPair|undefined {
-		return this.getHeader(managedFields.NEXT_CRYPTO);
+	get nextCrypto(): SuggestedNextKeyPair|undefined {
+		return this.getSection('Flow Params').nextCrypto;
+	}
+	
+	get msgCount(): number {
+		return this.getSection('Flow Params').msgCount;
 	}
 
-	getCurrentCryptoCerts(): confApi.p.initPubKey.Certs {
-		return this.getHeader(managedFields.CRYPTO_CERTIF);
+	get nextSendingParams(): SendingParams|undefined {
+		return this.getSection('Flow Params').nextSendingParams;
 	}
 
-	getAttachmentsJSON(): FolderInfo|undefined {
-		return this.getHeader(managedFields.ATTACHMENTS);
+	get introCryptoCerts(): confApi.p.initPubKey.Certs {
+		const certs = this.getSection('Flow Params').introCerts;
+		if (!certs) { throw new Error(
+			`Message is missing crypto certs for introductory key, used by sender`); }
+		return certs;
+	}
+
+	get attachmentsJSON(): FolderInfo|undefined {
+		return this.getSection('Attachments');
 	}
 	
 }

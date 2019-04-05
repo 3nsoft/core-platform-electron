@@ -38,6 +38,7 @@ function del(paths) {
 const f = {
 	build_all: 'build/all',
 	build_app: 'build/app',
+	build_mock: 'build/mock',
 	tsconfig: 'tsconfig.json',
 	app_main: 'build/all/main.js',
 	mock_main: 'build/all/mock/main-for-client.js',
@@ -49,6 +50,7 @@ const f = {
 
 // put task names into object so that ctrl+space becomes useful
 const t = {
+	build_platform: 'build-platform',	// compiles platform
 	build_all: 'build-all',	// compiles platform and ui apps
 	run: 'run',		// starts electron platform app with all ui apps on it
 	run_fast: 'run-fast',	// same as run, but skips rebuilding ui apps
@@ -56,6 +58,7 @@ const t = {
 	prep_test: 'prep-test',
 	test: 'test',
 	prep_app_for_dist: 'prep-app-for-dist',
+	prep_mock_for_dist: 'prep-mock-for-dist',
 }
 
 
@@ -67,7 +70,9 @@ function build_platform() {
 	const tsResult = tsProject.src().pipe(tsProject());
 	return tsResult.js.pipe(gulp.dest(f.build_all));
 }
+gulp.task(t.build_platform, build_platform);
 
+// XXX (2) and (3) can be removed in light of modular packing and running
 
 //============================================================================
 // 2. Build UI apps. They place themselves into build/all/apps
@@ -132,42 +137,59 @@ gulp.task(t.test, gulp.series(build_platform,
 //============================================================================
 const copy_app = gulp.series(del(f.build_app), gulp.parallel(
 	copy(`${f.build_all}/main.js`, f.build_app),
-	...([ 'lib-client', 'lib-common', 'main', 'ui', 'apps', 'main.js' ].map(
+	...([ 'lib-client', 'lib-common', 'main', 'ui', 'apps' ].map(
 		fold => copy(`${f.build_all}/${fold}/**/*`, `${f.build_app}/${fold}`)))
 ));
 const packFieldsToCopy = [ 'name', 'version', 'description', 'author',
 	'license', 'dependencies' ];
-function prep_app_package_json(done) {
-	const originalPack = readJSONFile(f.package_json);
-	const appPack = {};
-	for (const f of packFieldsToCopy) {
-		appPack[f] = originalPack[f];
-	}
-	appPack.main = 'main.js';
-	writeJSONFile(`${f.build_app}/package.json`, appPack);
-	done();
-}
-function prep_app_package_lock_json(done) {
-	const originalLock = readJSONFile(f.package_lock_json);
-	const appLock = {};
-	for (const field of Object.keys(originalLock)) {
-		appLock[field] = (field === 'dependencies') ? {} : originalLock[field];
-	}
-	if (originalLock.dependencies) {
-		for (const packName of Object.keys(originalLock.dependencies)) {
-			const pack = originalLock.dependencies[packName];
-			if (pack.dev || packName.startsWith('@types/')) { continue; }
-			appLock.dependencies[packName] = pack;
+function prep_package_json(main, buildFolder) {
+	return function(done) {
+		const originalPack = readJSONFile(f.package_json);
+		const newPack = {};
+		for (const f of packFieldsToCopy) {
+			newPack[f] = originalPack[f];
 		}
+		newPack.main = main;
+		writeJSONFile(`${buildFolder}/package.json`, newPack);
+		done();
 	}
-	writeJSONFile(`${f.build_app}/package-lock.json`, appLock);
-	done();
 }
-gulp.task(t.prep_app_for_dist, gulp.series(t.build_all, copy_app,
+function prep_package_lock_json(buildFolder) {
+	return function(done) {
+		const originalLock = readJSONFile(f.package_lock_json);
+		const newLock = {};
+		for (const field of Object.keys(originalLock)) {
+			newLock[field] = (field === 'dependencies') ? {} : originalLock[field];
+		}
+		if (originalLock.dependencies) {
+			for (const packName of Object.keys(originalLock.dependencies)) {
+				const pack = originalLock.dependencies[packName];
+				if (pack.dev || packName.startsWith('@types/')) { continue; }
+				newLock.dependencies[packName] = pack;
+			}
+		}
+		writeJSONFile(`${buildFolder}/package-lock.json`, newLock);
+		done();
+	}
+}
+const prep_app_package_json = prep_package_json('main.js', f.build_app);
+const prep_app_package_lock_json = prep_package_lock_json(f.build_app);
+gulp.task(t.prep_app_for_dist, gulp.series(t.build_platform, copy_app,
 	prep_app_package_json, prep_app_package_lock_json));
 
-//	XXX Note that similar thing can be done to pack mock, with devtools.
 
+//============================================================================
+// 6. Prepare mock for builder, placing code and package info into build/app
+//============================================================================
+const copy_mock = gulp.series(del(f.build_mock), gulp.parallel(
+	...([ 'lib-client', 'lib-common', 'main', 'ui', 'mock' ].map(
+		fold => copy(`${f.build_all}/${fold}/**/*`, `${f.build_mock}/${fold}`)))
+));
+const prep_mock_package_json = prep_package_json(
+	'mock/main-for-client.js', f.build_mock);
+const prep_mock_package_lock_json = prep_package_lock_json(f.build_mock);
+gulp.task(t.prep_mock_for_dist, gulp.series(t.build_platform, copy_mock,
+	prep_mock_package_json, prep_mock_package_lock_json));
 
 
 gulp.task("help", (cb) => {
@@ -180,10 +202,18 @@ Major tasks in this project:
 
  3) "prep-test" - this builds all necessary code for tests, picking all required for testing projects like server. 
 
- 4) "test" - runs spectron's tests on compiled code
+ 4) "test" - runs spectron's tests on compiled code. Note that currently tests works on linux, but not on windows. This is due to server's inability to run on windows.
 
-For building distributables, use command:
-	npm run build [... electron-builder parameters]
+ 5) "prep-app-for-dist" - compiles and prepares app for building. This task is automatically used by "npm run build".
+
+ 6) "prep-mock-for-dist" - compiles and prepares mock for building. This task is automatically used by "npm run build-mock".
+
+For building distributables use npm scripts. On linux use commands:
+	npm run build
+	npm run build-mock
+and on windows use command:
+	npm run build-on-windows
+	npm run build-mock-on-windows
 `;
 	console.log(h);
 	cb();

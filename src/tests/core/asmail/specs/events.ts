@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,14 +15,11 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { SpecDescribe, SpecIt } from '../../../libs-for-tests/spec-module';
-import { checkRemoteExpectations } from '../../../libs-for-tests/setups';
+import { execExpects } from '../../../libs-for-tests/setups';
 import { AppRunner } from '../../../libs-for-tests/app-runner';
-import { sendTxtMsg, W3N } from '../test-utils';
+import { sendTxtMsg, sendTxtMsgNumOfChecks, W3N } from '../test-utils';
 
 declare var w3n: W3N;
-const cExpect = expect;
-const cFail = fail;
-function collectAllExpectations(): void {};
 
 export const specs: SpecDescribe = {
 	description: '.subscribe',
@@ -37,59 +34,42 @@ const it: SpecIt = {
 };
 it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 	// user 2 starts listening for events, collecting 'em in window-places array
-	let exps = (await app2().c.executeAsync(
-	async function(done: Function) {
-		try {
-			const testMessages: IncomingMessage[] = [];
-			(window as any).testMessages = new Promise((resolve, reject) => {
-				w3n.mail.inbox.subscribe('message', {
-					next: (msg) => {
-						testMessages.push(msg);
-						// promise will resolve when at least two messages come
-						if (testMessages.length >= 2) { resolve(testMessages); }
-					}
-				});
+	await execExpects(app2().c, async function() {
+		const testMessages: IncomingMessage[] = [];
+		(window as any).testMessages = new Promise((resolve, reject) => {
+			w3n.mail.inbox.subscribe('message', {
+				next: (msg) => {
+					testMessages.push(msg);
+					// promise will resolve when at least two messages come
+					if (testMessages.length >= 2) { resolve(testMessages); }
+				},
+				error: reject
 			});
-		} catch (err) {
-			cFail(err);
-		}
-		done(collectAllExpectations());
-	})).value;
-	checkRemoteExpectations(exps);
+		});
+	});
 
 	const txtBody1 = 'Some text\nBlah-blah-blah';
 	const txtBody2 = 'Another text message';
 
 	// user 1 sends message to user 2
-	const v1: { msgId: string; exps: any; } = (await app1().c.executeAsync(
-		sendTxtMsg, app2().user.userId, txtBody1)).value;
-	checkRemoteExpectations(v1.exps);
-	const v2: { msgId: string; exps: any; } = (await app1().c.executeAsync(
-		sendTxtMsg, app2().user.userId, txtBody2)).value;
-	checkRemoteExpectations(v2.exps);
+	const msgId1 = await execExpects(app1().c, sendTxtMsg, [ app2().user.userId, txtBody1 ], sendTxtMsgNumOfChecks);
+	const msgId2 = await execExpects(app1().c, sendTxtMsg, [ app2().user.userId, txtBody2 ], sendTxtMsgNumOfChecks);
 
-	if (!v1.msgId) { throw new Error(
-		`got bad message id after sending: ${v1.msgId}`); }
+	if (!msgId1) { throw new Error(
+		`got bad message id after sending: ${msgId1}`); }
 	
 	// user 2 gets incoming message
-	exps = (await app2().c.executeAsync(
-	async function(idAndTxts: string[][], done: Function) {
-		try {
-			const testMessages: IncomingMessage[] =
-				await (window as any).testMessages;
-			for (const idAndTxt of idAndTxts) {
-				const msgId = idAndTxt[0];
-				const txtBody = idAndTxt[1];
-				const msg = testMessages.find(m => (m.msgId === msgId));
-				cExpect(msg).toBeTruthy(`message ${msgId} should be present in a list of all messages`);
-				cExpect(msg!.plainTxtBody).toBe(txtBody);
-			}
-		} catch (err) {
-			cFail(err);
+	await execExpects(app2().c, async function(idAndTxts: string[][]) {
+		const testMessages: IncomingMessage[] =
+			await (window as any).testMessages;
+		for (const idAndTxt of idAndTxts) {
+			const msgId = idAndTxt[0];
+			const txtBody = idAndTxt[1];
+			const msg = testMessages.find(m => (m.msgId === msgId));
+			expect(msg).toBeTruthy(`message ${msgId} should be present in a list of all messages`);
+			expect(msg!.plainTxtBody).toBe(txtBody);
 		}
-		done(collectAllExpectations());
-	}, [[ v1.msgId, txtBody1 ], [ v2.msgId, txtBody2 ]])).value;
-	checkRemoteExpectations(exps, 4);
+	}, [ [[ msgId1, txtBody1 ], [ msgId2, txtBody2 ]] ], 4);
 	
 };
 specs.its.push(it);

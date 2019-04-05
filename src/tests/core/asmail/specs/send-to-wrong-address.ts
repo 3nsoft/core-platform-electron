@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,14 +15,11 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { SpecDescribe, SpecIt } from '../../../libs-for-tests/spec-module';
-import { checkRemoteExpectations } from '../../../libs-for-tests/setups';
+import { execExpects } from '../../../libs-for-tests/setups';
 import { AppRunner } from '../../../libs-for-tests/app-runner';
 import { W3N } from '../test-utils';
 
 declare var w3n: W3N;
-const cExpect = expect;
-const cFail = fail;
-function collectAllExpectations(): void {};
 
 export const specs: SpecDescribe = {
 	description: '.sendMsg',
@@ -42,53 +39,47 @@ it.func = async function(app1: () => AppRunner) {
 	const unknownUser = `Unknown ${app1().user.userId}`;
 
 	// user 1 sends message to user 2
-	const exps = (await app1().c.executeAsync(
-	async function(recipient: string, txtBody: string, done: Function) {
-		try {
-			const msg: OutgoingMessage = {
-				msgType: 'mail',
-				plainTxtBody: txtBody
+	await execExpects(app1().c,
+	async function(recipient: string, txtBody: string) {
+		const msg: OutgoingMessage = {
+			msgType: 'mail',
+			plainTxtBody: txtBody
+		};
+
+		// start sending
+		const idForSending = 'q2w3e';
+		await w3n.mail.delivery.addMsg([ recipient ], msg, idForSending);
+		expect(await w3n.mail.delivery.currentState(idForSending)).toBeTruthy();
+
+		// register delivery progress callback
+		const notifs: DeliveryProgress[] = [];
+
+		// observe, while waiting for delivery completion
+		await new Promise((resolve, reject) => {
+			const observer: web3n.Observer<DeliveryProgress> = {
+				next: (p: DeliveryProgress) => { notifs.push(p); },
+				complete: resolve, error: reject
 			};
+			const cbDetach = w3n.mail.delivery.observeDelivery(
+				idForSending, observer);
+			expect(typeof cbDetach).toBe('function');
+		});
 
-			// start sending
-			const idForSending = 'q2w3e';
-			await w3n.mail.delivery.addMsg([ recipient ], msg, idForSending);
-			cExpect(await w3n.mail.delivery.currentState(idForSending)).toBeTruthy();
+		// notifications should have something
+		expect(notifs.length).toBeGreaterThan(0);
+		const lastInfo = notifs[notifs.length-1];
+		expect(lastInfo).toBeTruthy('There has to be at least one event fired');
 
-			// register delivery progress callback
-			const notifs: DeliveryProgress[] = [];
+		// it has to be an error
+		expect(typeof lastInfo!.recipients[recipient].err).toBe('object');
+		const exc = lastInfo!.recipients[recipient].err! as ASMailSendException;
+		expect(exc.unknownRecipient).toBe(true);
+		expect(typeof lastInfo!.recipients[recipient].idOnDelivery).toBe('undefined');
 
-			// observe, while waiting for delivery completion
-			await new Promise((resolve, reject) => {
-				const observer: web3n.Observer<DeliveryProgress> = {
-					next: (p: DeliveryProgress) => { notifs.push(p); },
-					complete: resolve, error: reject
-				};
-				const cbDetach = w3n.mail.delivery.observeDelivery(
-					idForSending, observer);
-				cExpect(typeof cbDetach).toBe('function');
-			});
+		await w3n.mail.delivery.rmMsg(idForSending);
+		expect(await w3n.mail.delivery.currentState(idForSending)).toBeFalsy();
+	}, [ unknownUser, txtBody ], 8);
 
-			// notifications should have something
-			cExpect(notifs.length).toBeGreaterThan(0);
-			const lastInfo = notifs[notifs.length-1];
-			cExpect(lastInfo).toBeTruthy('There has to be at least one event fired');
-
-			// it has to be an error
-			cExpect(typeof lastInfo!.recipients[recipient].err).toBe('object');
-			const exc = lastInfo!.recipients[recipient].err! as ASMailSendException;
-			cExpect(exc.unknownRecipient).toBe(true);
-			cExpect(typeof lastInfo!.recipients[recipient].idOnDelivery).toBe('undefined');
-
-			await w3n.mail.delivery.rmMsg(idForSending);
-			cExpect(await w3n.mail.delivery.currentState(idForSending)).toBeFalsy();
-		} catch (err) {
-			cFail(err);
-		}
-		done(collectAllExpectations());
-	}, unknownUser, txtBody)).value;
-	checkRemoteExpectations(exps, 8);
-	
 };
 specs.its.push(it);
 

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,10 +21,9 @@ import { NamedProcs } from '../../../lib-common/processes';
 import { MailRecipient, makeMsgNotFoundException }
 	from '../../../lib-client/asmail/recipient';
 import { getASMailServiceFor } from '../../../lib-client/service-locator';
-import { OpenedMsg, openMsg, headers }
-	from '../../../lib-client/asmail/msg/opener';
-import { KeyRing } from '../keyring';
-import { InboxCache, MsgStatus } from './cache';
+import { OpenedMsg, openMsg } from '../msg/opener';
+import { MsgKeyInfo } from '../keyring';
+import { InboxCache, MsgMeta } from './cache';
 import { Downloader } from './downloader';
 import { MsgIndex } from './msg-indexing';
 import { makeCachedObjSource } from './cached-obj-source';
@@ -35,17 +34,78 @@ import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { base64 } from '../../../lib-common/buffer-utils';
 import { checkAndExtractPKeyWithAddress } from '../key-verification';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
+import * as delivApi from '../../../lib-common/service-api/asmail/delivery';
 import { JsonKey } from '../../../lib-common/jwkeys';
 import { InboxEvents } from './inbox-events';
 import { GetSigner } from '../../id-manager';
 import { logError } from '../../../lib-client/logging/log-to-file';
 import { TimeWindowCache } from '../../../lib-common/time-window-cache';
 import { AsyncSBoxCryptor } from 'xsp-files';
+import { makeInboxCache } from './cache';
+import { ensureCorrectFS } from '../../../lib-common/exceptions/file';
+import { SendingParams } from '../msg/common';
 
 type MsgInfo = web3n.asmail.MsgInfo;
 type IncomingMessage = web3n.asmail.IncomingMessage;
 type WritableFS = web3n.files.WritableFS;
 type InboxService = web3n.asmail.InboxService;
+
+export interface ResourcesForReceiving {
+	address: string;
+	getSigner: GetSigner;
+	getStorages: StorageGetter;
+	cryptor: AsyncSBoxCryptor;
+
+	correspondents: {
+
+		/**
+		 * This function does ring's part of a decryption process, consisting of
+		 * (1) finding key material, identified in message meta,
+		 * (2) checking that respective keys open the message,
+		 * (3) verifying identity of introductory key,
+		 * (4) checking that sender header in message corresponds to address,
+		 * associated with actual keys, and
+		 * (5) absorbing crypto material in the message.
+		 * Returned promise resolves to an object with an opened message and a
+		 * decryption info, when all goes well, or, otherwise, resolves to
+		 * undefined.
+		 * @param msgMeta is a plain text meta information that comes with the
+		 * message
+		 * @param getMainObjHeader getter of message's main object's header
+		 * @param getOpenedMsg that opens the message, given file key for the main
+		 * object.
+		 * @param checkMidKeyCerts is a certifying function for MailerId certs.
+		 */
+		msgDecryptor: (msgMeta: delivApi.msgMeta.CryptoInfo,
+				getMainObjHeader: () => Promise<Uint8Array>,
+				getOpenedMsg: (mainObjFileKey: string, msgKeyPackLen: number) =>
+					Promise<OpenedMsg>,
+				checkMidKeyCerts: (certs: confApi.p.initPubKey.Certs) =>
+					Promise<{ pkey: JsonKey; address: string; }>) =>
+			Promise<{ decrInfo: MsgKeyInfo; openedMsg: OpenedMsg }|undefined>;
+		
+		/**
+		 * This function marks one's own sending parameters as being used by
+		 * respective correspondent/sender.
+		 * @param sender
+		 * @param invite
+		 */
+		markOwnSendingParamsAsUsed: (sender: string, invite: string) =>
+			Promise<void>;
+
+		/**
+		 * This function saves sending parameters that should be used next time
+		 * for sending messages to a given address.
+		 * @param address
+		 * @param params
+		 */
+		saveParamsForSendingTo: (address: string, params: SendingParams) =>
+			Promise<void>;
+
+	};
+}
+
+type R = ResourcesForReceiving['correspondents'];
 
 /**
  * Instance of this class represents inbox-on-mail-server.
@@ -56,39 +116,40 @@ type InboxService = web3n.asmail.InboxService;
  */
 export class InboxOnServer {
 	
-	private index: MsgIndex = (undefined as any);
-	private msgReceiver: MailRecipient = (undefined as any);
-	private inboxEvents: InboxEvents = (undefined as any);
+	private msgReceiver: MailRecipient;
+	private inboxEvents: InboxEvents;
+	private downloader: Downloader;
 	private procs = new NamedProcs();
-	private cache: InboxCache = (undefined as any);
-	private downloader: Downloader = (undefined as any);
 	private recentlyOpenedMsgs = new TimeWindowCache<string, OpenedMsg>(60*1000);
 	
-	constructor(
-			private address: string,
-			private getSigner: GetSigner,
-			private keyring: KeyRing,
-			private storages: StorageGetter,
-			private cryptor: AsyncSBoxCryptor) {
+	private constructor(address: string, getSigner: GetSigner,
+		private r: R,
+		private storages: StorageGetter,
+		private cryptor: AsyncSBoxCryptor,
+		private cache: InboxCache,
+		private index: MsgIndex
+	) {
+		this.msgReceiver = new MailRecipient(address, getSigner,
+			() => getASMailServiceFor(address));
+		this.inboxEvents = new InboxEvents(
+			this.msgReceiver, bind(this, this.getMsg));
+		this.downloader = new Downloader(this.cache, this.msgReceiver);
 		Object.seal(this);
 	}
 
-	/**
-	 * This method must be called prior any use of this object.
-	 * This call returns a promise, resolvable when initialization completes.
-	 * @param cache is inbox cache, backed by device's file system
-	 * @param fs
-	 */
-	async init(cache: InboxCache, fs: WritableFS): Promise<void> {
+	static async makeAndStart(cacheDevFS: WritableFS, fs: WritableFS,
+			r: ResourcesForReceiving): Promise<InboxOnServer> {
+		
 		try {
-			this.cache = cache;
-			this.msgReceiver = new MailRecipient(this.address, this.getSigner,
-				() => getASMailServiceFor(this.address));
-			this.downloader = new Downloader(this.cache, this.msgReceiver);
-			this.index = new MsgIndex(fs);
-			await this.index.init();
-			this.inboxEvents = new InboxEvents(
-				this.msgReceiver, bind(this, this.getMsg));
+			ensureCorrectFS(cacheDevFS, 'device', true);
+			ensureCorrectFS(fs, 'synced', true);
+			const cache = await makeInboxCache(cacheDevFS);
+
+			const index = new MsgIndex(fs);
+			await index.init();
+
+			return new InboxOnServer(r.address, r.getSigner,
+				r.correspondents, r.getStorages, r.cryptor, cache, index);
 		} catch (err) {
 			throw errWithCause(err, 'Failed to initialize Inbox');
 		}
@@ -121,7 +182,7 @@ export class InboxOnServer {
 	private async removeMsgFromServerAndCache(msgId: string): Promise<void> {
 		await Promise.all([
 			this.cache.deleteMsg(msgId),
-			this.msgReceiver.removeMsg(msgId).catch((exc) => {})
+			this.msgReceiver.removeMsg(msgId).catch(() => {})
 		]);
 	}
 	
@@ -162,27 +223,29 @@ export class InboxOnServer {
 					Math.round(msgStatus.deliveryTS / 1000));
 			};
 
-			const decrOut = await this.keyring.decrypt(
-				meta.extMeta, msgStatus.deliveryTS,
-				getMainObjHeader, getOpenedMsg, checkMidKeyCerts);
+			const decrOut = await this.r.msgDecryptor(
+				meta.extMeta, getMainObjHeader, getOpenedMsg, checkMidKeyCerts);
 
 			if (decrOut) {
-				// if sender authenticated to server, check that it matches address,
-				// recovered from message decryption 
 				const { decrInfo, openedMsg } = decrOut;
 				openedMsg.setMsgKeyRole(decrInfo.keyStatus);
+
+				this.checkServerAuthIfPresent(meta, decrInfo);
+
+				// add records cache and to index
 				this.recentlyOpenedMsgs.set(msgId, openedMsg);
-				if (meta.authSender &&
-						!areAddressesEqual(meta.authSender, decrInfo.correspondent)) {
-					throw new Error(`Sender authenticated to server as ${meta.authSender}, while decrypting key is associated with ${decrInfo.correspondent}`);
-				}
 				const msgInfo: MsgInfo = {
-					msgType: openedMsg.getHeader(headers.MSG_TYPE),
+					msgType: openedMsg.getSection('Msg Type'),
 					msgId,
 					deliveryTS: msgStatus.deliveryTS
 				};
-				// add records to index and cache
 				await this.index.add(msgInfo, decrInfo);
+
+				await Promise.all([
+					this.absorbSendingParams(openedMsg),
+					this.markOwnParams(meta, openedMsg.sender)
+				]);
+
 			} else {
 				// check, if msg has already been indexed
 				const knownDecr = await this.index.fKeyFor(
@@ -203,7 +266,27 @@ export class InboxOnServer {
 			return false;
 		}
 	}
+
+	private async markOwnParams(meta: MsgMeta, sender: string): Promise<void> {
+		if (!meta.invite) { return; }
+		await this.r.markOwnSendingParamsAsUsed(sender, meta.invite);
+	}
+
+	private async absorbSendingParams(openedMsg: OpenedMsg): Promise<void> {
+		const sendingParams = openedMsg.nextSendingParams;
+		if (!sendingParams) { return; }
+		const address = openedMsg.sender;
+		await this.r.saveParamsForSendingTo(address, sendingParams);
+	}
 	
+	private checkServerAuthIfPresent(meta: MsgMeta, decrInfo: MsgKeyInfo): void {
+		// if sender authenticated to server, check that it matches address,
+		// recovered from message decryption 
+		if (meta.authSender &&
+				!areAddressesEqual(meta.authSender, decrInfo.correspondent)) {
+			throw new Error(`Sender authenticated to server as ${meta.authSender}, while decrypting key is associated with ${decrInfo.correspondent}`);
+		}
+	}
 	
 	private async listMsgs(fromTS?: number): Promise<MsgInfo[]> {
 		const checkServer = true;	// XXX in future this will be an option from req
@@ -296,16 +379,16 @@ export class InboxOnServer {
 
 	private msgToUIForm(msg: OpenedMsg, deliveryTS: number): IncomingMessage {
 		const m: IncomingMessage = {
-			sender: msg.getSender(),
+			sender: msg.sender,
 			establishedSenderKeyChain: msg.establishedKeyChain,
 			msgId: msg.msgId,
 			deliveryTS,
-			msgType: msg.getHeader(headers.MSG_TYPE),
-			subject: msg.getHeader(headers.SUBJECT),
-			carbonCopy: msg.getHeader(headers.CC),
-			recipients: msg.getHeader(headers.TO)
+			msgType: msg.getSection('Msg Type'),
+			subject: msg.getSection('Subject'),
+			carbonCopy: msg.getSection('Cc'),
+			recipients: msg.getSection('To')
 		};
-		const body = msg.getMainBody();
+		const body = msg.mainBody;
 		if (body.text) {
 			if (typeof body.text.plain === 'string') {
 				m.plainTxtBody = body.text.plain;
@@ -317,7 +400,7 @@ export class InboxOnServer {
 		if (body.json !== undefined) {
 			m.jsonBody = body.json;
 		}
-		const attachments = msg.getAttachmentsJSON();
+		const attachments = msg.attachmentsJSON;
 		if (attachments) {
 			m.attachments = fsForAttachments(this.downloader, this.cache,
 				m.msgId, attachments, this.storages, this.cryptor);

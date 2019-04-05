@@ -16,9 +16,8 @@
 
 import { NamedProcs } from '../../../lib-common/processes';
 import { MailRecipient } from '../../../lib-client/asmail/recipient';
-import { InboxCache, PartialObjInfo, ObjSize, MsgStatus, MsgMeta }
-	from './cache';
-import { splitBigRegions, missingRegionsIn, Region }
+import { InboxCache, PartialObjInfo, ObjSize, MsgStatus } from './cache';
+import { splitBigRegions, missingRegionsIn }
 	from '../../../lib-client/local-files/regions';
 
 const MAX_GETTING_CHUNK = 512*1024;
@@ -59,7 +58,7 @@ export class Downloader {
 	startMsgDownload(msgId: string): Promise<MsgStatus> {
 		const pid = procId(msgId, undefined);
 		return this.downloadProcs.startOrChain(pid, async () => {
-			// protect from a duplicate action
+		// protect from a duplicate action
 			let msgStatus = await this.cache.findMsg(msgId);
 			if (msgStatus) { return msgStatus; }
 
@@ -123,10 +122,7 @@ export class Downloader {
 				await this.msgReceiver.getObj(msgId, objId, DOWNLOAD_START_CHUNK);
 
 			// save bytes to cache
-			await this.cache.saveMsgObjHeader(msgId, objId, header);
-			if (segsChunk.length > 0) {
-				await this.cache.saveMsgObjSegs(msgId, objId, 0, segsChunk);
-			}
+			await this.cache.startSavingMsgObj(msgId, objId, header, segsChunk);
 
 			// return new status
 			({ onDisk } = await this.statusOf(msgId, objId));

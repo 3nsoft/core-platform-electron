@@ -18,8 +18,7 @@
  * This defines functions that implement ASMail delivery protocol.
  */
 
-import { NetClient, makeNetClient, makeException }
-	from '../electron/net';
+import { makeNetClient, makeException } from '../electron/net';
 import * as api from '../../lib-common/service-api/asmail/delivery';
 import { user as mid } from '../../lib-common/mid-sigs-NaCl-Ed';
 import { asmailInfoAt } from '../service-locator';

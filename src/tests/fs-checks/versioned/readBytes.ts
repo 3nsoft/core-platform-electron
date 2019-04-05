@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -23,9 +23,6 @@ type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
 let testRandomBytes = randomBytes;
 let bytesEqual = byteArraysEqual;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readBytes',
@@ -33,95 +30,79 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails to read non-existent file' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let fName = 'unknown-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
 	try {
-		let fName = 'unknown-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		try {
-			await testFS.readBytes(fName)
-			cFail('reading bytes must fail, when file does not exist');
-		} catch (err) {
-			cExpect((err as FileException).notFound).toBe(true);
-			if (!err.notFound) { throw err; }
-		}
+		await testFS.readBytes(fName)
+		fail('reading bytes must fail, when file does not exist');
 	} catch (err) {
-		cFail(err);
+		expect((err as FileException).notFound).toBe(true);
+		if (!err.notFound) { throw err; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'reads whole file' };
-it.func = async function(done: Function) {
-	try {
-		let originalBytes = testRandomBytes(12*1024+3);
-		let fName = 'file1';
-		let v1 = await testFS.v!.writeBytes(fName, originalBytes);
-		let { bytes, version } = await testFS.v!.readBytes(fName);
-		cExpect(bytesEqual(bytes!, originalBytes)).toBe(true, 'file read should produce array with all bytes');
-		cExpect(version).toBe(v1, 'file version at reading should exactly the same as that on respective write');
-		
-		let v2 = await testFS.v!.writeBytes(fName, new Uint8Array(0));
-		cExpect(v2).toBeGreaterThan(v1);
-		({ bytes, version } = await testFS.v!.readBytes(fName));
-		cExpect(typeof bytes).toBe('undefined', 'reading empty file should produce undefined');
-		cExpect(version).toBe(v2, 'file version at reading should exactly the same as that on respective write');
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let originalBytes = testRandomBytes(12*1024+3);
+	let fName = 'file1';
+	let v1 = await testFS.v!.writeBytes(fName, originalBytes);
+	let { bytes, version } = await testFS.v!.readBytes(fName);
+	expect(bytesEqual(bytes!, originalBytes)).toBe(true, 'file read should produce array with all bytes');
+	expect(version).toBe(v1, 'file version at reading should exactly the same as that on respective write');
+	
+	let v2 = await testFS.v!.writeBytes(fName, new Uint8Array(0));
+	expect(v2).toBeGreaterThan(v1);
+	({ bytes, version } = await testFS.v!.readBytes(fName));
+	expect(typeof bytes).toBe('undefined', 'reading empty file should produce undefined');
+	expect(version).toBe(v2, 'file version at reading should exactly the same as that on respective write');
 };
 it.numOfExpects = 5;
 specs.its.push(it);
 
 it = { expectation: 'reads part of the file' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'file3';
-		let originalBytes = testRandomBytes(12*1024+333);
-		let v = await testFS.v!.writeBytes(fName, originalBytes);
-		
-		let { bytes, version } = await testFS.v!.readBytes(fName, 12, 3456);
-		cExpect(bytesEqual(bytes!, originalBytes.subarray(12, 3456))).toBe(true, 'should read from a proper file interior.');
-		cExpect(version).toBe(v);
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, 12*1024));
-		cExpect(bytesEqual(bytes!, originalBytes.subarray(12*1024))).toBe(true, 'read should start from interior and go to file\'s end.');
-		cExpect(version).toBe(v);
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, 12*1024, 1024*1024));
-		cExpect(bytesEqual(bytes!, originalBytes.subarray(12*1024))).toBe(true, 'when end parameter is greater than file size, bytes up to files end must be read.');
-		cExpect(version).toBe(v);
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, undefined, 123));
-		cExpect(bytesEqual(bytes!, originalBytes)).toBe(true, 'when start parameter is not given, end should also be ignored');
-		cExpect(version).toBe(v);
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, 1024*1024, 1024*1024+4));
-		cExpect(typeof bytes).toBe('undefined', 'when start is greater than file size, undefined must be returned');
-		cExpect(version).toBe(v);
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, 1024*1024));
-		cExpect(typeof bytes).toBe('undefined', 'when start is greater than file size, undefined must be returned');
-		cExpect(version).toBe(v);
+it.func = async function() {
+	let fName = 'file3';
+	let originalBytes = testRandomBytes(12*1024+333);
+	let v = await testFS.v!.writeBytes(fName, originalBytes);
+	
+	let { bytes, version } = await testFS.v!.readBytes(fName, 12, 3456);
+	expect(bytesEqual(bytes!, originalBytes.subarray(12, 3456))).toBe(true, 'should read from a proper file interior.');
+	expect(version).toBe(v);
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, 12*1024));
+	expect(bytesEqual(bytes!, originalBytes.subarray(12*1024))).toBe(true, 'read should start from interior and go to file\'s end.');
+	expect(version).toBe(v);
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, 12*1024, 1024*1024));
+	expect(bytesEqual(bytes!, originalBytes.subarray(12*1024))).toBe(true, 'when end parameter is greater than file size, bytes up to files end must be read.');
+	expect(version).toBe(v);
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, undefined, 123));
+	expect(bytesEqual(bytes!, originalBytes)).toBe(true, 'when start parameter is not given, end should also be ignored');
+	expect(version).toBe(v);
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, 1024*1024, 1024*1024+4));
+	expect(typeof bytes).toBe('undefined', 'when start is greater than file size, undefined must be returned');
+	expect(version).toBe(v);
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, 1024*1024));
+	expect(typeof bytes).toBe('undefined', 'when start is greater than file size, undefined must be returned');
+	expect(version).toBe(v);
 
-		await testFS.readBytes(fName, -1).then(
-			() => cFail('negative parameters should cause throwing up'),
-			(err) => {});
+	await testFS.readBytes(fName, -1).then(
+		() => fail('negative parameters should cause throwing up'),
+		() => {});
 
-		await testFS.readBytes(fName, 1, -2).then(
-			() => cFail('negative parameters should cause throwing up'),
-			(err) => {});
-		
-		({ bytes, version } = await testFS.v!.readBytes(fName, 1234, 100));
-		cExpect(typeof bytes).toBe('undefined', 'when end is smaller than start , undefined must be returned');
-		cExpect(version).toBe(v);
-				
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	await testFS.readBytes(fName, 1, -2).then(
+		() => fail('negative parameters should cause throwing up'),
+		() => {});
+	
+	({ bytes, version } = await testFS.v!.readBytes(fName, 1234, 100));
+	expect(typeof bytes).toBe('undefined', 'when end is smaller than start , undefined must be returned');
+	expect(version).toBe(v);
 };
 it.numOfExpects = 14;
 specs.its.push(it);

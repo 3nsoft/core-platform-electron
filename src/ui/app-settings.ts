@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,13 +14,16 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { normalize } from 'path';
-
 export interface StoragePolicy {
 	canOpenAppFS(appFolder: string, type: 'local'|'synced'): boolean;
-	canOpenUserFS?: (type: web3n.storage.StorageType) => 'w'|'r'|false;
-	canOpenSysFS?: (type: web3n.storage.StorageType) => 'w'|'r'|false;
+	canOpenUserFS?: FSChecker;
+	canOpenSysFS?: FSChecker;
+	canAccessDevicePath?: DevPathChecker;
 }
+
+export type FSChecker = (type: web3n.storage.StorageType) => 'w'|'r'|false;
+
+export type DevPathChecker = (path: string) => 'w'|'r'|false;
 
 export const CLIENT_APP_DOMAIN = '3nweb.computer';
 
@@ -37,6 +40,7 @@ export interface AppManifest {
 		mail?: MailCAPSetting;
 		openViewer?: 'all' | { mimeWhitelist: string[]; };
 		openWithOSApp?: 'all' | { mimeWhitelist: string[]; };
+		openWithOSBrowser?: 'all';
 		openChildWindow?: 'all';
 		storage?: StorageCAPSetting;
 	};
@@ -50,6 +54,10 @@ export interface StorageCAPSetting {
 	appFS: 'default' | AppFSSetting[];
 	userFS?: 'all'|FSSetting[];
 	sysFS?: 'all'|FSSetting[];
+
+	// XXX make FilesOnDeviceSetting|FilesOnDeviceSetting[] and
+	// ensure that '*' option is ignored in array
+	filesOnDevice?: FilesOnDeviceSetting[];
 }
 
 export interface AppFSSetting {
@@ -59,6 +67,11 @@ export interface AppFSSetting {
 
 export interface FSSetting {
 	type: web3n.storage.StorageType;
+	writable: boolean;
+}
+
+export interface FilesOnDeviceSetting {
+	path: string;
 	writable: boolean;
 }
 

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -24,48 +24,40 @@ export type W3N = {
 };
 
 declare var w3n: W3N;
-const cExpect = expect;
-const cFail = fail;
-function collectAllExpectations(): void {};
 
 type DeliveryProgress = web3n.asmail.DeliveryProgress;
 type OutgoingMessage = web3n.asmail.OutgoingMessage;
 
 /**
- * This function to be run in webdriver's executeAsync, in renderer's context.
+ * This function to be run in renderer's context via execExpects
  * @param recipient 
  * @param txtBody 
- * @param done 
  */
-export async function sendTxtMsg(recipient: string, txtBody: string,
-		done: Function) {
-	let msgId: string = (undefined as any);
-	try {
-		const msg: OutgoingMessage = {
-			msgType: 'mail',
-			plainTxtBody: txtBody
-		};
-		const idForSending = 'd5b6';
-		await w3n.mail.delivery.addMsg([ recipient ], msg, idForSending);
-		cExpect(await w3n.mail.delivery.currentState(idForSending)).toBeTruthy();
-		const lastInfo = await new Promise<DeliveryProgress>((resolve, reject) => {
-			let lastInfo: DeliveryProgress;
-			w3n.mail.delivery.observeDelivery(idForSending, {
-				next: info => (lastInfo = info),
-				complete: () => resolve(lastInfo),
-				error: reject
-			});
+export async function sendTxtMsg(recipient: string, txtBody: string):
+		Promise<string> {
+	const msg: OutgoingMessage = {
+		msgType: 'mail',
+		plainTxtBody: txtBody
+	};
+	const idForSending = 'd5b6';
+	await w3n.mail.delivery.addMsg([ recipient ], msg, idForSending);
+	expect(await w3n.mail.delivery.currentState(idForSending)).toBeTruthy();
+	const lastInfo = await new Promise<DeliveryProgress>((resolve, reject) => {
+		let lastInfo: DeliveryProgress;
+		w3n.mail.delivery.observeDelivery(idForSending, {
+			next: info => (lastInfo = info),
+			complete: () => resolve(lastInfo),
+			error: reject
 		});
-		cExpect(typeof lastInfo).toBe('object');
-		cExpect(lastInfo!.allDone).toBe(true);
-		await w3n.mail.delivery.rmMsg(idForSending);
-		cExpect(await w3n.mail.delivery.currentState(idForSending)).toBeFalsy();
-		const recInfo = lastInfo!.recipients[recipient];
-		cExpect(typeof recInfo.idOnDelivery).toBe('string');
-		cExpect(recInfo.err).toBeFalsy(`error when sending message to a particular recipient`);
-		msgId = recInfo.idOnDelivery!;
-	} catch (err) {
-		cFail(err);
-	}
-	done({ msgId, exps: collectAllExpectations() });
+	});
+	expect(typeof lastInfo).toBe('object');
+	expect(lastInfo!.allDone).toBe(true);
+	await w3n.mail.delivery.rmMsg(idForSending);
+	expect(await w3n.mail.delivery.currentState(idForSending)).toBeFalsy();
+	const recInfo = lastInfo!.recipients[recipient];
+	expect(typeof recInfo.idOnDelivery).toBe('string');
+	expect(recInfo.err).toBeFalsy(`error when sending message to a particular recipient`);
+	return recInfo.idOnDelivery!;
 }
+
+export const sendTxtMsgNumOfChecks = 6;

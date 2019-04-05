@@ -19,8 +19,7 @@ import { itAsync, beforeAllAsync, afterAllAsync, afterEachAsync }
 import { DeviceFS } from '../../lib-client/local-files/device-fs';
 import * as nodeFS from '../../lib-common/async-fs-node';
 import { resolve } from 'path';
-import { bytes as randomBytes } from '../../lib-common/random-node';
-import { fsSpecsForCurrentCtx } from '../libs-for-tests/spec-module';
+import { loadSpecsForCurrentCtx } from '../libs-for-tests/spec-module';
 
 declare var testFS: web3n.files.WritableFS;
 
@@ -47,7 +46,7 @@ describe('DeviceFS', () => {
 
 		// creating on non-existing folder should fail
 		try {
-			await DeviceFS.makeWritable(resolve(TEST_DATA, 'not-existing-folder'));
+			await DeviceFS.makeWritableFS(resolve(TEST_DATA, 'not-existing-folder'));
 			fail('device fs should not be created in non-existing folder');
 		} catch (e) {
 			expect((e as FileException).notFound).toBeTruthy();
@@ -56,7 +55,7 @@ describe('DeviceFS', () => {
 		let rootPath = resolve(TEST_DATA, 'root-for-creation');
 		await nodeFS.mkdir(rootPath);
 
-		let devFS = await DeviceFS.makeWritable(rootPath);
+		let devFS = await DeviceFS.makeWritableFS(rootPath);
 		expect(devFS).toBeTruthy();
 
 		nodeFS.rmdir(rootPath);
@@ -66,7 +65,7 @@ describe('DeviceFS', () => {
 	describe('is web3n.files.WritableFS', () => {
 
 		beforeAllAsync(async function() {
-			(<any> global).testFS = await DeviceFS.makeWritable(rootPath);
+			(<any> global).testFS = await DeviceFS.makeWritableFS(rootPath);
 		});
 
 		afterEachAsync(async function() {
@@ -86,7 +85,7 @@ describe('DeviceFS', () => {
 			await Promise.all(delTasks);
 		});
 
-		fsSpecsForCurrentCtx(resolve(__dirname, '../fs-checks/not-versioned'));
+		loadSpecsForCurrentCtx(resolve(__dirname, '../fs-checks/not-versioned'));
 
 	});
 

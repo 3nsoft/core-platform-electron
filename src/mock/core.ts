@@ -22,10 +22,6 @@ import { Storages } from './storage';
 import { logError } from '../lib-client/logging/log-to-file';
 import { AppManifest } from '../ui/app-settings';
 
-interface MockW3N extends web3n.ui.W3N {
-	isMock: true;
-}
-
 type FS = web3n.files.FS;
 
 export class Core {

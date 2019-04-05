@@ -43,7 +43,7 @@ type FS = web3n.files.FS;
 export async function setAppProtocolIn(session: Electron.Session,
 		appRoot: string|FS, appDomain: string): Promise<void> {
 
-	const isProtoAlreadySet = await new Promise<boolean>((resolve, reject) => {
+	const isProtoAlreadySet = await new Promise<boolean>(resolve => {
 		session.protocol.isProtocolHandled(protoSchemas.W3N_APP,
 			// current definition doesn't say that callback's argument is boolean
 			isHandled => resolve(!!isHandled));
@@ -173,7 +173,7 @@ function makeBufferProtocolListenerForFsProto(fs: FS, path: string,
 export async function setFsProtocolIn(session: Electron.Session,
 		fs: FS, path: string, appDomain: 'file'|'folder'): Promise<void> {
 
-	const isProtoAlreadySet = await new Promise<boolean>((resolve, reject) => {
+	const isProtoAlreadySet = await new Promise<boolean>(resolve => {
 		session.protocol.isProtocolHandled(protoSchemas.W3N_FS,
 			// current definition doesn't say that callback's argument is boolean
 			isHandled => resolve(!!isHandled));

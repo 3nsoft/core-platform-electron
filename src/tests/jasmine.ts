@@ -25,7 +25,8 @@ jas.loadConfig({
 	spec_files: [
 		'units/*.js',
 		'core/startup/*.js',
-		'core/*.js',
+		'core/asmail.js',
+		'core/storage.js',
 	]
 });
 

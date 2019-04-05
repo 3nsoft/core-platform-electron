@@ -78,7 +78,7 @@ export function fsForAttachments(downloader: Downloader,
 		web3n.files.ReadonlyFS {
 	const storage = new AttachmentStore(
 		downloader, cache, msgId, storages, cryptor);
-	const fs = XspFS.makeASMailMsgRootFromJSON(storage, rootJson, 'attachments');
+	const fs = XspFS.fromASMailMsgRootFromJSON(storage, rootJson, 'attachments');
 	return fs;
 }
 

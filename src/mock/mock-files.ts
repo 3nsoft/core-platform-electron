@@ -30,17 +30,18 @@ import { wrapReadonlyFile, wrapReadonlyFS, wrapWritableFile, wrapWritableFS,
 	Linkable }
 	from '../lib-client/files';
 import * as pathMod from 'path';
+import { getDataArgFrom } from '../lib-client/local-files/app-files';
 
 function userIdToFolderName(userId: string): string {
 	userId = toCanonicalAddress(userId);
 	return base64urlSafe.pack(utf8.pack(userId));
 }
 
-function folderNameToUserId(folderName: string): string {
-	return utf8.open(base64urlSafe.open(folderName));
-}
-
-const APP_DIR = '3NWeb-mock';
+const APP_DIR = (() => {
+	// either get value from parameters
+	const dataDir = getDataArgFrom(process.argv);
+	return (dataDir ? dataDir : '3NWeb-mock');
+})();
 const INBOX_DIR = 'inbox';
 const STORAGE_DIR = 'storage';
 
@@ -59,7 +60,7 @@ async function appFS(versioned: boolean, type: FSType): Promise<WritableFS|Reado
 			throw errWithCause(e, `Cannot create app folder on the disk`);
 		});
 	});
-	const nonVersioned = await DeviceFS.makeWritable(APP_DIR);
+	const nonVersioned = await DeviceFS.makeWritableFS(APP_DIR);
 	return (versioned ?
 		mockVersionedFS(nonVersioned, true, type) :
 		nonVersioned);
@@ -113,7 +114,7 @@ function infoFromFilePath(path: string) {
 
 async function getFileVersion(devFS: WritableFS, path: string):
 		Promise<number> {
-	const { fileName, infoFile, parentFolder} = infoFromFilePath(path);
+	const { fileName, infoFile } = infoFromFilePath(path);
 	try {
 		const info = await devFS.readJSONFile<MockFolderInfo>(infoFile);
 		const version = info.files[fileName];
@@ -436,8 +437,8 @@ function mockVersionedFS(devFS: WritableFS, writable: boolean, type: FSType):
 
 		readTxtFile: devFS.readTxtFile,
 
-		statFile: async (path: string) => {
-			const st = await devFS.statFile(path);
+		stat: async (path: string) => {
+			const st = await devFS.stat(path);
 			st.version = await sync.getFileVer(path);
 			return st;
 		},
@@ -551,8 +552,6 @@ type ReadonlyFile = web3n.files.ReadonlyFile;
 
 class SyncFile {
 
-	private versionUpdateProcs = new NamedProcs();
-
 	constructor(
 			private sync: Sync,
 			private path: string) {
@@ -613,7 +612,9 @@ function mockVersionedFile(sync: SyncFile, devFile: WritableFile,
 
 		readJSON: devFile.readJSON,
 
-		readTxt: devFile.readTxt
+		readTxt: devFile.readTxt,
+
+		watch: devFile.watch
 
 	};
 

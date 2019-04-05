@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.deleteFile',
@@ -28,75 +25,58 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'lists root' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'non-existing-folder';
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-		await testFS.deleteFolder(fName)
-		.then(() => {
-			cFail('deleting non-existing folder must fail');
-		}, (exc: FileException) => {
-			cExpect(exc.notFound).toBe(true);
-		});
+it.func = async function() {
+	let fName = 'non-existing-folder';
+	expect(await testFS.checkFolderPresence(fName)).toBe(false);
+	await testFS.deleteFolder(fName)
+	.then(() => {
+		fail('deleting non-existing folder must fail');
+	}, (exc: FileException) => {
+		expect(exc.notFound).toBe(true);
+	});
 
-		await testFS.writeTxtFile(fName, '');
-		cExpect(await testFS.checkFilePresence(fName)).toBe(true);
-		await testFS.deleteFolder(fName)
-		.then(() => {
-			cFail('deleting file as folder must fail');
-		}, (exc: FileException) => {
-			cExpect(exc.notDirectory).toBe(true, 'folder is not a file');
-		});
-		
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	await testFS.writeTxtFile(fName, '');
+	expect(await testFS.checkFilePresence(fName)).toBe(true);
+	await testFS.deleteFolder(fName)
+	.then(() => {
+		fail('deleting file as folder must fail');
+	}, (exc: FileException) => {
+		expect(exc.notDirectory).toBe(true, 'folder is not a file');
+	});
 };
 it.numOfExpects = 4;
 specs.its.push(it);
 
 it = { expectation: 'deletes folder' };
-it.func = async function(done: Function) {
-	try {
-		for (let fName of [ 'folder1', 'parent/folder2' ]) {
-			await testFS.makeFolder(fName);
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-			await testFS.deleteFolder(fName);
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-		}
-	} catch (err) {
-		cFail(err);
+it.func = async function() {
+	for (let fName of [ 'folder1', 'parent/folder2' ]) {
+		await testFS.makeFolder(fName);
+		expect(await testFS.checkFolderPresence(fName)).toBe(true);
+		await testFS.deleteFolder(fName);
+		expect(await testFS.checkFolderPresence(fName)).toBe(false);
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 4;
 specs.its.push(it);
 
 it = { expectation: 'will delete folder with content, only when flag is set' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'folder';
-		await testFS.makeFolder(fName);
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-		await testFS.writeTxtFile(fName+'/folder2/file1', '');
-		await testFS.writeTxtFile(fName+'/file2', '');
-		
-		await testFS.deleteFolder(fName)
-		.then(() => {
-			cFail('cannot remove folder with content, when flag is not set');
-		}, (exc: FileException) => {
-			cExpect(exc.notEmpty).toBe(true);
-		});
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
+it.func = async function() {
+	let fName = 'folder';
+	await testFS.makeFolder(fName);
+	expect(await testFS.checkFolderPresence(fName)).toBe(true);
+	await testFS.writeTxtFile(fName+'/folder2/file1', '');
+	await testFS.writeTxtFile(fName+'/file2', '');
+	
+	await testFS.deleteFolder(fName)
+	.then(() => {
+		fail('cannot remove folder with content, when flag is not set');
+	}, (exc: FileException) => {
+		expect(exc.notEmpty).toBe(true);
+	});
+	expect(await testFS.checkFolderPresence(fName)).toBe(true);
 
-		await testFS.deleteFolder(fName, true);
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	await testFS.deleteFolder(fName, true);
+	expect(await testFS.checkFolderPresence(fName)).toBe(false);
 };
 it.numOfExpects = 4;
 specs.its.push(it);

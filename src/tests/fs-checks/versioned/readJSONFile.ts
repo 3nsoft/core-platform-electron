@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -20,9 +20,6 @@ import { deepEqual as jsonDeepEqual } from '../../libs-for-tests/json-equal';
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
 let deepEqual = jsonDeepEqual;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.readJSONFile',
@@ -30,47 +27,37 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails to read non-existent file' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'unknown-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		await testFS.readJSONFile(fName)
-		.then(() => {
-			cFail('reading json must fail, when file does not exist');
-		}, (err: FileException) => {
-			cExpect(err.notFound).toBe(true);
-			if (!err.notFound) { throw err; }
-		});
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let fName = 'unknown-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
+	await testFS.readJSONFile(fName)
+	.then(() => {
+		fail('reading json must fail, when file does not exist');
+	}, (err: FileException) => {
+		expect(err.notFound).toBe(true);
+		if (!err.notFound) { throw err; }
+	});
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'reads json file' };
-it.func = async function(done: Function) {
-	try {
-		let original = { a: 'foo', b: true, 'df-df': 23};
-		let fName = 'file1';
-		let v1 = await testFS.v!.writeJSONFile(fName, original);
-		let { json, version } = await testFS.v!.readJSONFile(fName);
-		cExpect(deepEqual(json, original)).toBe(true, 'file read should produce original json');
-		cExpect(version).toBe(v1, 'file version at reading should exactly the same as that on respective write');
-		
-		let v2 = await testFS.v!.writeBytes(fName, new Uint8Array(0));
-		cExpect(v2).toBeGreaterThan(v1);
-		await testFS.readJSONFile(fName)
-		.then(() => {
-			cFail('reading empty file should fail, as empty is not valid json');
-		}, (exc) => {
-			cExpect(exc).toBeTruthy();
-		});
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let original = { a: 'foo', b: true, 'df-df': 23};
+	let fName = 'file1';
+	let v1 = await testFS.v!.writeJSONFile(fName, original);
+	let { json, version } = await testFS.v!.readJSONFile(fName);
+	expect(deepEqual(json, original)).toBe(true, 'file read should produce original json');
+	expect(version).toBe(v1, 'file version at reading should exactly the same as that on respective write');
+	
+	let v2 = await testFS.v!.writeBytes(fName, new Uint8Array(0));
+	expect(v2).toBeGreaterThan(v1);
+	await testFS.readJSONFile(fName)
+	.then(() => {
+		fail('reading empty file should fail, as empty is not valid json');
+	}, (exc) => {
+		expect(exc).toBeTruthy();
+	});
 };
 it.numOfExpects = 4;
 specs.its.push(it);

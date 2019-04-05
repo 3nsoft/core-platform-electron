@@ -23,7 +23,7 @@ import { StorageOwner as RemoteStorageOwner, FollowingSaveReqOpts,
 import { logWarning } from '../../../../lib-client/logging/log-to-file';
 import { ObjId } from '../files/objs';
 import { LocalObjVersions, UploadInfo } from '../files/local-versions';
-import { ReadingProc, FileChunk } from './stream-for-upload';
+import { ReadingProc } from './stream-for-upload';
 
 export function uploadProc(remoteStorage: RemoteStorageOwner,
 		files: LocalObjVersions, objId: ObjId, ver: number, data: ReadingProc):

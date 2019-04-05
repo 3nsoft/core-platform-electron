@@ -36,8 +36,6 @@ export function makeRPCLink(): RPCLink {
 	return (new Link()).wrap();
 }
 
-type SendMsg = (msgArr: any[]) => void;
-
 interface App {
 	id: string;
 	side: AppSide;

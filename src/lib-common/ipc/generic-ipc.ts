@@ -21,29 +21,6 @@ import { NamedProcs } from '../processes';
 
 export type Observer<T> = web3n.Observer<T>;
 
-interface Duplex {
-	
-	/**
-	 * This functionality actually does sending/receiving of message
-	 * envelopes of this duplex.
-	 */
-	raw: RawDuplex<Envelope>;
-
-	/**
-	 * This function creates a more convenient functionality for this side to
-	 * act as a client, viewing/using other side as a server.
-	 * Note that communication still goes through this duplex's raw duplex.
-	 */
-	makeClient(channel: string): SubscribingClient;
-
-	/**
-	 * This function creates a more convenient functionality for this side to
-	 * act as a server, viewing/serving other side as a client.
-	 * Note that communication still goes through this duplex's raw duplex.
-	 */
-	makeServer(channel: string): EventfulServer;
-}
-
 export interface RawDuplex<T> {
 
 	/**
@@ -279,10 +256,14 @@ abstract class MessageHandler {
 	}
 
 	on(event: 'end', cb: (err?: any) => void): void {
-		if (!this.onEndCBs) {
-			this.onEndCBs = [];
+		if (event === 'end') {
+			if (!this.onEndCBs) {
+				this.onEndCBs = [];
+			}
+			this.onEndCBs.push(cb);
+		} else {
+			throw new Error(`Unknown event ${event}`);
 		}
-		this.onEndCBs.push(cb);
 	}
 
 	close() {
@@ -674,7 +655,7 @@ class EventsReceivingSide extends RequestingSide implements SubscribingClient {
 				.catch(err => this.completeEvent(ipcChannel, err)),
 			(ipcChannel: string) =>
 				this.makeRequest<void>(UNSUBSCRIBE_REQ_NAME, ipcChannel)
-				.catch(err => {}));
+				.catch(_ => {}));
 	}
 
 	protected handleMsg(env: Envelope): void {

@@ -14,7 +14,6 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { itAsync } from './async-jasmine';
 import { AppRunner } from './app-runner';
 import { SpectronClient } from 'spectron';
 
@@ -26,8 +25,8 @@ declare var w3n: {
 export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 	return async () => {
 		// ad hoc test of client not being focused on any window
-		let flag: string = (await app().c.executeAsync(async function(done) {
-			done('still focused');
+		let flag: string = (await app().c.execute(function() {
+			return 'still focused';
 		})).value;
 		expect(flag).toBeFalsy();
 		
@@ -46,21 +45,18 @@ export function checkSecondWindow(app: () => AppRunner): () => Promise<void> {
 	}
 }
 
-declare var cExpect: typeof expect;
-
 export async function setKeyDerivNotifsChecker(c: SpectronClient):
 		Promise<void> {
-	await c.executeAsync(async function(done) {
+	await c.execute(async function() {
 		(window as any).checkKeyDerivNotifications = (notifPerc: number[]) => {
-			cExpect(notifPerc.length).toBeGreaterThan(0);
+			expect(notifPerc.length).toBeGreaterThan(0);
 			let prevP = -1;
 			for (let i=0; i < notifPerc.length; i+=1) {
 				let p = notifPerc[i];
-				cExpect(p).toBeGreaterThan(prevP);
+				expect(p).toBeGreaterThan(prevP);
 				prevP = p;
 			}
 		}
-		done();
 	});
 }
 

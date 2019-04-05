@@ -23,9 +23,7 @@ import { parseDiffAndOffsets } from '../../../../lib-client/obj-file-on-dev-fs';
 import { FileException } from '../../../../lib-common/exceptions/file';
 import { Subject } from 'rxjs';
 
-type WritableFS = web3n.files.WritableFS;
 type ReadonlyFS = web3n.files.ReadonlyFS;
-type ListingEntry = web3n.files.ListingEntry;
 
 export interface GC {
 	scheduleCollection(objId: ObjId): void;
@@ -98,10 +96,11 @@ export function makeGC(folderProcs: NamedProcs, objs: Objs): GC {
 			}
 		})
 	}, 3)
-	.do(undefined as any, err => objsWaiting.clear())
-	.retry();
+	.do(undefined as any, () => objsWaiting.clear())
+	.retry()
+	.share();
 
-	const gcSub = gcProc.subscribe();
+	gcProc.subscribe();
 
 	return Object.freeze({
 		scheduleCollection(objId: ObjId): void {

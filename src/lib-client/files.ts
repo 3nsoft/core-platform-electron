@@ -15,10 +15,6 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { bind } from '../lib-common/binding';
-import { makeFileException, Code as excCode }
-	from '../lib-common/exceptions/file';
-import { pipe } from '../lib-common/byte-streaming/pipe';
-import { utf8 } from '../lib-common/buffer-utils';
 
 type FS = web3n.files.FS;
 type ReadonlyFS = web3n.files.ReadonlyFS;
@@ -26,10 +22,6 @@ type WritableFS = web3n.files.WritableFS;
 type File = web3n.files.File;
 type ReadonlyFile = web3n.files.ReadonlyFile;
 type WritableFile = web3n.files.WritableFile;
-type ListingEntry = web3n.files.ListingEntry;
-type SymLink = web3n.files.SymLink;
-type ByteSink = web3n.ByteSink;
-type ByteSource = web3n.ByteSource;
 type FSType = web3n.files.FSType;
 
 export interface LinkParameters<T> {
@@ -70,6 +62,7 @@ export function wrapWritableFile(fImpl: WritableFile): WritableFile {
 		readTxt: bind(fImpl, fImpl.readTxt),
 		readBytes: bind(fImpl, fImpl.readBytes),
 		stat: bind(fImpl, fImpl.stat),
+		watch: bind(fImpl, fImpl.watch),
 		getByteSink: bind(fImpl, fImpl.getByteSink),
 		writeJSON: bind(fImpl, fImpl.writeJSON),
 		writeTxt: bind(fImpl, fImpl.writeTxt),
@@ -123,6 +116,7 @@ export function wrapReadonlyFile(fImpl: ReadonlyFile): ReadonlyFile {
 		readTxt: bind(fImpl, fImpl.readTxt),
 		readBytes: bind(fImpl, fImpl.readBytes),
 		stat: bind(fImpl, fImpl.stat),
+		watch: bind(fImpl, fImpl.watch)
 	};
 	return addParamsAndFreezeFileWrap(w, fImpl);
 }
@@ -162,7 +156,7 @@ export function wrapWritableFS(fsImpl: WritableFS): WritableFS {
 		listFolder: bind(fsImpl, fsImpl.listFolder),
 		checkFolderPresence: bind(fsImpl, fsImpl.checkFolderPresence),
 		checkFilePresence: bind(fsImpl, fsImpl.checkFilePresence),
-		statFile: bind(fsImpl, fsImpl.statFile),
+		stat: bind(fsImpl, fsImpl.stat),
 		readonlyFile: bind(fsImpl, fsImpl.readonlyFile),
 		readonlySubRoot: bind(fsImpl, fsImpl.readonlySubRoot),
 		close: bind(fsImpl, fsImpl.close),
@@ -233,7 +227,7 @@ export function wrapReadonlyFS(fsImpl: ReadonlyFS): ReadonlyFS {
 		listFolder: bind(fsImpl, fsImpl.listFolder),
 		checkFolderPresence: bind(fsImpl, fsImpl.checkFolderPresence),
 		checkFilePresence: bind(fsImpl, fsImpl.checkFilePresence),
-		statFile: bind(fsImpl, fsImpl.statFile),
+		stat: bind(fsImpl, fsImpl.stat),
 		readonlyFile: bind(fsImpl, fsImpl.readonlyFile),
 		readonlySubRoot: bind(fsImpl, fsImpl.readonlySubRoot),
 		close: bind(fsImpl, fsImpl.close),
@@ -281,8 +275,8 @@ export function wrapIntoVersionlessReadonlyFS(fs: ReadonlyFS,
 		listFolder: bind(fs, fs.listFolder),
 		checkFolderPresence: bind(fs, fs.checkFolderPresence),
 		checkFilePresence: bind(fs, fs.checkFilePresence),
-		statFile: async (path: string) => {
-			const stats = await fs.statFile(path);
+		stat: async (path: string) => {
+			const stats = await fs.stat(path);
 			delete stats.version;
 			return stats;
 		},
@@ -323,6 +317,7 @@ function toVersionlessReadonlyFile(f: ReadonlyFile): ReadonlyFile {
 			delete stats.version;
 			return stats;
 		},
+		watch: bind(f, f.watch)
 	};
 	(w as any as Transferable).$_transferrable_type_id_$ = 'File';
 	return Object.freeze(w);

@@ -15,7 +15,7 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { StorageOwner } from '../../../lib-client/3nstorage/service';
-import { Observable, Subscription } from 'rxjs';
+import { Subscription } from 'rxjs';
 import { objChanged, objRemoved }
 	from '../../../lib-common/service-api/3nstorage/owner';
 import { logError } from '../../../lib-client/logging/log-to-file';
@@ -23,10 +23,6 @@ import { ServerEvents } from '../../../lib-client/server-events';
 import { Node } from '../../../lib-client/3nstorage/xsp-fs/common';
 import { SyncedObjVersions, ObjId } from './files/objs';
 import { ObjProc } from './obj-procs/obj-proc';
-
-type Observer<T> = web3n.Observer<T>;
-type FSEvent = web3n.files.FolderEvent | web3n.files.FileEvent;
-type RemovedEvent = web3n.files.RemovedEvent;
 
 /**
  * Instance of this interface observes storage server events and handles them.
@@ -92,7 +88,7 @@ export function makeStorageEventsProc(remoteStorage: StorageOwner,
 	.merge(objRemoval$)
 	.retry(2)
 	.subscribe(undefined,
-		err => { proc = undefined; },
+		() => { proc = undefined; },
 		() => { proc = undefined; });
 
 	return {

@@ -20,7 +20,6 @@
 
 import { makeException } from '../electron/net';
 import * as api from '../../lib-common/service-api/asmail/config';
-import { user as mid } from '../../lib-common/mid-sigs-NaCl-Ed';
 import { ServiceUser, IGetMailerIdSigner } from '../user-with-mid-session';
 import { asmailInfoAt } from '../service-locator';
 

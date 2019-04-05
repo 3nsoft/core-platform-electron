@@ -17,16 +17,16 @@
 import { getASMailServiceFor } from '../../../lib-client/service-locator';
 import { JsonKey } from '../../../lib-common/jwkeys';
 import { base64 } from '../../../lib-common/buffer-utils';
-import { secret_box as sbox } from 'ecma-nacl';
 import { MailSender, SessionInfo, FirstSaveReqOpts, FollowingSaveReqOpts }
 	from '../../../lib-client/asmail/sender';
-import { MsgPacker, PackJSON } from '../../../lib-client/asmail/msg/packer';
+import { MsgPacker, PackJSON } from '../msg/packer';
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { SingleProc } from '../../../lib-common/processes';
 import { checkAndExtractPKey } from '../key-verification';
 import * as confApi from '../../../lib-common/service-api/asmail/config';
 import { Msg } from './msg';
 import { AsyncSBoxCryptor } from 'xsp-files';
+import { Encryptor } from '../../../lib-common/async-cryptor-wrap';
 
 /**
  * This contains WIP's state in a serializable (json) form. It is used by WIP
@@ -213,9 +213,16 @@ export class WIP {
 	private async startSession(): Promise<void> {
 		const senderAddress = this.msg.r.address;
 		const recipient = this.state.recipient;
-		const inviteToSendNow = this.msg.r.keyring.getInviteForSendingTo(recipient);
-		this.sender = await MailSender.fresh(undefined, recipient,
-			getASMailServiceFor, inviteToSendNow);
+		
+		const sp = this.msg.r.correspondents.paramsForSendingTo(recipient);
+		if (sp) {
+			this.sender = await MailSender.fresh(
+				(sp.auth ? senderAddress : undefined),
+				recipient, getASMailServiceFor, sp.invitation);
+		} else {
+			this.sender = await MailSender.fresh(
+				undefined, recipient, getASMailServiceFor);
+		}
 		
 		await this.sender.startSession();
 
@@ -239,51 +246,50 @@ export class WIP {
 	}
 
 	private async getRecipientKeyAndEncrypt(): Promise<void> {
-		
-		let introPKeyFromServer: JsonKey|undefined = undefined; 
-		
-		// 3rd request, is needed only when recipient is not known
-		if (!this.msg.r.keyring.isKnownCorrespondent(this.sender.recipient)) {
-			const certs = await this.sender.getRecipientsInitPubKey();
-			try {
-				introPKeyFromServer = await checkAndExtractPKey(
-					this.sender.net, this.sender.recipient, certs);
-			} catch (err) {
-				const exc: web3n.asmail.ASMailSendException = {
-					runtimeException: true,
-					type: 'asmail-delivery',
-					address: this.sender.recipient,
-					recipientPubKeyFailsValidation: true
-				}
-				throw exc;
-			}
-		}
-			
-		const inviteForReplies = await this.msg.r.invitesForAnonReplies(
-			this.sender.recipient);
-		
-		// get crypto
-		const msgCrypto = this.msg.r.keyring.generateKeysForSendingTo(
-			this.sender.recipient, inviteForReplies, introPKeyFromServer);
-		
-		// pack message
+
+		const recipient = this.sender.recipient;
+		const introPKeyFromServer = await this.getIntroKeyIfRecipientIsUnknown(
+			recipient);
+
 		this.packer = await this.msg.msgPacker();
-		this.packer.setNextKeyPair(msgCrypto.pairs.next);
-		if (msgCrypto.pairs.current.pid) {
-			this.packer.setMetaForEstablishedKeyPair(msgCrypto.pairs.current.pid);
+		
+		// get crypto parts for encrypting this message
+		const { currentPair, encryptor, msgCount } =
+			await this.msg.r.correspondents.generateKeysToSend(
+				recipient, introPKeyFromServer);
+		
+		// add crypto parameters to the message
+		if (currentPair.pid) {
+			this.packer.setEstablishedKeyPairInfo(currentPair.pid, msgCount);
 		} else {
 			const signer = await this.msg.r.getSigner();
 			const pkCerts: confApi.p.initPubKey.Certs = {
 				pkeyCert: signer.certifyPublicKey(
-					msgCrypto.pairs.current.senderPKey!, 30*24*60*60),
+					currentPair.senderPKey!, 30*24*60*60),
 				userCert: signer.userCert,
 				provCert: signer.providerCert
 			};
-			this.packer.setMetaForNewKey(
-				msgCrypto.pairs.current.recipientKid!,
-				msgCrypto.pairs.current.senderPKey!.k,
-				pkCerts);
+			this.packer.setNewKeyInfo(
+				currentPair.recipientKid!,
+				currentPair.senderPKey!.k,
+				pkCerts, msgCount);
 		}
+
+		// add next crypto parameters to the message
+		const nextMsgCrypto = await this.msg.r.correspondents.nextCrypto(
+			recipient);
+		if (nextMsgCrypto) {
+			this.packer.setNextCrypto(nextMsgCrypto);
+		}
+
+		// add updated sending parameters to the message
+		const nextSendingParams =
+			await this.msg.r.correspondents.newParamsForSendingReplies(recipient);
+		if (nextSendingParams) {
+			this.packer.setNextSendingParams(nextSendingParams);
+		}
+
+		// pack the message
 		this.state.pack = await this.packer.pack();
 
 		// initialize uploads info
@@ -291,14 +297,32 @@ export class WIP {
 		this.state.objUploads.fill(null);
 
 		// set main object as current for an upload
-		await this.setMainObjAsCurrent(msgCrypto.encryptor);
+		await this.setMainObjAsCurrent(encryptor);
 
 		// cleanup
-		msgCrypto.encryptor.destroy();
+		encryptor.destroy();
 
 		if (this.state.stage !== "cancel") {
 			this.state.stage = "4-send-meta";
 		}
+	}
+
+	private async getIntroKeyIfRecipientIsUnknown(recipient: string):
+			Promise<JsonKey|undefined> {
+		if (!this.msg.r.correspondents.needIntroKeyFor(
+			this.sender.recipient)) { return; }
+		const certs = await this.sender.getRecipientsInitPubKey();
+		return checkAndExtractPKey(this.sender.net, recipient, certs)
+		.catch(err => {
+			const exc: web3n.asmail.ASMailSendException = {
+				runtimeException: true,
+				type: 'asmail-delivery',
+				address: recipient,
+				recipientPubKeyFailsValidation: true,
+				cause: err
+			}
+			throw exc;
+		});
 	}
 
 	/**
@@ -339,7 +363,6 @@ export class WIP {
 	private async sendMeta(): Promise<void> {
 		if (!this.state.pack) { throw new Error(`Message pack is not set.`); }
 		this.state.session = await this.sender.sendMetadata(this.state.pack.meta);
-		const msgId = this.sender.msgId;
 		this.msg.progress.recipients[this.state.recipient].idOnDelivery =
 			this.state.session.msgId;
 		if (this.state.stage !== "cancel") {
@@ -347,7 +370,7 @@ export class WIP {
 		}
 	}
 
-	private async setMainObjAsCurrent(mainObjEnc: sbox.Encryptor):
+	private async setMainObjAsCurrent(mainObjEnc: Encryptor):
 			Promise<void> {
 		if (this.currentObjIndInMeta !== 0) { throw new Error(`This method can be called only when current object index is zero.`); }
 		this.currentObj = await this.getObjToSend(mainObjEnc);
@@ -358,7 +381,7 @@ export class WIP {
 	 * when main object is set as current (the very first call), and it should be
 	 * missing for all other calls.
 	 */
-	private async getObjToSend(mainObjEnc?: sbox.Encryptor):
+	private async getObjToSend(mainObjEnc?: Encryptor):
 			Promise<CurrentObj|undefined> {
 		if (!this.state.objUploads || !this.state.pack) { throw new Error(
 			`Unexpected wip state: some fields are not set.`); }

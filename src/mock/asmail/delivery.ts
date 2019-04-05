@@ -16,19 +16,18 @@
 
 import { stringOfB64UrlSafeCharsSync, stringOfB64UrlSafeChars }
 	from '../../lib-common/random-node';
-import { sleep, defer, Deferred } from '../../lib-common/processes';
+import { sleep } from '../../lib-common/processes';
 import { bind } from '../../lib-common/binding';
-import { makeInboxFS, makeStorageFS } from '../mock-files';
+import { makeInboxFS } from '../mock-files';
 import { errWithCause } from '../../lib-common/exceptions/error';
 import { toCanonicalAddress } from '../../lib-common/canonical-address';
 import { utf8 } from '../../lib-common/buffer-utils';
-import { ATTACHMENTS_FOLDER, MAIN_MSG_OBJ, MSGS_FOLDER, ASMAIL_CORE_APP,
-	ServiceWithInitPhase }
+import { ATTACHMENTS_FOLDER, MAIN_MSG_OBJ, MSGS_FOLDER, ServiceWithInitPhase }
 	from './common';
 import { ASMailMockConfig, ASMailUserConfig } from '../conf';
 import { iterFilesIn, iterFoldersIn, isContainerEmpty }
-	from '../../lib-client/asmail/msg/attachments-container';
-import { Subject } from 'rxjs';
+	from '../../main/asmail/msg/attachments-container';
+import { Subject, Observer as RxObserver } from 'rxjs';
 import { copy as jsonCopy } from '../../lib-common/json-utils';
 
 type ServLocException = web3n.asmail.ServLocException;
@@ -54,15 +53,6 @@ function noServiceRecordExc(address: string): ServLocException {
 	return exc;
 }
 
-function badRedirectExc(recipient: string): ASMailSendException {
-	return {
-		runtimeException: true,
-		type: 'asmail-delivery',
-		address: recipient,
-		badRedirect: true
-	};
-}
-
 function unknownRecipientExc(recipient: string): ASMailSendException {
 	return {
 		runtimeException: true,
@@ -83,15 +73,6 @@ function msgTooBigExc(recipient: string, allowedSize: number):
 	};
 }
 
-function senderNotAllowedExc(recipient: string): ASMailSendException {
-	return {
-		runtimeException: true,
-		type: 'asmail-delivery',
-		address: recipient,
-		senderNotAllowed: true
-	};
-}
-
 function inboxIsFullExc(recipient: string): ASMailSendException {
 	return {
 		runtimeException: true,
@@ -101,21 +82,11 @@ function inboxIsFullExc(recipient: string): ASMailSendException {
 	};
 }
 
-function authFailedOnDeliveryExc(recipient: string): ASMailSendException {
-	return {
-		runtimeException: true,
-		type: 'asmail-delivery',
-		address: recipient,
-		authFailedOnDelivery: true
-	};
-}
-
 const DEFAULT_MSG_SIZE = 500*1024*1024;
 const MSG_ID_LEN = 24;
 
 type OutgoingMessage = web3n.asmail.OutgoingMessage;
 type IncomingMessage = web3n.asmail.IncomingMessage;
-type MsgInfo = web3n.asmail.MsgInfo;
 type DeliveryProgress = web3n.asmail.DeliveryProgress;
 type DeliveryService = web3n.asmail.DeliveryService;
 
@@ -195,7 +166,6 @@ export class DeliveryMock extends ServiceWithInitPhase
 	private knownDomains = new Set<string>();
 	private misconfiguredDomains = new Set<string>();
 	private latencyMillis = 100;
-	private downSpeedKBs = 500;
 	private upSpeedKBs = 50;
 	private msgs = new Map<string, MsgAndInfo>();
 	private deliveryQueue: string[] = [];
@@ -213,9 +183,6 @@ export class DeliveryMock extends ServiceWithInitPhase
 			this.userId = userId;
 			if (config.network.latencyMillis) {
 				this.latencyMillis = config.network.latencyMillis;
-			}
-			if (config.network.downSpeedKBs) {
-				this.downSpeedKBs = config.network.downSpeedKBs;
 			}
 			if (config.network.upSpeedKBs) {
 				this.upSpeedKBs = config.network.upSpeedKBs;
@@ -531,7 +498,7 @@ export class DeliveryMock extends ServiceWithInitPhase
 			return () => {};
 		}
 		const subToProgress = progress$.subscribe(
-			observer.next, observer.error, observer.complete);
+			observer as RxObserver<DeliveryProgress>);
 		return () => subToProgress.unsubscribe();
 	}
 

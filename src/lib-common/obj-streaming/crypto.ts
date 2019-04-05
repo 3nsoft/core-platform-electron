@@ -20,7 +20,6 @@ import { SinkBackedObjSource } from './pipe';
 import { secret_box as sbox } from 'ecma-nacl';
 import { SegmentsWriter, SegmentsReader, LocationInSegment, NONCE_LENGTH,  }
 from 'xsp-files';
-import { bind } from '../binding';
 import { errWithCause } from '../exceptions/error';
 import { base64urlSafe } from '../buffer-utils';
 
@@ -228,7 +227,6 @@ class EncryptingObjSource implements ObjSource, ByteSource {
 				ind += 1;
 				continue;
 			}
-			const contentToInd = lenOfSegsToInd - 16*ind;
 			return { ind, ofs: pos-lenOfSegsToInd };
 		}
 		throw new Error(`This point should be unreachable.`);

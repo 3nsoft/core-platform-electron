@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.writableFile',
@@ -28,70 +25,54 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'fails for non-existing file, in non-create mode' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let fName = 'unknown-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
 	try {
-		let fName = 'unknown-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		try {
-			await testFS.writableFile(fName, false);
-			cFail('getting file object must fail, when file does not exist');
-		} catch (err) {
-			cExpect((err as FileException).notFound).toBe(true);
-			if (!err.notFound) { throw err; }
-		}
+		await testFS.writableFile(fName, false);
+		fail('getting file object must fail, when file does not exist');
 	} catch (err) {
-		cFail(err);
+		expect((err as FileException).notFound).toBe(true);
+		if (!err.notFound) { throw err; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'fails for existing file, in exclusive create mode' };
-it.func = async function(done: Function) {
+it.func = async function() {
+	let fName = 'file';
+	await testFS.writeTxtFile(fName, '');
+	expect(await testFS.checkFilePresence(fName)).toBe(true);
 	try {
-		let fName = 'file';
- 		await testFS.writeTxtFile(fName, '');
-		cExpect(await testFS.checkFilePresence(fName)).toBe(true);
-		try {
-			await testFS.writableFile(fName, true, true);
-			cFail('getting file object must fail, when file exists');
-		} catch (err) {
-			cExpect((err as FileException).alreadyExists).toBe(true);
-			if (!err.alreadyExists) { throw err; }
-		}
+		await testFS.writableFile(fName, true, true);
+		fail('getting file object must fail, when file exists');
 	} catch (err) {
-		cFail(err);
+		expect((err as FileException).alreadyExists).toBe(true);
+		if (!err.alreadyExists) { throw err; }
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'gives file object for non-existing file' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'new-file';
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false);
-		
-		let file = await testFS.writableFile(fName);
-		cExpect(typeof file).toBe('object');
-		cExpect(file.name).toBe(fName, 'file object should have file name');
-		cExpect(file.isNew).toBe(true, 'readonly file must exist');
-		cExpect(file.writable).toBe(true);
-		cExpect(!!file.v).toBe(!!testFS.v);
-		
-		cExpect(await testFS.checkFilePresence(fName)).toBe(false, 'File does not exist, while nothing has been written to it.');
+it.func = async function() {
+	let fName = 'new-file';
+	expect(await testFS.checkFilePresence(fName)).toBe(false);
+	
+	let file = await testFS.writableFile(fName);
+	expect(typeof file).toBe('object');
+	expect(file.name).toBe(fName, 'file object should have file name');
+	expect(file.isNew).toBe(true, 'readonly file must exist');
+	expect(file.writable).toBe(true);
+	expect(!!file.v).toBe(!!testFS.v);
+	
+	expect(await testFS.checkFilePresence(fName)).toBe(false, 'File does not exist, while nothing has been written to it.');
 
-		let txt = 'some text';
-		await file.writeTxt(txt);
-		cExpect(await testFS.checkFilePresence(fName)).toBe(true, 'File is created on the first write.');
-		cExpect(await file.readTxt()).toBe(txt);
-
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+	let txt = 'some text';
+	await file.writeTxt(txt);
+	expect(await testFS.checkFilePresence(fName)).toBe(true, 'File is created on the first write.');
+	expect(await file.readTxt()).toBe(txt);
 };
 it.numOfExpects = 9;
 specs.its.push(it);

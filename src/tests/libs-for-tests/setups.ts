@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -17,28 +17,17 @@
 import { AppRunner, User } from '../libs-for-tests/app-runner';
 import { ServicesRunner, ServiceUrls } from './services-runner';
 import { DnsTxtRecords } from './dns';
-import { beforeAllAsync, afterAllAsync, afterEachAsync } from './async-jasmine';
+import { beforeAllAsync, afterAllAsync } from './async-jasmine';
 import { sleep } from '../../lib-common/processes';
-import { ErrorWithCause } from '../../lib-common/exceptions/error';
 import { SpectronClient } from 'spectron';
 
-export { checkRemoteExpectations } from './remote-js-utils';
+export { execExpects, exec } from './remote-js-utils';
 
-export interface Setup {
-
+export interface Setup extends appTesting.Setup {
 	app: AppRunner;
 	c: SpectronClient;
-
-	signupDomains: string[];
-
-	start(): Promise<void>;
-	stop(): Promise<void>;
-
-	displayBrowserLogs(): Promise<void>;
-	displayStdOutLogs(): Promise<void>;
-
 }
-	
+
 function dnsRecsFrom(signupDomains: string[], urls: ServiceUrls):
 		DnsTxtRecords {
 	let recs: DnsTxtRecords = {};
@@ -53,7 +42,7 @@ function dnsRecsFrom(signupDomains: string[], urls: ServiceUrls):
 	return recs;
 }
 
-export function makeSetupObject(signupDomains: string[]): Setup {
+function makeSetupObject(signupDomains: string[]): Setup {
 	
 	let app = new AppRunner();
 	let server = new ServicesRunner();
@@ -111,25 +100,12 @@ export function minimalSetup(
 	return s;
 }
 
-export interface MultiUserSetup {
-
-	users: User[];
+export interface MultiUserSetup extends appTesting.MultiUserSetup {
 	apps: Map<string, AppRunner>;
 	c(userId: string): SpectronClient;
-
-	signupDomains: string[];
-
-	start(): Promise<void>;
-	stop(): Promise<void>;
-	createUser(userId: string): Promise<User>;
-
-	displayBrowserLogs(): Promise<void>;
-	displayStdOutLogs(): Promise<void>;
-
 }
 
-export function makeMultiUserSetupObject(signupDomains: string[]):
-		MultiUserSetup {
+function makeMultiUserSetupObject(signupDomains: string[]): MultiUserSetup {
 	
 	let apps = new Map<string, AppRunner>();
 	let server = new ServicesRunner();

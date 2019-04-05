@@ -25,7 +25,6 @@ export interface ASMailMockConfig {
 	misconfiguredDomains?: string[];
 	network: {
 		latencyMillis?: number;
-		downSpeedKBs?: number;
 		upSpeedKBs?: number;
 	};
 }

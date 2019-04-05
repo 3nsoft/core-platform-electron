@@ -19,15 +19,13 @@
  * reliance set.
  */
 
-import { utf8, base64 } from '../../../lib-common/buffer-utils';
-import { ByteSink, ByteSource }
-	from '../../../lib-common/byte-streaming/common';
-import { ObjSink, ObjSource } from '../../../lib-common/obj-streaming/common';
+import { base64 } from '../../../lib-common/buffer-utils';
+import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { idToHeaderNonce } from '../../../lib-common/obj-streaming/crypto';
 import { makeFileException, Code as excCode, FileException }
 	from '../../../lib-common/exceptions/file';
 import { errWithCause } from '../../../lib-common/exceptions/error';
-import { Storage, Node, NodeType, SyncedStorage } from './common';
+import { Storage, Node, NodeType } from './common';
 import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { FileNode } from './file-node';
 import { LinkNode } from './link-node';
@@ -42,8 +40,6 @@ import { deserializeFolderInfo, serializeFolderInfo }
 	from './folder-node-serialization';
 
 type ListingEntry = web3n.files.ListingEntry;
-type SymLink = web3n.files.SymLink;
-type FolderEvent = web3n.files.FolderEvent;
 type EntryAdditionEvent = web3n.files.EntryAdditionEvent;
 type EntryRemovalEvent = web3n.files.EntryRemovalEvent;
 type RemovedEvent = web3n.files.RemovedEvent;
@@ -83,15 +79,6 @@ export interface FolderInfo {
 	nodes: {
 		[name: string]: NodeInfo;
 	};
-}
-
-function infoToJSON(folderInfo: FolderInfo): any {
-	const json = copy(folderInfo);
-	Object.values(json.nodes)
-	.forEach(node => {
-		(node.key as any) = base64.pack(node.key);
-	});
-	return json;
 }
 
 function jsonToInfo(json: any): FolderInfo {
@@ -265,17 +252,19 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 		return { deferred };
 	}
 
-	private async getNode<T extends Node>(type: NodeType, name: string,
-			undefOnMissing: boolean|undefined): Promise<T|undefined> {
+	async getNode<T extends Node>(type: NodeType|undefined, name: string,
+			undefOnMissing = false): Promise<T|undefined> {
 		const childInfo = this.getNodeInfo(name, undefOnMissing);
 		if (!childInfo) { return; }
 
-		if ((type === 'file') && !childInfo.isFile) {
-			throw makeFileException(excCode.notFile, childInfo.name);
-		} else if ((type === 'folder') && !childInfo.isFolder) {
-			throw makeFileException(excCode.notDirectory, childInfo.name);
-		} else if ((type === 'link') && !childInfo.isLink) {
-			throw makeFileException(excCode.notLink, childInfo.name);
+		if (type) {
+			if ((type === 'file') && !childInfo.isFile) {
+				throw makeFileException(excCode.notFile, childInfo.name);
+			} else if ((type === 'folder') && !childInfo.isFolder) {
+				throw makeFileException(excCode.notDirectory, childInfo.name);
+			} else if ((type === 'link') && !childInfo.isLink) {
+				throw makeFileException(excCode.notLink, childInfo.name);
+			}
 		}
 
 		const { nodeOrPromise: child, deferred } =
@@ -284,21 +273,21 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 		
 		try {
 			let node: Node;
-			if (type === 'file') {
+			if (childInfo.isFile) {
 				node = await FileNode.makeForExisting(
 					this.storage, this.objId, name, childInfo.objId, childInfo.key);
-			} else if (type === 'folder') {
+			} else if (childInfo.isFolder) {
 				const src = await this.storage.getObj(childInfo.objId);
 				const f = new FolderNode(
 					this.storage, childInfo.name, childInfo.objId, undefined,
 					src.version, this.objId, childInfo.key);
 				f.currentState = await f.crypto.open(src);
 				node = f;
-			} else if (type === 'link') {
+			} else if (childInfo.isLink) {
 				node = await LinkNode.makeForExisting(
 					this.storage, this.objId, name, childInfo.objId, childInfo.key);
 			} else {
-				throw new Error(`Unknown type of node: ${type}`);
+				throw new Error(`Unknown type of fs node`);
 			}
 			deferred!.resolve(node as T);
 			return node as T;
@@ -316,12 +305,12 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 		return this.getNode<FolderNode>('folder', name, undefOnMissing);
 	}
 	
-	async getFile(name: string, undefOnMissing = false):
+	getFile(name: string, undefOnMissing = false):
 			Promise<FileNode|undefined> {
 		return this.getNode<FileNode>('file', name, undefOnMissing);
 	}
 	
-	async getLink(name: string, undefOnMissing = false):
+	getLink(name: string, undefOnMissing = false):
 			Promise<LinkNode|undefined> {
 		return this.getNode<LinkNode>('link', name, undefOnMissing);
 	}
@@ -435,8 +424,7 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 	private async makeAndSaveNewChildFileNode(name: string):
 			Promise<{ node: FileNode; key: Uint8Array; }> {
 		const key = await random.bytes(KEY_LENGTH);
-		const node = FileNode.makeForNew(
-			this.storage, this.objId, name, key, this.storage.cryptor);
+		const node = FileNode.makeForNew(this.storage, this.objId, name, key);
 		await node.save([]).catch((exc: StorageException) => {
 			if (!exc.objExists) { throw exc; }
 			// call this method recursively, if obj id is already used in storage
@@ -472,10 +460,10 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 					throw makeFileException(excCode.alreadyExists, name);
 				} else if (type === 'folder') {
 					this.clearTransitionState();
-					return (await this.getNode<T>('folder', name, false))!;
+					return (await this.getNode<T>('folder', name))!;
 				} else if (type === 'file') {
 					this.clearTransitionState();
-					return (await this.getNode<T>('file', name, false))!;
+					return (await this.getNode<T>('file', name))!;
 				} else if (type === 'link') {
 					throw new Error(`Link is created in non-exclusive mode`);
 				} else {
@@ -593,6 +581,7 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 				name,
 				newVersion: this.transitionVersion
 			};
+			this.broadcastEvent(event);
 		});
 	}
 
@@ -765,7 +754,7 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 			const addedEntries = Object.keys(this.currentState.nodes)
 			.filter(name => !initState.nodes[name]);
 			const removedEntries = Object.keys(initState.nodes)
-			.filter(name => !this.currentState.nodes);
+			.filter(name => !this.currentState.nodes[name]);
 			
 			if ((addedEntries.length === 1) && (removedEntries.length === 1)) {
 				const event: EntryRenamingEvent = {
@@ -799,7 +788,7 @@ export class FolderNode extends NodeInFS<FolderCrypto> {
 						type: 'entry-removal',
 						path: this.name,
 						isRemote: true,
-						name: removedEntries[0],
+						name,
 						newVersion
 					};
 					this.broadcastEvent(event);

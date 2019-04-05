@@ -16,7 +16,6 @@
 
 import { Subject, Observable } from 'rxjs';
 import { ObjId, ObjReader } from '../files/objs';
-import { utf8 } from '../../../../lib-common/buffer-utils';
 import { CompleteVersion, LocalVersionFileStatus } from './queue';
 import { UploadInfo } from '../files/local-versions'
 

@@ -21,12 +21,10 @@
 
 import { makeFileException, Code as excCode, FileException }
 	from '../../../lib-common/exceptions/file';
-import { NodeInFS, NodeCrypto } from './node-in-fs';
 import { FolderNode, FolderLinkParams, FolderInfo } from './folder-node';
-import { FileNode, FileLinkParams } from './file-node';
+import { FileNode } from './file-node';
 import { FileObject, readBytesFrom } from './file';
-import { Storage } from './common';
-import { arrays, secret_box as sbox } from 'ecma-nacl';
+import { Storage, Node, NodeType } from './common';
 import { Linkable, LinkParameters, wrapWritableFS, wrapReadonlyFile,
 	wrapReadonlyFS, wrapWritableFile, wrapIntoVersionlessReadonlyFS }
 	from '../../files';
@@ -34,8 +32,7 @@ import { selectInFS } from '../../files-select';
 import { posix } from 'path';
 import { pipe } from '../../../lib-common/byte-streaming/pipe';
 import { utf8 } from '../../../lib-common/buffer-utils';
-import { bind } from '../../../lib-common/binding';
-import { Observable } from 'rxjs';
+import { Observable, Observer as RxObserver } from 'rxjs';
 
 function splitPathIntoParts(path: string): string[] {
 	return posix.resolve('/', path).split('/').filter(part => !!part);
@@ -59,7 +56,7 @@ function split(path: string): { folderPath: string[]; fileName: string; } {
 
 type ByteSource = web3n.ByteSource;
 type ByteSink = web3n.ByteSink;
-type FileStats = web3n.files.FileStats;
+type Stats = web3n.files.Stats;
 type FS = web3n.files.FS;
 type WritableFS = web3n.files.WritableFS;
 type ReadonlyFS = web3n.files.ReadonlyFS;
@@ -70,6 +67,7 @@ type FSType = web3n.files.FSType;
 type ListingEntry = web3n.files.ListingEntry;
 type SymLink = web3n.files.SymLink;
 type FolderEvent = web3n.files.FolderEvent;
+type FileEvent = web3n.files.FileEvent;
 type Observer<T> = web3n.Observer<T>;
 type SelectCriteria = web3n.files.SelectCriteria;
 type FSCollection = web3n.files.FSCollection;
@@ -78,7 +76,6 @@ export class XspFS implements WritableFS {
 	
 	type: FSType;
 	v = new V();
-	private isSubRoot = false;
 	
 	private constructor(
 			public storage: Storage,
@@ -95,7 +92,6 @@ export class XspFS implements WritableFS {
 		const folderName = ((pathParts.length === 0) ?
 			this.name : pathParts[pathParts.length-1]);
 		const fs = new XspFS(this.storage, false, folderName);
-		fs.isSubRoot = true;
 		fs.v.root = folder;
 		return wrapReadonlyFS(fs);
 	}
@@ -109,11 +105,16 @@ export class XspFS implements WritableFS {
 		const folderName = ((pathParts.length === 0) ?
 			this.name : pathParts[pathParts.length-1]);
 		const fs = new XspFS(this.storage, true, folderName);
-		fs.isSubRoot = true;
 		fs.v.root = folder;
 		return wrapWritableFS(fs);
 	}
 	
+	/**
+	 * This creates in a root object in a given storage, returning fs object
+	 * representing created root.
+	 * @param storage 
+	 * @param key is a file key of a root object
+	 */
 	static async makeNewRoot(storage: Storage, key: Uint8Array):
 			Promise<WritableFS> {
 		const fs = new XspFS(storage, true);
@@ -121,7 +122,13 @@ export class XspFS implements WritableFS {
 		return wrapWritableFS(fs);
 	}
 	
-	static async makeExisting(storage: Storage, key: Uint8Array):
+	/**
+	 * This creates fs object that represents existing root folder in a given
+	 * storage.
+	 * @param storage 
+	 * @param key is a file key of a root object
+	 */
+	static async fromExistingRoot(storage: Storage, key: Uint8Array):
 			Promise<WritableFS> {
 		const fs = new XspFS(storage, true);
 		const objSrc = await storage.getObj(null!);
@@ -130,7 +137,7 @@ export class XspFS implements WritableFS {
 		return wrapWritableFS(fs);
 	}
 
-	static makeASMailMsgRootFromJSON(storage: Storage, folderJson: FolderInfo,
+	static fromASMailMsgRootFromJSON(storage: Storage, folderJson: FolderInfo,
 			rootName?: string): ReadonlyFS {
 		const fs = new XspFS(storage, false, rootName);
 		fs.v.root = FolderNode.rootFromJSON(storage, rootName, folderJson);
@@ -218,51 +225,63 @@ export class XspFS implements WritableFS {
 		}
 	}
 
-	async statFile(path: string): Promise<FileStats> {
-		const f = await this.v.getOrCreateFile(path, false, false);
-		const { src, version } = await f.readSrc();
-		const stat: FileStats = {
-			size: await src.getSize(),
-			version
-		};
-		return stat;
+	async stat(path: string): Promise<Stats> {
+		const node = await this.v.get(path);
+		if (node.type === 'file') {
+			const { src, version } = await (node as FileNode).readSrc();
+			return {
+				isFile: true,
+				writable: this.writable,
+				size: await src.getSize(),
+				version
+			};
+		} else if (node.type === 'folder') {
+			return {
+				isFolder: true,
+				writable: this.writable,
+				version: (node as FolderNode).version
+			};
+		} else if (node.type === 'link') {
+			return {
+				writable: false,
+				isLink: true
+			};
+		} else {
+			throw new Error(`Unknown type of fs node`);
+		}
 	}
 
-	async checkFolderPresence(path: string, throwIfMissing = false):
-			Promise<boolean> {
-		const folderPath = splitPathIntoParts(path);
-		const f = await this.v.root.getFolderInThisSubTree(folderPath, false)
-		.catch(setExcPath(path))
+	private async checkPresence(type: NodeType, path: string,
+			throwIfMissing: boolean): Promise<boolean> {
+		const node = await this.v.get(path)
 		.catch((exc: FileException) => {
-			if ((exc.notFound || exc.notDirectory) && !throwIfMissing) { return; }
-			throw exc;
+			if (throwIfMissing) { setExcPath(path)(exc); }
 		});
-		return !!f;
+		if (!node) {
+			return false;
+		} else if (node.type === type) {
+			return true;
+		} else if (throwIfMissing) {
+			let code = '';
+			if (type === 'file') { code = excCode.notFile; }
+			else if (type === 'folder') { code = excCode.notDirectory; }
+			else if (type === 'link') { code = excCode.notLink; }
+			throw makeFileException(code, path);
+		} else {
+			return false;
+		}
+	}
+
+	checkFolderPresence(path: string, throwIfMissing = false): Promise<boolean> {
+		return this.checkPresence('folder', path, throwIfMissing);
 	}
 	
-	async checkFilePresence(path: string, throwIfMissing?: boolean):
-			Promise<boolean> {
-		const f = await this.v.getOrCreateFile(path, false, false)
-		.catch(setExcPath(path))
-		.catch((exc: FileException) => {
-			if ((exc.notFound || exc.notFile) && !throwIfMissing) { return; }
-			throw exc;
-		});
-		return !!f;
+	checkFilePresence(path: string, throwIfMissing = false): Promise<boolean> {
+		return this.checkPresence('file', path, throwIfMissing);
 	}
 	
-	async checkLinkPresence(path: string, throwIfMissing?: boolean):
-			Promise<boolean> {
-		const { fileName, folderPath } = split(path);
-		const folder = await this.v.root.getFolderInThisSubTree(folderPath)
-		.catch(setExcPath(path));
-		const link = await folder.getLink(fileName)
-		.catch(setExcPath(path))
-		.catch((exc: FileException) => {
-			if ((exc.notFound || exc.notLink) && !throwIfMissing) { return; }
-			throw exc;
-		});
-		return !!link;
+	checkLinkPresence(path: string, throwIfMissing = false): Promise<boolean> {
+		return this.checkPresence('file', path, throwIfMissing);
 	}
 
 	async copyFolder(src: string, dst: string, mergeAndOverwrite = false):
@@ -366,15 +385,22 @@ export class XspFS implements WritableFS {
 		const watchSub = Observable.fromPromise(
 			this.v.root.getFolderInThisSubTree(splitPathIntoParts(path), false))
 		.flatMap(f => f.event$)
-		.subscribe(observer.next, observer.error, observer.complete);
+		.subscribe(observer as RxObserver<FolderEvent>);
 		return () => watchSub.unsubscribe();
 	}
 
-	watchFile(): never {
-		throw new Error('Not implemented, yet');
+	watchFile(path: string, observer: Observer<FileEvent>): () => void {
+		const { fileName, folderPath } = split(path);
+		const watchSub = Observable.fromPromise(
+			this.v.root.getFolderInThisSubTree(folderPath, false))
+		.flatMap(folder => folder.getFile(fileName))
+		.flatMap(f => f!.event$)
+		.subscribe(observer as RxObserver<FileEvent>);
+		return () => watchSub.unsubscribe();
 	}
 
-	watchTree(): never {
+	watchTree(path: string, observer: Observer<FolderEvent|FileEvent>):
+			() => void {
 		throw new Error('Not implemented, yet');
 	}
 	
@@ -493,6 +519,15 @@ class V implements WritableFSVersionedAPI {
 		return file;
 	}
 	
+	async get(path: string): Promise<Node> {
+		const { fileName, folderPath } = split(path);
+		const folder = await this.root.getFolderInThisSubTree(folderPath, false)
+		.catch(setExcPath(path));
+		let node = await folder.getNode(undefined, fileName)
+		.catch(setExcPath(path));
+		return node!;
+	}
+
 	async listFolder(path: string):
 			Promise<{ lst: ListingEntry[]; version: number; }> {
 		const folder = await this.root.getFolderInThisSubTree(

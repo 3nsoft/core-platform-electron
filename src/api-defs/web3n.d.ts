@@ -206,18 +206,38 @@ declare namespace web3n.files {
 		isLink?: boolean;
 	}
 
-	interface FileStats {
+	interface Stats {
 		
+		isFile?: boolean;
+		
+		isFolder?: boolean;
+		
+		isLink?: boolean;
+
+		writable: boolean;
+
 		/**
 		 * File size in bytes.
 		 */
-		size: number | undefined;
+		size?: number;
 		
 		/**
-		 * Last modification time stamp.
+		 * Last content modification time stamp.
 		 * If such information cannot be provided, this field will be absent.
 		 */
 		mtime?: Date;
+		
+		/**
+		 * Last access time stamp.
+		 * If such information cannot be provided, this field will be absent.
+		 */
+		atime?: Date;
+		
+		/**
+		 * Last change of metadata time stamp.
+		 * If such information cannot be provided, this field will be absent.
+		 */
+		ctime?: Date;
 
 		/**
 		 * This tells object's version.
@@ -280,7 +300,7 @@ declare namespace web3n.files {
 		/**
 		 * This returns a promise, resolvable to file stats.
 		 */
-		stat(): Promise<FileStats>;
+		stat(): Promise<Stats>;
 
 		/**
 		 * This returns a promise, resolvable to either non-empty byte array, or
@@ -310,6 +330,8 @@ declare namespace web3n.files {
 		 * allows random reads.
 		 */
 		getByteSource(): Promise<web3n.ByteSource>;
+
+		watch(observer: Observer<FileEvent>): () => void;
 
 	}
 
@@ -472,10 +494,11 @@ declare namespace web3n.files {
 			Promise<boolean>;
 		
 		/**
-		 * @param path of a file
-		 * This returns a promise, resolvable to file stats.
+		 * This returns a promise, resolvable to stats of an entity at a given
+		 * path.
+		 * @param path
 		 */
-		statFile(path: string): Promise<FileStats>;
+		stat(path: string): Promise<Stats>;
 		
 		readLink(path: string): Promise<SymLink>;
 		

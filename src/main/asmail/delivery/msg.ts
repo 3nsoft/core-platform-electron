@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,8 +14,7 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { MsgPacker, headers, PackJSON }
-	from '../../../lib-client/asmail/msg/packer';
+import { MsgPacker, PackJSON } from '../msg/packer';
 import { defer, Deferred, SingleProc } from '../../../lib-common/processes';
 import { utf8 } from '../../../lib-common/buffer-utils';
 import { OutgoingMessage, DeliveryProgress, ResourcesForSending, Attachments,
@@ -26,13 +25,10 @@ import { Observable, Subject } from 'rxjs';
 import { copy as jsonCopy } from '../../../lib-common/json-utils';
 
 type WritableFS = web3n.files.WritableFS;
-type File = web3n.files.File;
 
 const MAIN_OBJ_FILE_NAME = 'msg.json';
 const PROGRESS_INFO_FILE_NAME = 'progress.json';
 const WIPS_INFO_FILE_NAME = 'wips.json';
-
-type ProgressNotifier = (id: string, info: DeliveryProgress) => void;
 
 function checkIfAllRecipientsDone(progress: DeliveryProgress): boolean {
 	for (const recipient of Object.keys(progress.recipients)) {
@@ -170,7 +166,7 @@ export class Msg {
 			return MsgPacker.fromPack(pack, SEG_SIZE_IN_K_QUATS, this.attachments);
 		}
 		const msg = MsgPacker.empty(SEG_SIZE_IN_K_QUATS);
-		msg.setHeader(headers.FROM, this.sender);
+		msg.setSection('From', this.sender);
 		if (typeof this.msgToSend.plainTxtBody === 'string') {
 			msg.setPlainTextBody(this.msgToSend.plainTxtBody);
 		} else if (typeof this.msgToSend.htmlTxtBody === 'string') {
@@ -179,10 +175,10 @@ export class Msg {
 		if (this.msgToSend.jsonBody !== undefined) {
 			msg.setJsonBody(this.msgToSend.jsonBody);
 		}
-		msg.setHeader(headers.MSG_TYPE, this.msgToSend.msgType);
-		msg.setHeader(headers.SUBJECT, this.msgToSend.subject);
-		msg.setHeader(headers.CC, this.msgToSend.carbonCopy);
-		msg.setHeader(headers.TO, this.msgToSend.recipients);
+		msg.setSection('Msg Type', this.msgToSend.msgType);
+		msg.setSection('Subject', this.msgToSend.subject);
+		msg.setSection('Cc', this.msgToSend.carbonCopy);
+		msg.setSection('To', this.msgToSend.recipients);
 		if (this.attachments) {
 			await msg.setAttachments(this.attachments);
 		}

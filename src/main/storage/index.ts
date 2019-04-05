@@ -45,11 +45,13 @@ type FSCollection = web3n.files.FSCollection;
 type FSItem = web3n.files.FSItem;
 
 export interface StorageException extends BaseExc {
+	storageSegment: 'app'|'system'|'user'|'device';
 	appName?: string;
 	badAppName?: boolean;
 	notAllowedToOpenFS?: boolean;
 	storageType?: StorageType;
-	storageSegment: 'app'|'system'|'user';
+	notAllowedToOpenDevPath?: boolean;
+	pathOnDevice?: string;
 }
 
 function makeBadAppNameExc(appName: string): StorageException {
@@ -94,6 +96,16 @@ function makeNotAllowedToOpenSysFSExc(storageType: StorageType):
 	};
 }
 
+function makeNotAllowedToOpenDevPathExc(path: string): StorageException {
+	return {
+		runtimeException: true,
+		type: 'storage',
+		storageSegment: 'device',
+		notAllowedToOpenDevPath: true,
+		pathOnDevice: path
+	};
+}
+
 const CORE_APPS_PREFIX = 'computer.3nweb.core';
 export const STORAGE_APP = 'computer.3nweb.storage';
 
@@ -101,15 +113,34 @@ const KD_PARAMS_FILE_NAME = 'kd-params';
 const LOCAL_STORAGE_DIR = 'local';
 const SYNCED_STORAGE_DIR = 'synced';
 
+/**
+ * This function tries to get key derivation parameters from cache on a disk.
+ * If not found, function will return undefined.
+ * @param fs 
+ */
+function readRootKeyDerivParamsFromCache(fs: WritableFS):
+		Promise<ScryptGenParams|undefined> {
+	return fs.readJSONFile<ScryptGenParams>(KD_PARAMS_FILE_NAME).catch(
+		(exc: FileException) => {
+			if (exc.notFound) { return undefined; }
+			throw exc;
+	});
+}
+
+/**
+ * This function tries to get key derivation parameters from cache on a disk.
+ * If not found, it will ask storage server for it with a provided function.
+ * @param fs 
+ * @param getFromServer 
+ */
 async function getRootKeyDerivParams(fs: WritableFS,
 		getFromServer: () => Promise<ScryptGenParams>): Promise<ScryptGenParams> {
-	return fs.readJSONFile<ScryptGenParams>(KD_PARAMS_FILE_NAME).catch(
-		async (exc: FileException) => {
-			if (!exc.notFound) { throw exc; }
-			const params = await getFromServer();
-			await fs.writeJSONFile(KD_PARAMS_FILE_NAME, params);
-			return params;
-	});
+	let params = await readRootKeyDerivParamsFromCache(fs);
+	if (!params) {
+		params = await getFromServer();
+		await fs.writeJSONFile(KD_PARAMS_FILE_NAME, params);
+	}
+	return params;
 }
 
 export const sysFolders = {
@@ -134,40 +165,45 @@ class StorageAndFS<T extends Storage> {
 	
 	rootFS: WritableFS = (undefined as any);
 	
-	constructor(
+	private constructor(
 			public storage: T) {
 		Object.seal(this);
 	}
 
-	async initExisting(key: Uint8Array): Promise<boolean> {
+	static async existing<T extends Storage>(storage: T, key: Uint8Array):
+			Promise<StorageAndFS<T>|undefined> {
+		const s = new StorageAndFS(storage);
 		try {
-			this.rootFS = await xspFS.makeExisting(this.storage, key);
-			return true;
+			s.rootFS = await xspFS.fromExistingRoot(s.storage, key);
+			return s;
 		} catch (err) {
 			if ((err as EncryptionException).failedCipherVerification) {
-				return false;
+				return;
 			} else {
 				throw err;
 			}
 		}
 	}
 
-	async initFromRemote(key: Uint8Array): Promise<boolean> {
+	static async newOrExisting<T extends Storage>(storage: T, key: Uint8Array):
+			Promise<StorageAndFS<T>|undefined> {
+		const s = new StorageAndFS(storage);
 		try {
-			this.rootFS = await xspFS.makeExisting(this.storage, key);
+			s.rootFS = await xspFS.fromExistingRoot(s.storage, key);
+			return s;
 		} catch (err) {
 			if ((err as StorageException).objNotFound) {
-				this.rootFS = await xspFS.makeNewRoot(this.storage, key);
-				await initSysFolders(this.rootFS);
+				s.rootFS = await xspFS.makeNewRoot(s.storage, key);
+				await initSysFolders(s.rootFS);
+				return s;
 			} else if ((err as EncryptionException).failedCipherVerification) {
-				return false;
+				return;
 			} else {
 				throw err;
 			}
 		}
-		return true;
 	}
-	
+
 	makeAppFS(appFolder: string): Promise<WritableFS> {
 		if (('string' !== typeof appFolder) ||
 				(appFolder.length === 0) ||
@@ -203,20 +239,17 @@ class StorageAndFS<T extends Storage> {
 	}
 }
 
-type File = web3n.files.File;
-
 export class Storages implements FactoryOfAppFSs {
 
-	startSyncOfFilesInCache: () => void = (undefined as any);
+	private synced: StorageAndFS<SyncedStorage>|undefined = undefined;
 	
-	private synced: StorageAndFS<SyncedStorage> = (undefined as any);
-	
-	private local: StorageAndFS<Storage> = (undefined as any);
+	private local: StorageAndFS<Storage>|undefined = undefined;
 
 	private preCloseWaits = new Set<Promise<void>>();
 
 	constructor(
-			private cryptor: AsyncSBoxCryptor) {
+			private cryptor: AsyncSBoxCryptor
+		) {
 		Object.seal(this);
 	}
 
@@ -243,102 +276,107 @@ export class Storages implements FactoryOfAppFSs {
 			}
 		};
 	}
-	
+
 	/**
-	 * This does an initial part of initialization, common to both initialization
-	 * scenarios.
-	 * @param user
-	 * @param getSigner
-	 * @param generateMasterKey
+	 * This is a storage getter for links and linking in local storage.
 	 */
-	private async initFst(user: string, getSigner: GetSigner,
-			generateMasterKey: GenerateKey): Promise<Uint8Array> {
+	private storageGetterForLocalStorage: StorageGetter = (type) => {
+		if (type === 'local') {
+			return this.local!.storage;	// TypeError can be due to no init
+		} else if (type === 'synced') {
+			return this.synced!.storage;	// TypeError can be due to no init
+		} else if (type === 'share') {
+			// TODO implement returning shared storage
+			throw new Error(`Providing shared storage is not implemented, yet`);
+		} else {
+			throw new Error(`Cannot provide ${type} storage via local storage`);
+		}
+	};
+
+	/**
+	 * This is a storage getter for links and linking in synced storage.
+	 */
+	private storageGetterForSyncedStorage: StorageGetter = (type) => {
+		if (type === 'synced') {
+			return this.synced!.storage;	// TypeError can be due to no init
+		} else if (type === 'share') {
+			// TODO implement returning shared storage
+			throw new Error(`Providing shared storage is not implemented, yet`);
+		} else {
+			throw new Error(`Cannot provide ${type} storage via synced storage`);
+		}
+	};
+
+	async startInitFromCache(user: string, keyGen: GenerateKey):
+			Promise<((getSigner: GetSigner) => Promise<boolean>)|undefined> {
 		const storageFS = await makeStorageFS(user);
-		if (!this.synced) {
-			const { startSyncOfFilesInCache, store } = await makeSyncedStorage(
+		const params = await readRootKeyDerivParamsFromCache(storageFS);
+		if (!params) { return; }
+		const key = await keyGen(params);
+		this.local = await StorageAndFS.existing(await makeLocalStorage(
+			await storageFS.writableSubRoot(LOCAL_STORAGE_DIR),
+			this.storageGetterForLocalStorage,
+			this.cryptor), key);
+		if (!this.local) { return; }
+		return async (getSigner) => {
+			if (this.synced) { return true; }
+			const { startSyncOfFiles, syncedStore } = await makeSyncedStorage(
 				user, getSigner,
 				await storageFS.writableSubRoot(SYNCED_STORAGE_DIR),
 				() => getStorageServiceFor(user),
-				this.storageGetterForSyncedStorage(),
+				this.storageGetterForSyncedStorage,
 				this.cryptor);
-			this.synced = new StorageAndFS(store);
-			this.startSyncOfFilesInCache = startSyncOfFilesInCache;
-		}
-		if (!this.local) {
-			this.local = new StorageAndFS(await makeLocalStorage(
-				await storageFS.writableSubRoot(LOCAL_STORAGE_DIR),
-				this.storageGetterForLocalStorage(),
-				this.cryptor));
-		}
-		const params = await getRootKeyDerivParams(storageFS,
-			this.synced.storage.getRootKeyDerivParamsFromServer);
-		return await generateMasterKey(params);
-	}
-
-	private storageGetterForLocalStorage(): StorageGetter {
-		return (type: FSType, location?: string): Storage => {
-			if (type === 'local') {
-				return this.local.storage;
-			} else if (type === 'synced') {
-				return this.synced.storage;
-			} else if (type === 'share') {
-				// TODO implement returning shared storage
-				throw new Error(`Providing shared storage is not implemented, yet`);
-			} else {
-				throw new Error(`Cannot provide ${type} storage via local storage`);
-			}
+			this.synced = await StorageAndFS.existing(syncedStore, key);
+			key.fill(0);
+			if (!this.synced) { return false; }
+			await startSyncOfFiles();
+			return true;
 		};
 	}
 
-	private storageGetterForSyncedStorage(): StorageGetter {
-		return (type: FSType, location?: string): Storage => {
-			if (type === 'synced') {
-				return this.synced.storage;
-			} else if (type === 'share') {
-				// TODO implement returning shared storage
-				throw new Error(`Providing shared storage is not implemented, yet`);
-			} else {
-				throw new Error(`Cannot provide ${type} storage via synced storage`);
-			}
-		};
-	}
-
-	async initExisting(user: string, getSigner: GetSigner,
-			generateMasterKey: GenerateKey): Promise<boolean> {
-		const key = await this.initFst(user, getSigner, generateMasterKey);
-		const ok = (await this.synced.initExisting(key)) &&
-			(await this.local.initExisting(key));
-		return ok;
-	}
-	
 	async initFromRemote(user: string, getSigner: GetSigner,
-			generateMasterKey: GenerateKey): Promise<boolean> {
-		const key = await this.initFst(user, getSigner, generateMasterKey);
-		try {
-			const ok = (await this.synced.initFromRemote(key)) &&
-				(await this.local.initFromRemote(key));
-			return ok;
-		} catch (err) {
-			this.synced = (undefined as any);
-			this.local = (undefined as any);
-			throw err;
-		}
+			keyOrGen: GenerateKey|Uint8Array): Promise<boolean> {
+		const storageFS = await makeStorageFS(user);
+		const { startSyncOfFiles, syncedStore } = await makeSyncedStorage(
+			user, getSigner,
+			await storageFS.writableSubRoot(SYNCED_STORAGE_DIR),
+			() => getStorageServiceFor(user),
+			this.storageGetterForSyncedStorage,
+			this.cryptor);
+		// getting parameters records them locally on a disk
+		const params = await getRootKeyDerivParams(
+			storageFS, syncedStore.getRootKeyDerivParamsFromServer);
+		const key = ((typeof keyOrGen === 'function') ?
+			await keyOrGen(params) : keyOrGen);
+		this.synced = await StorageAndFS.newOrExisting(syncedStore, key);
+		this.local = await StorageAndFS.newOrExisting(await makeLocalStorage(
+			await storageFS.writableSubRoot(LOCAL_STORAGE_DIR),
+			this.storageGetterForLocalStorage,
+			this.cryptor), key);
+		key.fill(0);
+		startSyncOfFiles();
+
+		return (!!this.synced && !!this.local);
 	}
-	
+
 	makeSyncedFSForApp(appFolder: string): Promise<WritableFS> {
-		return this.synced.makeAppFS(appFolder);
+		// TypeError for undefined synced can be due to no init
+		return this.synced!.makeAppFS(appFolder);
 	}
 
 	makeLocalFSForApp(appFolder: string): Promise<WritableFS> {
-		return this.local.makeAppFS(appFolder);
+		// TypeError for undefined local can be due to no init
+		return this.local!.makeAppFS(appFolder);
 	}
 
 	async getUserFS(type: StorageType): Promise<FSItem> {
 		let fs: WritableFS;
 		if (type === 'synced') {
-			 fs = await this.synced.userFS();
+			// TypeError for undefined synced can be due to no init
+			 fs = await this.synced!.userFS();
 		} else if (type === 'local') {
-			fs = await this.local.userFS();
+			// TypeError for undefined local can be due to no init
+			fs = await this.local!.userFS();
 		} else if (type === 'device') {
 			fs = await userFilesOnDevice();
 		} else {
@@ -354,12 +392,14 @@ export class Storages implements FactoryOfAppFSs {
 		if (type === 'synced') {
 			return {
 				isCollection: true,
-				item: await this.synced.sysFSs()
+				// TypeError for undefined synced can be due to no init
+				item: await this.synced!.sysFSs()
 			};
 		} else if (type === 'local') {
 			return {
 				isCollection: true,
-				item: await this.local.sysFSs()
+				// TypeError for undefined local can be due to no init
+				item: await this.local!.sysFSs()
 			};
 		} else if (type === 'device') {
 			return sysFilesOnDevice();
@@ -369,19 +409,20 @@ export class Storages implements FactoryOfAppFSs {
 	}
 
 	async close(): Promise<void> {
-		if (!this.synced) { return; }
-		const tasks: Promise<void>[] = [];
-		tasks.push(this.synced.close());
-		tasks.push(this.local.close());
-		await Promise.all(tasks);
-		this.synced = (undefined as any);
-		this.local = (undefined as any);
+		if (!this.local) { return; }
+		if (this.synced) {
+			await this.synced.close();
+		}
+		await this.local.close();
+		this.synced = undefined;
+		this.local = undefined;
 	}
 
 	/**
 	 * This method mounts given file on device fs, returning respective device
 	 * path. If file is on device fs, this method finds respective path.
-	 * @param file 
+	 * @param fs
+	 * @param path
 	 */
 	async mountOnDeviceFS(fs: FS, path: string): Promise<string> {
 		let devPath = DeviceFS.getPath(path, fs);
@@ -398,9 +439,9 @@ Object.freeze(Storages);
 
 export async function userFilesOnDevice(): Promise<WritableFS> {
 	if (process.platform.startsWith('win')) {
-		return DeviceFS.makeWritable(process.env.USERPROFILE!);
+		return DeviceFS.makeWritableFS(process.env.USERPROFILE!);
 	} else {
-		return DeviceFS.makeWritable(process.env.HOME!);
+		return DeviceFS.makeWritableFS(process.env.HOME!);
 	}
 }
 
@@ -411,12 +452,12 @@ export async function sysFilesOnDevice(): Promise<FSItem> {
 		const sysDrive = process.env.SystemDrive!;
 		await c.set!(sysDrive, {
 			isFolder: true,
-			item: await DeviceFS.makeWritable(sysDrive)
+			item: await DeviceFS.makeWritableFS(sysDrive)
 		});
 	} else {
 		await c.set!('', {
 			isFolder: true,
-			item: await DeviceFS.makeWritable('/')
+			item: await DeviceFS.makeWritableFS('/')
 		});
 	}
 	return { isCollection: true, item: c };
@@ -452,6 +493,9 @@ export class PerWinStorage {
 		}
 		if (this.policy.canOpenSysFS) {
 			remoteCAP.getSysFS = bind(this, this.getSysFS);
+		}
+		if (this.policy.canAccessDevicePath) {
+			remoteCAP.getOnDevice = bind(this, this.getOnDevice);
 		}
 		Object.freeze(remoteCAP);
 		return { remoteCAP, close: () => this.close() };
@@ -495,22 +539,33 @@ export class PerWinStorage {
 		if (!this.policy.canOpenUserFS) {
 			throw makeNotAllowedToOpenUserFSExc(type);
 		}
-		const policy = this.policy.canOpenUserFS(type);
-		if (!policy) { throw makeNotAllowedToOpenUserFSExc(type); }
+		const canOpen = this.policy.canOpenUserFS(type);
+		if (!canOpen) { throw makeNotAllowedToOpenUserFSExc(type); }
 
 		const userFS = await this.appFSsFactory.getUserFS(type);
-		return applyPolicyToFSItem(userFS, policy, path);
+		return applyPolicyToFSItem(userFS, canOpen, path);
 	}
 
 	private async getSysFS(type: StorageType, path?: string): Promise<FSItem> {
 		if (!this.policy.canOpenSysFS) {
 			throw makeNotAllowedToOpenSysFSExc(type);
 		}
-		const policy = this.policy.canOpenSysFS(type);
-		if (!policy) { throw makeNotAllowedToOpenSysFSExc(type); }
+		const canOpen = this.policy.canOpenSysFS(type);
+		if (!canOpen) { throw makeNotAllowedToOpenSysFSExc(type); }
 
 		const sysFS = await this.appFSsFactory.getSysFSs(type);
-		return applyPolicyToFSItem(sysFS, policy, path);
+		return applyPolicyToFSItem(sysFS, canOpen, path);
+	}
+
+	private async getOnDevice(path: string, ro = false): Promise<FSItem> {
+		if (!this.policy.canAccessDevicePath) {
+			throw makeNotAllowedToOpenDevPathExc(path);
+		}
+		const canOpen = this.policy.canAccessDevicePath(path);
+		if (!canOpen) { throw makeNotAllowedToOpenDevPathExc(path); }
+
+		const writable = (ro ? false : (canOpen === 'w'));
+		return DeviceFS.makeFSItemFor(path, writable);
 	}
 	
 	private close(): void {

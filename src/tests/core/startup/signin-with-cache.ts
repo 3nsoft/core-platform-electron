@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,7 +16,7 @@
 
 import { itAsync, beforeAllAsync } from '../../libs-for-tests/async-jasmine';
 import { setupWithUsers } from '../../libs-for-tests/setups';
-import { setRemoteJasmineInClient, checkRemoteExpectations }
+import { setRemoteJasmineInClient, execExpects }
 	from '../../libs-for-tests/remote-js-utils';
 import { AppRunner, User } from '../../libs-for-tests/app-runner';
 import { sleep } from '../../../lib-common/processes';
@@ -27,9 +27,6 @@ declare var w3n: {
 	signUp: web3n.startup.SignUpService;
 	signIn: web3n.startup.SignInService;
 }
-declare var cExpect: typeof expect;
-declare var cFail: typeof fail;
-declare function collectAllExpectations(): void;
 declare function checkKeyDerivNotifications(notifPerc: number[]): void;
 
 // NOTE: it-specs inside signIn process expect to run in a given order -- they
@@ -49,57 +46,36 @@ describe('signIn process (with cache)', () => {
 	}, 30000);
 
 	itAsync('identifies user on disk', async () => {
-		let exps = (await app.c.executeAsync(async function(
-				userId: string, done: Function) {
-			try {
-				let users = await w3n.signIn.getUsersOnDisk();
-				cExpect(Array.isArray(users)).toBe(true);
-				cExpect(users).toContain(userId);
-			} catch (err) {
-				cFail(err);
-			}
-			done(collectAllExpectations());
-		}, user.userId)).value;
-		checkRemoteExpectations(exps, 2);
+		await execExpects(app.c, async function(userId: string) {
+			let users = await w3n.signIn.getUsersOnDisk();
+			expect(Array.isArray(users)).toBe(true);
+			expect(users).toContain(userId);
+		}, [ user.userId ], 2);
 	});
 
 
 	itAsync(`won't startup with a wrong pass`, async () => {
 		app.c.timeouts('script', 59000);
-		let exps = (await app.c.executeAsync(async function(
-				userId: string, pass: string, done: Function) {
+		await execExpects(app.c, async function(userId: string, pass: string) {
 			let notifications: number[] = [];
 			let notifier = (p) => { notifications.push(p); }
-			try {
-				let passOK = await w3n.signIn.useExistingStorage(userId, pass, notifier);
-				cExpect(passOK).toBe(false);
-				checkKeyDerivNotifications(notifications);
-			} catch (err) {
-				cFail(err);
-			}
-			done(collectAllExpectations());
-		}, user.userId, 'wrong password')).value;
+			let passOK = await w3n.signIn.useExistingStorage(userId, pass, notifier);
+			expect(passOK).toBe(false);
+			checkKeyDerivNotifications(notifications);
+		}, [ user.userId, 'wrong password' ]);
 		app.c.timeouts('script', 5000);
-		checkRemoteExpectations(exps);
 	}, 60000);
 
 	itAsync('starts with correct pass', async () => {
 		app.c.timeouts('script', 59000);
-		let exps = (await app.c.executeAsync(async function(
-					userId: string, pass: string, done: Function) {
+		await execExpects(app.c, async function(userId: string, pass: string) {
 			let notifications: number[] = [];
 			let notifier = (p) => { notifications.push(p); }
-			try {
-				let passOK = await w3n.signIn.useExistingStorage(userId, pass, notifier);
-				cExpect(passOK).toBe(true);
-				checkKeyDerivNotifications(notifications);
-			} catch (err) {
-				cFail(err);
-			}
-			done(collectAllExpectations());
-		}, user.userId, user.pass)).value;
+			let passOK = await w3n.signIn.useExistingStorage(userId, pass, notifier);
+			expect(passOK).toBe(true);
+			checkKeyDerivNotifications(notifications);
+		}, [ user.userId, user.pass ]);
 		app.c.timeouts('script', 5000);
-		checkRemoteExpectations(exps);
 		await sleep(500);	// for windows switch over
 	}, 60000);
 

@@ -20,7 +20,7 @@ import { Storage, wrapStorageImplementation, NodesContainer,
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { makeObjSource } from './obj-source';
 import { NamedProcs } from '../../../lib-common/processes';
-import { Files, makeFiles, addDiffSectionTo, DiffInfo } from './files';
+import { Files, makeFiles } from './files';
 import { makeObjExistsExc, makeObjNotFoundExc }
 	from '../../../lib-client/3nstorage/exceptions';
 import { bytesSync as randomBytes } from '../../../lib-common/random-node';

@@ -17,9 +17,6 @@
 import { ObjSource } from '../../../lib-common/obj-streaming/common';
 import { ScryptGenParams } from '../../key-derivation';
 import { bind } from '../../../lib-common/binding';
-import { Observable } from 'rxjs';
-import { objChanged, objRemoved }
-	from '../../../lib-common/service-api/3nstorage/owner';
 import { AsyncSBoxCryptor } from 'xsp-files';
 
 export { AsyncSBoxCryptor } from 'xsp-files';

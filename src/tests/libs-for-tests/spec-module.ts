@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -15,25 +15,13 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { itAsync, xitAsync } from './async-jasmine';
-import { checkRemoteExpectations } from './setups';
 import { resolve } from 'path';
 import { readdirSync } from 'fs';
 import { SpectronClient } from 'spectron';
+import { execExpects } from './remote-js-utils';
 
-export interface SpecIt {
-	expectation: string;
-	disableIn?: string;
-	func?: (...args: any[]) => void;
-	funcArgs?: string[];
-	numOfExpects?: number;
-	timeout?: number;
-}
-
-export interface SpecDescribe {
-	description: string;
-	its: SpecIt[];
-	focused?: boolean;
-}
+export type SpecIt = appTesting.SpecIt;
+export type SpecDescribe = appTesting.SpecDescribe;
 
 function readSpecs(folderWithModules: string): SpecDescribe[] {
 	const specs: SpecDescribe[] = [];
@@ -49,9 +37,7 @@ function readSpecs(folderWithModules: string): SpecDescribe[] {
 	return specs;
 }
 
-function collectAllExpectations(): void {};
-
-export function fsSpecsForWebDrvCtx(
+export function loadSpecsForWebDrvCtx(
 		c: () => SpectronClient,
 		folderWithModules: string,
 		disableFlag?: string): void {
@@ -67,20 +53,17 @@ export function fsSpecsForWebDrvCtx(
 					if (it.timeout) {
 						c().timeouts('script', it.timeout);
 					}
-					c().execute(function() { collectAllExpectations(); });
-					const exec = c().executeAsync(it.func);
+					await execExpects(c(), it.func, [], it.numOfExpects);
 					if (it.timeout) {
 						c().timeouts('script', 5000);
 					}
-					const exps = (await exec).value;
-					checkRemoteExpectations(exps, it.numOfExpects);
 				}, it.timeout);
 			});
 		});
 	});
 }
 
-export function fsSpecsForCurrentCtx(
+export function loadSpecsForCurrentCtx(
 		folderWithModules: string,
 		disableFlag?: string): void {
 	const specs = readSpecs(folderWithModules);
@@ -92,8 +75,7 @@ export function fsSpecsForCurrentCtx(
 					it.disableIn.match(disableFlag))) ? xitAsync : itAsync);
 				spec(it.expectation, async function() {
 					if (!it.func) { return; }
-					const done = () => {};
-					await it.func(done);
+					await it.func();
 				}, it.timeout);
 			});
 		});
@@ -107,7 +89,7 @@ export function specsWithArgs(folderWithModules: string,
 		const describeFn = (d.focused ? fdescribe : describe);
 		describeFn(d.description, () => {
 			d.its.forEach((it) => {
-				const spec = (it.func  ? itAsync : xitAsync);
+				const spec = (it.func ? itAsync : xitAsync);
 				spec(it.expectation, async function() {
 					if (!it.func) { return; }
 					if (it.funcArgs) {

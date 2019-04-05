@@ -17,8 +17,7 @@
 import { mergeRegions } from '../../../../lib-client/local-files/regions';
 import { parseObjFileOffsets, writeObjTo }
 	from '../../../../lib-client/obj-file-on-dev-fs';
-import { ObjId, Objs, notFoundOrReThrow, DiffInfo, ObjStatusInfo }
-	from './objs';
+import { ObjId, Objs, notFoundOrReThrow, ObjStatusInfo } from './objs';
 import { ObjReader, ObjFileReader } from './obj-reader';
 import { FileException } from '../../../../lib-common/exceptions/file';
 

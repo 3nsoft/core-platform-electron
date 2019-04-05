@@ -34,15 +34,17 @@ function wrapRemotePromise<T>(remotePromise: Promise<T>,
 		resultWrap?: Wrap<T>): Promise<T> {
 	return new Promise<T>((resolve, reject) => {
 		remotePromise.then(
-			remoteValue => setTimeout(() => {
+			remoteValue => {
 				const localValue = (resultWrap ?
 					resultWrap(remoteValue) : wrapRemote(remoteValue));
 				resolve(localValue);
-			}),
-			remoteError => setTimeout(() => {
+				remotePromise = undefined as any;
+			},
+			remoteError => {
 				const localErr = localizeError(remoteError);
 				reject(localErr);
-			}));
+				remotePromise = undefined as any;
+			});
 	});
 }
 
@@ -50,7 +52,7 @@ function localizeError(error: any): any {
 	if ((error as RuntimeException).runtimeException) {
 		return wrapLocal(error);
 	} else {
-		return new Error('Error occured in core:\n'+stringifyErr(error));
+		return new Error(`Error occured in core: ${stringifyErr(error)}`);
 	}
 }
 
@@ -299,8 +301,18 @@ function wrapRemoteFS(remFS: FS): FS {
 		const remDetach = remFS.watchFolder(path, remObs);
 		return () => remDetach();
 	};
+
+	localFS.select = wrapRemoteFunc(remFS.select, null, wrapResultOfSelect);
 	
 	return localFS;
+}
+
+function wrapResultOfSelect(
+		rem: { items: FSCollection; completion: Promise<void>; }):
+		{ items: FSCollection; completion: Promise<void>; } {
+	const completion = wrapRemotePromise(rem.completion);
+	const items = wrapRemote(rem.items);
+	return { completion, items };
 }
 
 type FSCollection = web3n.files.FSCollection;
@@ -313,7 +325,7 @@ function wrapRemoteFSCollection(remColl: FSCollection): FSCollection {
 		const remDetach = remColl.watch(remObs);
 		return () => remDetach();
 	};
-	
+
 	return localColl;
 }
 

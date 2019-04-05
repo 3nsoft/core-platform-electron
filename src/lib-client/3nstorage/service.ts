@@ -23,7 +23,7 @@ import * as api from '../../lib-common/service-api/3nstorage/owner';
 import { ServiceUser, IGetMailerIdSigner } from '../user-with-mid-session';
 import { storageInfoAt } from '../service-locator';
 import * as keyGen from '../key-derivation';
-import { makeObjNotFoundExc, makeObjExistsExc, makeConcurrentTransExc,
+import { makeObjNotFoundExc, makeConcurrentTransExc,
 	makeUnknownTransactionExc, makeVersionMismatchExc }
 	from './exceptions';
 import { makeSubscriber, SubscribingClient } from '../../lib-common/ipc/ws-ipc';

@@ -18,8 +18,6 @@ import { fork, ChildProcess } from 'child_process';
 import { IPCToChild, commToChild }
 	from '../../lib-common/ipc/node-child-ipc';
 import { DnsTxtRecords } from './dns';
-import { sleep } from '../../lib-common/processes';
-import { readdirSync } from 'fs';
 import { normalize } from 'path';
 
 export interface ServiceUrls {

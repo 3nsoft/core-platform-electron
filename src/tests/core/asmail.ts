@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -16,10 +16,8 @@
 
 import { itAsync, beforeAllAsync }
 	from '../libs-for-tests/async-jasmine';
-import { setupWithUsers, checkRemoteExpectations }
-	from '../libs-for-tests/setups';
+import { setupWithUsers, execExpects } from '../libs-for-tests/setups';
 import { AppRunner } from '../libs-for-tests/app-runner';
-import { stringOfB64Chars } from '../../lib-common/random-node';
 import { specsWithArgs } from '../libs-for-tests/spec-module';
 import { resolve } from 'path';
 
@@ -31,9 +29,6 @@ declare var w3n: {
 		saveFileDialog: web3n.device.files.SaveFileDialog;
 	};
 }
-declare var cExpect: typeof expect;
-declare var cFail: typeof fail;
-declare function collectAllExpectations(): void;
 
 describe('ASMail', () => {
 
@@ -55,24 +50,18 @@ describe('ASMail', () => {
 	});
 
 	itAsync('gets current user id', async () => {
-		let exps = (await app1.c.executeAsync(
-		async function(expUserId: string, done: Function) {
+		await execExpects(app1.c, async function(expUserId: string) {
 			let userId = await w3n.mail.getUserId();
-			cExpect(userId).toBe(expUserId);
-			done(collectAllExpectations());
-		}, app1.user.userId)).value;
-		checkRemoteExpectations(exps, 1);
+			expect(userId).toBe(expUserId);
+		}, [ app1.user.userId ], 1);
 	});
 
 	itAsync('lists incoming messages (no messages)', async () => {
-		let exps = (await app1.c.executeAsync(
-		async function(done: Function) {
+		await execExpects(app1.c, async function() {
 			let msgs = await w3n.mail.inbox.listMsgs();
-			cExpect(Array.isArray(msgs)).toBe(true);
-			cExpect(msgs.length).toBe(0);
-			done(collectAllExpectations());
-		})).value;
-		checkRemoteExpectations(exps, 2);
+			expect(Array.isArray(msgs)).toBe(true);
+			expect(msgs.length).toBe(0);
+		}, [], 2);
 	});
 
 	specsWithArgs(resolve(__dirname, './asmail/specs'), {

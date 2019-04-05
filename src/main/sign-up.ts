@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2018 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -21,7 +21,6 @@ import { IdManager } from './id-manager';
 import { parse as parseUrl } from 'url';
 import { use as keyUse, JsonKey, keyToJson } from '../lib-common/jwkeys';
 import { base64 } from '../lib-common/buffer-utils';
-import { bind } from '../lib-common/binding';
 import { areAddressesEqual } from '../lib-common/canonical-address';
 import * as keyDeriv from '../lib-client/key-derivation';
 import { getUsersOnDisk } from '../lib-client/local-files/app-files';
@@ -107,10 +106,8 @@ export class SignUp {
 	}
 	
 	constructor(serviceURL: string,
-			private cryptor: Cryptor,
-			private idManager: IdManager,
-			private initStorageFromRemote:
-				(generateKey: GenerateKey) => Promise<boolean>) {
+		private cryptor: Cryptor
+	) {
 		this.setServiceURL(serviceURL);
 		Object.seal(this);
 	}
@@ -126,27 +123,28 @@ export class SignUp {
 		}
 	}
 
-	wrap(): SignUpService {
+	exposedService(): SignUpService {
 		const service: SignUpService = {
-			addUser: bind(this, this.addUser),
-			createUserParams: bind(this, this.createUserParams),
-			getAvailableAddresses: bind(this, this.getAvailableAddresses),
+			addUser: this.addUser,
+			createUserParams: this.createUserParams,
+			getAvailableAddresses: this.getAvailableAddresses,
 			isActivated: async () => { throw new Error(`Not implemented, yet`); }
 		};
 		return Object.freeze(service);
 	}
 	
-	private async getAvailableAddresses(name: string): Promise<string[]> {
+	private getAvailableAddresses: SignUpService[
+			'getAvailableAddresses'] = async (name) => {
 		const addresses = await checkAvailableAddressesForName(
 			this.net, this.serviceURL, name);
 		return addresses;
-	}
+	};
 	
-	private async createUserParams(pass: string,
-			progressCB: (progress: number) => void): Promise<void> {
+	private createUserParams: SignUpService[
+			'createUserParams'] = async (pass, progressCB) => {
 		await this.genMidParams(pass, 0, 50, progressCB);
 		await this.genStorageParams(pass, 51, 100, progressCB);
-	}
+	};
 
 	private async genStorageParams(pass: string,
 			progressStart: number, progressEnd: number,
@@ -196,53 +194,49 @@ export class SignUp {
 		};
 	}
 	
-	private async initIdManager(address: string): Promise<void> {
-		// provision signer with a default key
-		const completion = await this.idManager.provisionNew(address);
-		if (!completion) { throw new Error(
-			`Failed to start provisioning MailerId identity`); }
-		await completion.complete(this.mid.defaultSKey);
-		// give id manager generated non-default key for other logins
-		this.idManager.setLoginKeys([ this.mid.labeledSKey ]);
-	}
-	
-	private initStorage(): Promise<any> {
-		const masterCrypt = async (derivParams: keyDeriv.ScryptGenParams) => {
-			const key = this.store.skey;
-			this.store.skey = (undefined as any);
-			return key;
-		};
-		return this.initStorageFromRemote(masterCrypt);
-	}
-	
-	private async addUser(address: string): Promise<boolean> {
+	private addUser: SignUpService['addUser'] = async (address) => {
 		for (const user of await getUsersOnDisk()) {
 			if (areAddressesEqual(address, user)) { throw new Error(
 				`Account ${user} already exists on a disk.`); }
 		}
-		try {
-			const accountCreated = await addUser(this.net, this.serviceURL, {
-				userId: address,
-				mailerId: this.mid.params,
-				storage: this.store.params
-			});
-			if (!accountCreated) { return false; }
-			await this.initIdManager(address);
-			await this.initStorage();
-			this.doneBroadcast.next();
-			return true;
-		} catch (err) {
-			await logError(err);
+		const accountCreated = await addUser(this.net, this.serviceURL, {
+			userId: address,
+			mailerId: this.mid.params,
+			storage: this.store.params
+		}).catch (async err => {
+			await logError(err, `Failed to create user account ${address}.`);
 			throw err;
-		}
+		});
+		if (!accountCreated) { return false; }
+		this.doneBroadcast.next({
+			address,
+			midSKey: {
+				default: this.mid.defaultSKey,
+				labeled: this.mid.labeledSKey
+			},
+			storeSKey: this.store.skey
+		});
+		this.forgetKeys();
+		return true;
+	};
+
+	private forgetKeys(): void {
+		this.store = (undefined as any);
+		this.mid = (undefined as any);
 	}
 
-	private doneBroadcast = new Subject<undefined>();
+	private doneBroadcast = new Subject<CreatedUser>();
 
-	done$ = this.doneBroadcast.asObservable();
+	newUser$ = this.doneBroadcast.asObservable();
 	
 }
 Object.freeze(SignUp.prototype);
 Object.freeze(SignUp);
+
+export interface CreatedUser {
+	address: string;
+	midSKey: { default: Uint8Array; labeled: JsonKey; };
+	storeSKey: Uint8Array;
+}
 
 Object.freeze(exports);

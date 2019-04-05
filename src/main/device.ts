@@ -168,9 +168,9 @@ class DevFileOpener {
 	getDevFS(path: string, writable = false, create = false,
 			exclusive = false): Promise<WritableFS|ReadonlyFS> {
 		if (writable) {
-			return DeviceFS.makeWritable(path, create, exclusive);
+			return DeviceFS.makeWritableFS(path, create, exclusive);
 		} else {
-			return DeviceFS.makeReadonly(path);
+			return DeviceFS.makeReadonlyFS(path);
 		}
 	}
 
@@ -178,7 +178,7 @@ class DevFileOpener {
 			exclusive = false): Promise<WritableFile|ReadonlyFile> {
 		const fName = basename(path);
 		const folder = dirname(path);
-		const fs = await DeviceFS.makeWritable(folder);
+		const fs = await DeviceFS.makeWritableFS(folder);
 		if (writable) {
 			return fs.writableFile(fName, create, exclusive);
 		} else {
@@ -192,7 +192,7 @@ async function makeFileFor(path: string, exists: boolean, isWritable: boolean):
 		Promise<ReadonlyFile|WritableFile> {
 	const fName = basename(path);
 	const folder = dirname(path);
-	const fs = await DeviceFS.makeWritable(folder);
+	const fs = await DeviceFS.makeWritableFS(folder);
 	if (isWritable) {
 		return fs.writableFile(fName, !exists, !exists);
 	} else {
@@ -204,7 +204,7 @@ async function makeFolderFor(path: string, exists: boolean,
 		isWritable: boolean): Promise<ReadonlyFS|WritableFS> {
 	const fName = basename(path);
 	const folder = dirname(path);
-	const fs = await DeviceFS.makeWritable(folder);
+	const fs = await DeviceFS.makeWritableFS(folder);
 	if (isWritable) {
 		return fs.writableSubRoot(fName, !exists, !exists);
 	} else {

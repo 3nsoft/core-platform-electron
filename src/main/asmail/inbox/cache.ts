@@ -15,16 +15,15 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { WritableFS } from '../../../lib-client/local-files/device-fs';
-import { CacheOfFolders, makeObjSourceFromByteSources,
-	Exception as CacheException }
+import { CacheOfFolders, Exception as CacheException }
 	from '../../../lib-client/local-files/generational-cache';
-import { ObjSource }
-	from '../../../lib-common/obj-streaming/common';
 import { MsgMeta }
 	from '../../../lib-common/service-api/asmail/retrieval';
 import { mergeRegions } from '../../../lib-client/local-files/regions';
 import { TimeWindowCache } from '../../../lib-common/time-window-cache';
 import { bind } from '../../../lib-common/binding';
+import { parseObjFileOffsets, writeObjTo }
+	from '../../../lib-client/obj-file-on-dev-fs';
 
 export { MsgMeta }
 	from '../../../lib-common/service-api/asmail/retrieval';
@@ -61,8 +60,6 @@ export interface MsgStatus {
 
 const META_FNAME = 'meta.json';
 const STATUS_FNAME = 'status.json';
-const HEADER_FILE_EXT = '.hxsp';
-const SEGMENTS_FILE_EXT = '.sxsp';
 
 const CACHE_ROTATION_HOURS = 12;
 
@@ -149,14 +146,14 @@ export interface InboxCache {
 	deleteMsg(msgId: string): Promise<void>;
 	
 	/**
-	 * This asynchronously saves message's object's header, updating
-	 * message status accordingly.
+	 * This starts saving message's object, updating message status accordingly.
 	 * @param msgId
 	 * @param objId
-	 * @param bytes of object's header
+	 * @param header of object's header
+	 * @param segs
 	 */
-	saveMsgObjHeader(msgId: string, objId: string, bytes: Uint8Array):
-		Promise<void>;
+	startSavingMsgObj(msgId: string, objId: string,
+		header: Uint8Array, segs?: Uint8Array): Promise<void>;
 	
 	/**
 	 * This asynchronously saves message's object's segment bytes, updating
@@ -253,8 +250,10 @@ export class InboxFiles implements InboxCache {
 	
 	async getMsgObjHeader(msgId: string, objId: string): Promise<Uint8Array> {
 		const msgFolder = await this.cache.getFolder(msgId);
-		const h = await this.fs.readBytes(
-			msgFolder+'/'+objId+HEADER_FILE_EXT);
+		const fPath = objFilePath(msgFolder, objId);
+		const { headerOffset, segsOffset } =
+			await parseObjFileOffsets(this.fs, fPath);
+		const h = await this.fs.readBytes(fPath, headerOffset, segsOffset);
 		if (!h) { throw new Error(`Empty object header in file for object ${objId} in a message ${msgId}`); }
 		return h;
 	}
@@ -262,8 +261,9 @@ export class InboxFiles implements InboxCache {
 	async getMsgObjSegments(msgId: string, objId: string, start: number,
 			end: number): Promise<Uint8Array|undefined> {
 		const msgFolder = await this.cache.getFolder(msgId);
-		return this.fs.readBytes(
-			`${msgFolder}/${objId}${SEGMENTS_FILE_EXT}`, start, end);
+		const fPath = objFilePath(msgFolder, objId);
+		const { segsOffset } = await parseObjFileOffsets(this.fs, fPath);
+		return this.fs.readBytes(fPath, start+segsOffset, end+segsOffset);
 	}
 	
 	async startSavingMsg(msgId: string, meta: MsgMeta): Promise<void> {
@@ -317,16 +317,17 @@ export class InboxFiles implements InboxCache {
 		return msgStatus!;
 	}
 	
-	async saveMsgObjHeader(msgId: string, objId: string, bytes: Uint8Array):
-			Promise<void> {
+	async startSavingMsgObj(msgId: string, objId: string,
+			header: Uint8Array, segs?: Uint8Array): Promise<void> {
 		const msgFolder = await this.cache.getFolder(msgId);
+		const fPath = objFilePath(msgFolder, objId);
 
 		// check if update operation can be done, else throw
 		const msgStatus = await this.checkObjStatusForUpdate(msgId, objId);
 
-		// write header to disk
-		await this.fs.writeBytes(
-			`${msgFolder}/${objId}${HEADER_FILE_EXT}`, bytes);
+		// write header and possible segments to disk
+		const sink = await this.fs.getByteSink(fPath, true, true);
+		await writeObjTo(sink, undefined, header, segs, true);
 
 		// update message status
 		msgStatus.objs[objId].partial!.headerDone = true;
@@ -337,14 +338,15 @@ export class InboxFiles implements InboxCache {
 	async saveMsgObjSegs(msgId: string, objId: string, offset: number,
 			bytes: Uint8Array): Promise<void> {
 		const msgFolder = await this.cache.getFolder(msgId);
+		const fPath = objFilePath(msgFolder, objId);
 
 		// check if update operation can be done, else throw
 		const msgStatus = await this.checkObjStatusForUpdate(msgId, objId);
 
 		// write bytes to disk
-		const sink = await this.fs.getByteSink(
-			`${msgFolder}/${objId}${SEGMENTS_FILE_EXT}`);
-		sink.seek!(offset);
+		const { segsOffset } = await parseObjFileOffsets(this.fs, fPath);
+		const sink = await this.fs.getByteSink(fPath, false);
+		sink.seek!(offset+segsOffset);
 		const bytesLen = bytes.length;
 		await sink.write(bytes);
 
@@ -373,7 +375,7 @@ export class InboxFiles implements InboxCache {
 			getMsgObjSegments: this.syncAndBind(this.getMsgObjSegments),
 			startSavingMsg: this.syncAndBind(this.startSavingMsg),
 			deleteMsg: this.syncAndBind(this.deleteMsg),
-			saveMsgObjHeader: this.syncAndBind(this.saveMsgObjHeader),
+			startSavingMsgObj: this.syncAndBind(this.startSavingMsgObj),
 			saveMsgObjSegs: this.syncAndBind(this.saveMsgObjSegs)
 		};
 		Object.freeze(w);
@@ -388,6 +390,10 @@ export async function makeInboxCache(cacheFS: WritableFS): Promise<InboxCache> {
 	const cache = new InboxFiles(cacheFS);
 	await cache.init();
 	return cache.wrap();
+}
+
+function objFilePath(msgFolder: string, objId: string): string {
+	return `${msgFolder}/${objId}`;
 }
 
 Object.freeze(exports);

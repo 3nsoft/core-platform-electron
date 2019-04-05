@@ -14,8 +14,7 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { writeObjTo, parseObjFileOffsets }
-	from '../../../../lib-client/obj-file-on-dev-fs';
+import { writeObjTo } from '../../../../lib-client/obj-file-on-dev-fs';
 import { ObjId, Objs, notFoundOrReThrow } from './objs';
 import { DiffInfo } from '../../../../lib-common/service-api/3nstorage/owner';
 import { FileException } from '../../../../lib-common/exceptions/file';
@@ -275,19 +274,6 @@ export class LocalVersions implements LocalObjVersions {
 		status.syncState = 'synced';
 		await this.objs.setObjStatus(status, objFolder);
 		this.objs.gc.scheduleCollection(objId);
-	}
-
-	private async reencryptHeaderInObjFile(path: string,
-			reencryptHeader: ReencryptHeader, newVer: number): Promise<void> {
-		const { headerOffset, segsOffset } = await parseObjFileOffsets(
-			this.objs.fs, path);
-		const initHeader = (await this.objs.fs.readBytes(
-			path, headerOffset, segsOffset))!;
-		const newHeader = await reencryptHeader(initHeader, newVer);
-		const sink = await this.objs.fs.getByteSink(path);
-		await sink.seek!(headerOffset);
-		await sink.write(newHeader);
-		await sink.write(null);
 	}
 
 	wrap(): LocalObjVersions {

@@ -15,13 +15,11 @@
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
 import { DiffInfo } from '../../../../lib-common/service-api/3nstorage/owner';
-import { bind } from '../../../../lib-common/binding';
 import { utf8 } from '../../../../lib-common/buffer-utils';
 import { parseObjFileOffsets, parseDiffAndOffsets, parseOffsets }
 	from '../../../../lib-client/obj-file-on-dev-fs';
 import { Objs, ObjId } from './objs';
 import { LOCAL_FILE_NAME_EXT } from './local-versions';
-import { Observable, Subject } from 'rxjs';
 
 export interface ObjReader {
 	
@@ -115,7 +113,7 @@ export class ObjFileReader implements ObjReader {
 		if (countBase && diff) {
 			return diff.segsSize;
 		} else {
-			const stats = await this.objs.fs.statFile(path);
+			const stats = await this.objs.fs.stat(path);
 			if (typeof stats.size !== 'number') { throw new Error(
 				`Stat of file on disk didn't return a numeric size.`); }
 			return stats.size - segsOffset;
@@ -148,7 +146,7 @@ export class ObjFileReader implements ObjReader {
 		if (!chunk || (chunk.length < 13)) { throw new Error(
 			`Object file ${path} is unexpectedly too short`); }
 		const { diffOffset, headerOffset, segsOffset } = parseOffsets(chunk);
-		const fileSize = (await this.objs.fs.statFile(path)).size!;
+		const fileSize = (await this.objs.fs.stat(path)).size!;
 		return {
 			diff: (diffOffset ? (headerOffset - diffOffset) : undefined),
 			header: segsOffset - headerOffset,

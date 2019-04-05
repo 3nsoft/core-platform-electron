@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 3NSoft Inc.
+ Copyright (C) 2016, 2018 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -18,9 +18,6 @@ import { SpecDescribe, SpecIt } from '../../libs-for-tests/spec-module';
 
 type FileException = web3n.files.FileException;
 declare var testFS: web3n.files.WritableFS;
-let cExpect = expect;
-let cFail = fail;
-function collectAllExpectations(): void {};
 
 export let specs: SpecDescribe = {
 	description: '.makeFolder',
@@ -28,98 +25,73 @@ export let specs: SpecDescribe = {
 };
 
 let it: SpecIt = { expectation: 'creates in existing parent' };
-it.func = async function(done: Function) {
-	try {
-		let fName = 'folder';
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-		await testFS.makeFolder(fName);
-		cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func = async function() {
+	let fName = 'folder';
+	expect(await testFS.checkFolderPresence(fName)).toBe(false);
+	await testFS.makeFolder(fName);
+	expect(await testFS.checkFolderPresence(fName)).toBe(true);
 };
 it.numOfExpects = 2;
 specs.its.push(it);
 
 it = { expectation: 'is a no-op, when folder exists, and a call is not exclusive' };
-it.func = async function(done: Function) {
-	try {
-		for (let fName of [ 'folder2', 'parent2/folder2' ]) {
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-			await testFS.makeFolder(fName);
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-			await testFS.makeFolder(fName)
-			.catch((e) => {
-				cFail('non exclusive creation should not throw');
-			});
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-		}
-	} catch (err) {
-		cFail(err);
+it.func = async function() {
+	for (let fName of [ 'folder2', 'parent2/folder2' ]) {
+		expect(await testFS.checkFolderPresence(fName)).toBe(false);
+		await testFS.makeFolder(fName);
+		expect(await testFS.checkFolderPresence(fName)).toBe(true);
+		await testFS.makeFolder(fName)
+		.catch(() => {
+			fail('non exclusive creation should not throw');
+		});
+		expect(await testFS.checkFolderPresence(fName)).toBe(true);
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 3*2;
 specs.its.push(it);
 
 it = { expectation: 'exclusive creation fails if folder exists' };
-it.func =	async function(done: Function) {
-	try {
-		for (let fName of [ 'folder3', 'parent3/folder3' ]) {
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(false);
-			await testFS.makeFolder(fName);
-			cExpect(await testFS.checkFolderPresence(fName)).toBe(true);
-			await testFS.makeFolder(fName, true)
-			.then(() => {
-				cFail('Exclusive creation of folder fails to throw.');
-			}, (e: FileException) => {
-				if (!e.alreadyExists) { cFail('incorrect exception'); }
-			});
-		}
-	} catch (err) {
-		cFail(err);
+it.func =	async function() {
+	for (let fName of [ 'folder3', 'parent3/folder3' ]) {
+		expect(await testFS.checkFolderPresence(fName)).toBe(false);
+		await testFS.makeFolder(fName);
+		expect(await testFS.checkFolderPresence(fName)).toBe(true);
+		await testFS.makeFolder(fName, true)
+		.then(() => {
+			fail('Exclusive creation of folder fails to throw.');
+		}, (e: FileException) => {
+			if (!e.alreadyExists) { fail('incorrect exception'); }
+		});
 	}
-	done(collectAllExpectations());
 };
 it.numOfExpects = 2*2;
 specs.its.push(it);
 
 it = { expectation: 'creates parent folder(s) on the way' };
-it.func =async function(done: Function) {
-	try {
-		let fName = 'folder';
-		let grParent = 'grand-parent';
-		let parent2 = 'grand-parent/parent2';
-		let path = `${parent2}/${fName}`;
-		cExpect(await testFS.checkFolderPresence(grParent)).toBe(false);
-		cExpect(await testFS.checkFolderPresence(parent2)).toBe(false);
-		cExpect(await testFS.checkFolderPresence(path)).toBe(false);
-		await testFS.makeFolder(path);
-		cExpect(await testFS.checkFolderPresence(path)).toBe(true);
-	} catch (err) {
-		cFail(err);
-	}
-	done(collectAllExpectations());
+it.func =async function() {
+	let fName = 'folder';
+	let grParent = 'grand-parent';
+	let parent2 = 'grand-parent/parent2';
+	let path = `${parent2}/${fName}`;
+	expect(await testFS.checkFolderPresence(grParent)).toBe(false);
+	expect(await testFS.checkFolderPresence(parent2)).toBe(false);
+	expect(await testFS.checkFolderPresence(path)).toBe(false);
+	await testFS.makeFolder(path);
+	expect(await testFS.checkFolderPresence(path)).toBe(true);
 };
 it.numOfExpects = 4;
 specs.its.push(it);
 
 it = { expectation: 'can handle concurrent creation' }
-it.func = async function(done: Function) {
-	try {
-		let path = 'concurrent/a/b/c/d/e/f/g/h';
-		cExpect(await testFS.checkFolderPresence(path)).toBe(false);
-		let concurrentTasks: Promise<void>[] = [];
-		for (let i=0; i < 10; i+=1) {
-			concurrentTasks.push(testFS.makeFolder(path));
-		}
-		await Promise.all(concurrentTasks);
-		cExpect(await testFS.checkFolderPresence(path)).toBe(true);
-	} catch (err) {
-		cFail(err);
+it.func = async function() {
+	let path = 'concurrent/a/b/c/d/e/f/g/h';
+	expect(await testFS.checkFolderPresence(path)).toBe(false);
+	let concurrentTasks: Promise<void>[] = [];
+	for (let i=0; i < 10; i+=1) {
+		concurrentTasks.push(testFS.makeFolder(path));
 	}
-	done(collectAllExpectations());
+	await Promise.all(concurrentTasks);
+	expect(await testFS.checkFolderPresence(path)).toBe(true);
 };
 it.numOfExpects = 2;
 specs.its.push(it);

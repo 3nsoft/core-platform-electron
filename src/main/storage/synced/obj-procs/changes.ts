@@ -17,9 +17,7 @@
 import { ObjSource } from '../../../../lib-common/obj-streaming/common';
 import { SingleProc } from '../../../../lib-common/processes';
 import { Subject, Observable } from 'rxjs';
-import { logWarning } from '../../../../lib-client/logging/log-to-file';
-import { ObjFiles, addDiffSectionTo, DiffInfo, ObjId }
-	from '../files/objs';
+import { ObjFiles, ObjId } from '../files/objs';
 
 export type ChangeToSync = SaveVersion | RemoveObjCurrentVersion;
 
