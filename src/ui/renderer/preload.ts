@@ -16,13 +16,15 @@
 
 (<any> window).w3n = (function() {
 	
-	const remoteW3N = (function() {
+	const { remoteW3N, makeW3NProxy } = (function() {
+		const makeW3NProxy = require('./w3n').makeW3NProxy
 		const remote = require('electron').remote;
 		const thisContent = remote.getCurrentWebContents();
-		return remote.getGlobal('getW3N')(thisContent);
+		const remoteW3N = remote.getGlobal('getW3N')(thisContent);
+		return { remoteW3N, makeW3NProxy };
 	})();
 
-	const w3n = require('./w3n').makeW3NProxy(remoteW3N);
+	const w3n = makeW3NProxy(remoteW3N);
 	
 	return Object.freeze(w3n);
 })();

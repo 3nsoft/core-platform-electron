@@ -22,6 +22,7 @@ import { CAPs, reverseDomain } from '../main/core';
 import { normalize } from 'path';
 import { DeviceFS } from '../lib-client/local-files/device-fs';
 import { errWithCause } from '../lib-common/exceptions/error';
+import { MANIFEST_FILE, APP_ROOT_FOLDER } from './load-utils';
 
 type WebContents = Electron.WebContents;
 
@@ -29,9 +30,6 @@ type WebContents = Electron.WebContents;
 // is definitely useful for having test app and a test startup app in a
 // different folder, independent of usable UI apps.
 const APPS_FOLDER = normalize(`${__dirname}/../apps`);
-
-const APP_ROOT_FOLDER = 'app';
-const MANIFEST_FILE = 'manifest.json';
 
 export class InitProc {
 	
@@ -68,6 +66,15 @@ export class InitProc {
 			return app;
 		});
 		return this.appStartingProcs.addStarted(appDomain, openningProc);
+	}
+
+	isTopLevelWebContent = (webContents: WebContents): boolean => {
+		for (const app of this.apps.values()) {
+			if (app.window.webContents === webContents) {
+				return true;
+			}
+		}
+		return false;
 	}
 
 	private exposeW3N: ExposeW3N = (webContents, remotedW3N) => {
@@ -107,7 +114,7 @@ export class InitProc {
 
 			const startupApp = await this.openApp(
 				STARTUP_APP_DOMAIN, appRoot, caps, undefined, manifest.windowOpts);
-			startupApp.loadContent();
+			await startupApp.loadContent();
 		} catch (err) {
 			throw errWithCause(err, `Cannot open startup app`);
 		}
@@ -129,28 +136,23 @@ export class InitProc {
 			const app = await this.openApp(
 				appDomain, appRoot, caps, undefined, manifest.windowOpts);
 			
-			app.loadContent(manifest.content);
+			await app.loadContent(manifest.content);
 		} catch (err) {
 			throw errWithCause(err, `Cannot open an inbuilt app with domain ${appDomain}`);
 		}
 	}
 
-	async openAppInFolder(path: string,
-			makeCAPs: (appDomain: string, manifest: AppManifest) => CAPs):
+	async openAppInFolder(path: string, manifest: AppManifest, caps: CAPs):
 			Promise<void> {
 		try {
-			const appFS = await DeviceFS.makeReadonlyFS(path);
+			const appRoot = await DeviceFS.makeReadonlyFS(path);
 			
-			const manifest = await appFS.readJSONFile<AppManifest>(MANIFEST_FILE);
 			const appDomain = manifest.appDomain;
-			const appRoot = await appFS.readonlySubRoot(APP_ROOT_FOLDER);
 
-			const caps = makeCAPs(appDomain, manifest);
-			
 			const app = await this.openApp(
 				appDomain, appRoot, caps, undefined, manifest.windowOpts);
 			
-			app.loadContent(manifest.content);
+			await app.loadContent(manifest.content);
 		} catch (err) {
 			throw errWithCause(err, `Cannot open an app from folder ${path}`);
 		}

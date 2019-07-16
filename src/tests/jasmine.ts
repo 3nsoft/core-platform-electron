@@ -24,9 +24,9 @@ jas.loadConfig({
 	spec_dir: 'build/all/tests',
 	spec_files: [
 		'units/*.js',
-		'core/startup/*.js',
 		'core/asmail.js',
 		'core/storage.js',
+		'core/startup/*.js',
 	]
 });
 

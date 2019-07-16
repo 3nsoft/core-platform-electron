@@ -66,7 +66,7 @@ export class StorageOwner extends ServiceUser {
 			throw makeException(rep, 'Unexpected status');
 		}
 		const keyDerivParams = rep.data;
-		if (!keyGen.checkParams(rep.data)) {
+		if (!keyGen.checkParams(keyDerivParams)) {
 			throw makeException(rep, 'Malformed response');
 		}
 		return keyDerivParams;

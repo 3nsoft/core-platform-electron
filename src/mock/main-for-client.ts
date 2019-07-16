@@ -26,13 +26,22 @@ import { toCanonicalAddress } from '../lib-common/canonical-address';
 import { join, sep } from 'path';
 import { FileException } from '../lib-common/async-fs-node';
 import { Code } from '../lib-common/exceptions/file';
+import { AppManifest } from '../ui/app-settings';
+import { appCodeFolderIn, getManifestIn } from '../ui/load-utils';
+import { errWithCause } from '../lib-common/exceptions/error';
+import { CAPs } from '../main/core';
+import { makeForMockWithAppCodeFromUrl } from '../lib-client/electron/session';
+import { loadUserExtensions } from '../ui/devtools';
 
 function printUsage(out: typeof console.log): void {
 	out(`
 Usage:
 	...${sep}3nweb --app-dir=app1 [--app-dir=app2 ...] [--data-dir=data_folder] [--devtools]
 Options:
-	--app-dir=folder - this option must be present with folder for at least one app, that is to be opened.
+	--app-dir=folder - this option must be present with folder for at least one app, that is to be opened. Value can either be --app-dir=path, or a tuple
+	"--app-dir=http-url|path" with |-separator, that needes outside quotes.
+	Http url option allows one to display code that is watched and instantly
+	http-served by common frameworks.
 	--data-dir=folder - tells which folder to use for data.
 	--devtools - allows to open chrome dev tools with common shortcuts like <Ctrl+Shift+I>, and adds refreshing with <Ctrl+R>.
 `);
@@ -40,27 +49,66 @@ Options:
 
 const MOCK_CONF_FILE = 'mock-conf.json';
 
+function getMockConfIn(appDir: string): MockConfig {
+	try {
+		const str = readFileSync(join(appDir, MOCK_CONF_FILE), { encoding: 'utf8' });
+		const mockConf = JSON.parse(str) as MockConfig;
+		validateConfs(mockConf);
+		return mockConf;
+	} catch (err) {
+		throw errWithCause(err, `Can't find or read ${MOCK_CONF_FILE} in ${appDir}`);
+	}
+}
+
+function extractHttpRootAndAppDirFromArg(arg: string):
+		{ rootHttp?: string; appDir: string; } {
+	if (!arg.startsWith('http:')) {
+		return { appDir: arg };
+	}
+	const indOfSep = arg.indexOf('|');
+	if (indOfSep < 0) { throw new Error(
+		`Missing separator character '|' in --app-dir argument`); }
+	const rootHttp = arg.substring(0, indOfSep);
+	const appDir = arg.substring(indOfSep + 1);
+	return { appDir, rootHttp };
+}
+
+type AppParams = {
+	rootHttp?: string;
+	rootFolder?: string;
+	manifest: AppManifest;
+};
+
 const appsFromFolders = process.argv
 .filter(arg => arg.startsWith('--app-dir='))
 .map(arg => arg.substring(10))
-.map(folder => {
+.map(extractHttpRootAndAppDirFromArg)
+.map(({ appDir, rootHttp }) => {
 	try {
-		const mockConfPath = join(folder, MOCK_CONF_FILE);
-		const mockStr = readFileSync(mockConfPath, { encoding: 'utf8' });
-		const conf = JSON.parse(mockStr) as MockConfig;
-		validateConfs(conf);
-		return [folder, conf];
+		const appParams: AppParams = { manifest: getManifestIn(appDir) };
+		if (rootHttp) {
+			appParams.rootHttp = rootHttp;
+		} else {
+			appParams.rootFolder = appCodeFolderIn(appDir);
+		}
+		const conf = getMockConfIn(appDir);
+		return [appParams, conf];
 	} catch (exc) {
-		console.error(`Can't read mock configuration file in folder ${folder}`);
+		console.error(`Can't read mock configuration file in folder ${appDir}`);
 		console.error(exc);
 		return;
 	}
 })
-.filter(conf => !!conf) as [string, MockConfig][];
+.filter(conf => !!conf) as [AppParams, MockConfig][];
 
-const userConfs = new Map<string, { apps: string[]; mockConf: MockConfig; }>();
+const userConfs = new Map<string, {
+	apps?: AppParams[];
+	appDomains?: string[];
+	mockConf: MockConfig;
+}>();
 
 if (appsFromFolders.length === 0) {
+	// XXX this should be gone with removal of run-mock gulp task
 	try {
 		const MOCK_CONF_POSTFIX = '.mock-conf.json';
 		const MOCK_CONFS_FOLDER = `${__dirname}/../mock-confs`;
@@ -78,6 +126,7 @@ if (appsFromFolders.length === 0) {
 			const appDomain = fName
 			.substring(0, fName.length - MOCK_CONF_POSTFIX.length)
 			.split('.').reverse().join('.');
+
 			mockConf.users
 			.map(uInd => mockConf.mail.existingUsers[uInd].address)
 			.map(toCanonicalAddress)
@@ -85,11 +134,11 @@ if (appsFromFolders.length === 0) {
 				let uConfs = userConfs.get(canonAddr);
 				if (uConfs) {
 					// XXX we may also add here merging of mockConf's for the same user
-					if (!uConfs.apps.includes(appDomain)) {
-						uConfs.apps.push(appDomain);
+					if (!uConfs.appDomains!.includes(appDomain)) {
+						uConfs.appDomains!.push(appDomain);
 					}
 				} else {
-					userConfs.set(canonAddr, { apps: [ appDomain ], mockConf });
+					userConfs.set(canonAddr, { appDomains: [ appDomain ], mockConf });
 				}
 			});
 		});
@@ -110,7 +159,7 @@ if (appsFromFolders.length === 0) {
 	}
 } else {
 	appsFromFolders
-	.forEach(([ folder, mockConf ]) => {
+	.forEach(([ app, mockConf ]) => {
 		mockConf.users
 		.map(userIndex => mockConf.mail.existingUsers[userIndex].address)
 		.map(toCanonicalAddress)
@@ -118,11 +167,13 @@ if (appsFromFolders.length === 0) {
 			let uConfs = userConfs.get(canonAddr);
 			if (uConfs) {
 				// XXX we may also add here merging of mockConf's for the same user
-				if (!uConfs.apps.includes(folder)) {
-					uConfs.apps.push(folder);
+				const appAlreadyPresent = !!uConfs.apps!.find(
+					p => (p.manifest.appDomain === app.manifest.appDomain));
+				if (!appAlreadyPresent) {
+					uConfs.apps!.push(app);
 				}
 			} else {
-				userConfs.set(canonAddr, { apps: [ folder ], mockConf: mockConf });
+				userConfs.set(canonAddr, { apps: [ app ], mockConf: mockConf });
 			}
 		});
 	});
@@ -145,19 +196,55 @@ const users = new Set<{ init: InitProc; core: Core; }>();
 	return;
 };
 
+async function loadAndOpenAppFromUrl(init: InitProc,
+		url: string, manifest: AppManifest, caps: CAPs): Promise<void> {
+	try {
+		const mockSession = makeForMockWithAppCodeFromUrl(url);
+		const appInstance = await init.openApp(
+			manifest.appDomain, url, caps,
+			mockSession, manifest.windowOpts);
+		if (manifest.content) {
+			if (!url.endsWith('/') && !manifest.content.startsWith('/')) {
+				url += '/';
+			}
+			url += manifest.content;
+		}
+		appInstance.window.loadURL(url);
+	} catch (err) {
+		throw errWithCause(err, `Cannot open app in mock from url ${url}`);
+	}
+
+}
+
 app.once('ready', async () => {
 
+	if (process.argv.indexOf('--devtools') > 0) {
+		await loadUserExtensions().catch(err => console.error(err));
+	}
+	
 	for (const user of userConfs) {
 		const init = new InitProc();
 		const core = new Core(user[1].mockConf, bind(init, init.openViewer));
 		await core.initFor(user[0]);
-		for (const appDomainOrPath of user[1].apps) {
-			if (appsFromFolders.length === 0) {
-				// XXX this should be gone
-				await init.openInbuiltApp(appDomainOrPath, core.makeCAPs);
-			} else {
-				await init.openAppInFolder(appDomainOrPath, core.makeCAPs);
+		if (user[1].apps) {
+			for (const app of user[1].apps!) {
+				const caps = core.makeCAPs(app.manifest.appDomain, app.manifest);
+				if (app.rootFolder) {
+					await init.openAppInFolder(app.rootFolder, app.manifest, caps);
+				} else if (app.rootHttp) {
+					await loadAndOpenAppFromUrl(
+						init, app.rootHttp, app.manifest, caps);
+				} else {
+					throw new Error(`Missing both http and path root for app code`);
+				}
 			}
+		} else if (user[1].appDomains) {
+			// XXX this should be gone with removal of run-mock gulp task
+			for (const appDomain of user[1].appDomains!) {
+				await init.openInbuiltApp(appDomain, core.makeCAPs);
+			}
+		} else {
+			throw new Error(`Missing both app params and app domains`);
 		}
 
 		users.add({ init, core });

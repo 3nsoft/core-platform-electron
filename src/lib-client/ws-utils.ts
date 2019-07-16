@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -19,6 +19,7 @@ import { IncomingMessage } from 'http';
 import { SESSION_ID_HEADER, Reply } from './request-utils';
 import { defer } from '../lib-common/processes';
 import { makeConnectionException } from '../lib-common/exceptions/http';
+import { globalAgent as agent } from 'https';
 
 export function openSocket(url: string, sessionId: string):
 		Promise<Reply<WebSocket>> {
@@ -26,12 +27,12 @@ export function openSocket(url: string, sessionId: string):
 		`Url protocol must be wss`); }
 	const headers: any = {};
 	headers[SESSION_ID_HEADER] = sessionId;
-	const ws = new WebSocket(url, { headers });
+	const ws = new WebSocket(url, { headers, agent });
 	const opening = defer<Reply<WebSocket>>();
 	const initOnError = err => opening.reject(makeConnectionException(
 		url, undefined,
 		`Cannot open websocket connection due to error: ${err.message}`));
-	const onNonOkReply = (_, res: IncomingMessage) => {
+	const onNonOkReply = (req, res: IncomingMessage) => {
 		const errReply: Reply<WebSocket> = {
 			url,
 			method: 'GET',
@@ -41,7 +42,7 @@ export function openSocket(url: string, sessionId: string):
 		opening.resolve(errReply);
 	};
 	ws.on('error', initOnError);
-	ws.on('unexpected-response', onNonOkReply as any);	// ws' d.ts is incorrect
+	ws.on('unexpected-response', onNonOkReply);
 	ws.once('open', () => {
 		const okReply: Reply<WebSocket> = {
 			url,

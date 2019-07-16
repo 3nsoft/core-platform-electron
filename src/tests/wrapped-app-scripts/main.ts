@@ -39,7 +39,7 @@ const settingsPort = (() => {
 let tester = commToClient(settingsPort);
 
 tester.addHandler('set-https-global-agent', (env: RequestEnvelope<string>) => {
-	(<any> https.globalAgent).options.ca = env.req;
+	https.globalAgent.options.ca = env.req;
 });
 
 tester.addHandler('set-dns-mock', (env: RequestEnvelope<DnsTxtRecords>) => {

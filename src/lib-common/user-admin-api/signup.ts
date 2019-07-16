@@ -62,13 +62,13 @@ Object.freeze(availableAddressesForName);
 export interface UserMidParams {
 	defaultPKey: {
 		pkey: JsonKey;
-		params: any;
+		kdParams: any;
 	};
 	otherPKeys: JsonKey[];
 }
 
 export interface UserStorageParams {
-	params: any;
+	kdParams: any;
 }
 
 export namespace addUser {

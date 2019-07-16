@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2017 3NSoft Inc.
+ Copyright (C) 2015 - 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -143,19 +143,9 @@ export interface PutObjFirstQueryOpts {
 	header: number;
 
 	/**
-	 * This is a total length of segments in the new version. When total segments
-	 * length is known apriori, this field must be present. Else, append flag
-	 * must be present instead of this field.
-	 * Segments bytes are located in http body after object's header.
+	 * This field indicates the last request, closing transaction.
 	 */
-	segs?: number;
-
-	/**
-	 * This is a boolean flag, which true value indicates that total length of
-	 * segment is not known, and that segment bytes in this transaction should be
-	 * appended to new object's version.
-	 */
-	append?: boolean;
+	last?: boolean;
 
 }
 
@@ -168,16 +158,9 @@ export interface PutObjSecondQueryOpts {
 	trans: string;
 
 	/**
-	 * This is an offset into segments. It must be present in a non-appending
-	 * request, and must be absent in appending requests.
+	 * This is an offset into segments.
 	 */
-	ofs?: number;
-
-	/**
-	 * This is a boolean flag, which true value indicates that segment bytes in
-	 * the body should be appended to new object's version.
-	 */
-	append?: boolean;
+	ofs: number;
 
 	/**
 	 * This field indicates the last request, closing transaction.
@@ -191,17 +174,17 @@ export namespace currentObj {
 	export const EXPRESS_URL_END = 'obj/:objId/current';
 	
 	export function getReqUrlEnd(objId: string, opts?: GetObjQueryOpts): string {
-		return `obj/${objId}/current${opts ? `?${stringifyOpts(opts)}`: ''}`;
+		return `obj/${objId}/current${opts ? `?${stringifyOpts(opts as any)}`: ''}`;
 	}
 	
 	export function firstPutReqUrlEnd(objId: string,
 			opts: PutObjFirstQueryOpts): string {
-		return `obj/${objId}/current?${stringifyOpts(opts)}`;
+		return `obj/${objId}/current?${stringifyOpts(opts as any)}`;
 	}
 	
 	export function secondPutReqUrlEnd(objId: string,
 			opts: PutObjSecondQueryOpts): string {
-		return `obj/${objId}/current?${stringifyOpts(opts)}`;
+		return `obj/${objId}/current?${stringifyOpts(opts as any)}`;
 	}
 
 	export interface ReplyToPut {
@@ -222,7 +205,8 @@ export namespace currentObj {
 		concurrentTransaction: 483,
 		unknownTransaction: 484,
 		unknownObjVer: 494,
-		mismatchedObjVer: 495
+		mismatchedObjVer: 495,
+		objIncomplete: 479
 	};
 	Object.freeze(SC);
 
@@ -238,15 +222,15 @@ export namespace currentRootObj {
 	export const EXPRESS_URL_END = 'root/current';
 	
 	export function getReqUrlEnd(opts?: GetObjQueryOpts): string {
-		return `root/current${opts ? `?${stringifyOpts(opts)}`: ''}`;
+		return `root/current${opts ? `?${stringifyOpts(opts as any)}`: ''}`;
 	}
 	
 	export function firstPutReqUrlEnd(opts: PutObjFirstQueryOpts): string {
-		return `root/current?${stringifyOpts(opts)}`;
+		return `root/current?${stringifyOpts(opts as any)}`;
 	}
 	
 	export function secondPutReqUrlEnd(opts: PutObjSecondQueryOpts): string {
-		return `root/current?${stringifyOpts(opts)}`;
+		return `root/current?${stringifyOpts(opts as any)}`;
 	}
 	
 	export type ReplyToPut = currentObj.ReplyToPut;
@@ -267,7 +251,7 @@ export namespace archivedObjVersion {
 		if (opts) {
 			opts.ver = version;
 		}
-		const query = (opts ? `?${stringifyOpts(opts)}`: '');
+		const query = (opts ? `?${stringifyOpts(opts as any)}`: '');
 		return `/obj/${objId}/archived${query}`;
 	}
 	
@@ -291,7 +275,7 @@ export namespace archivedRootVersion {
 		if (opts) {
 			opts.ver = version;
 		}
-		const query = (opts ? `?${stringifyOpts(opts)}`: '');
+		const query = (opts ? `?${stringifyOpts(opts as any)}`: '');
 		return `root/archived${query}`;
 	}
 	
@@ -318,7 +302,7 @@ export interface DiffInfo {
 	 * 1st element is an offset in base/new byte array;
 	 * 2nd element is a length of the sector.
 	 */
-	sections: [ number, number, number ][];
+	sections: [ 0|1, number, number ][];
 }
 
 /**
@@ -327,22 +311,23 @@ export interface DiffInfo {
  * @param diff is an object that is expected to be diff
  * @param version is diff's object's version
  */
-export function sanitizedDiff(diff: DiffInfo, version: number):
-		DiffInfo|undefined {
+export function sanitizedDiff(
+	diff: DiffInfo, version: number
+): DiffInfo|undefined {
 	if ((typeof diff !== 'object') || (diff === null)) { return; }
 	if (!Number.isInteger(diff.baseVersion) || (diff.baseVersion < 1) ||
-			(diff.baseVersion >= version)) { return; }
+		(diff.baseVersion >= version)) { return; }
 	if (!Array.isArray(diff.sections) || (diff.sections.length < 1)) { return; }
 	let expSegs = 0;
 	for (const section of diff.sections) {
-		if ((section.length !== 3) ||
-				((section[0] !== 0) && (section[0] !== 1)) ||
-				!Number.isInteger(section[1]) || (section[1] < 0) ||
-				!Number.isInteger(section[2]) || (section[2] < 1)) { return; }
-		expSegs += section[2];
+		if (section.length !== 3) { return; }
+		const [ isNew, sOfs, len ] = section;
+		if ((isNew !== 0) && (isNew !== 1)) { return; }
+		if (!Number.isInteger(sOfs) || (sOfs < 0)) { return; }
+		if (!Number.isInteger(len) || (len < 1)) { return; }
+		expSegs += len;
 	}
-	if (diff.segsSize !== expSegs) { 
-		return; }
+	if (diff.segsSize !== expSegs) { return; }
 	return {
 		baseVersion: diff.baseVersion,
 		segsSize: diff.segsSize,

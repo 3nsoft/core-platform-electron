@@ -22,5 +22,13 @@
 				"arch": [ "x64" ]
 			}
 		]
+	},
+	"mac": {
+		"target": [
+			{
+				"target": "tar.gz",
+				"arch": [ "x64" ]
+			}
+		]
 	}
 }

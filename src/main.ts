@@ -27,21 +27,25 @@ import { logError, recordUnhandledRejectionsInProcess } from './lib-client/loggi
 import { Observable } from 'rxjs';
 import { bind } from './lib-common/binding';
 import { changeCacheDataOnAppVersionUpdate } from './lib-client/local-files/app-files';
+import { appCodeFolderIn, getManifestIn } from './ui/load-utils';
+import { addFilteringOfRemote } from './lib-client/electron/filter-remote';
 
 if (!process.argv.includes('--allow-multi-instances')) {
-	const isSecondInstance = app.makeSingleInstance(() => {
-		// XXX note that this callback gets argv, so more can be done here.
-		// For now, with a single window app, we focus it.
-		const uiApp = init.findOpenedApp(CLIENT_APP_DOMAIN);
-		if (!uiApp) { return; }
-		if (uiApp.window.isMinimized()) {
-			uiApp.window.restore();
-		}
-		uiApp.window.focus();
-	});
-	if (isSecondInstance) {
+	const isFstInstance = app.requestSingleInstanceLock();
+	if (!isFstInstance) {
 		app.quit();
-		process.exit(0);
+	} else {
+		app.on('second-instance', (event, argv, workDir) => {
+			// XXX note that this callback gets argv, so more can be done here.
+			// For now, with a single window app, we focus it.
+			const uiApp = init.findOpenedApp(CLIENT_APP_DOMAIN);
+			if (uiApp) {
+				if (uiApp.window.isMinimized()) {
+					uiApp.window.restore();
+				}
+				uiApp.window.focus();
+			}
+		});
 	}
 }
 
@@ -58,9 +62,13 @@ if (process.argv.indexOf('--devtools') > 0) {
 	toolsMod.addDevToolsShortcuts();
 }
 
-const appFolders = process.argv
+const appFiles = process.argv
 .filter(arg => arg.startsWith('--app-dir='))
-.map(arg => arg.substring(10));
+.map(arg => arg.substring(10))
+.map(appDir => ({
+	rootFolder: appCodeFolderIn(appDir),
+	manifest: getManifestIn(appDir)
+}));
 
 registerAllProtocolShemas();
 
@@ -70,6 +78,9 @@ registerAllProtocolShemas();
 
 const init = new InitProc();
 const core = new Core(bind(init, init.openViewer));
+
+// XXX comment out filtering before tests run
+// addFilteringOfRemote(init.isTopLevelWebContent);
 
 // Opening process
 Observable.fromEvent<void>(app, 'ready')
@@ -84,9 +95,10 @@ Observable.fromEvent<void>(app, 'ready')
 .flatMap(async () => {
 
 	// open main window
-	if (appFolders.length > 0) {
-		for (const appFromFolder of appFolders) {
-			await init.openAppInFolder(appFromFolder, core.makeCAPs);
+	if (appFiles.length > 0) {
+		for (const app of appFiles) {
+			const caps = core.makeCAPs(app.manifest.appDomain, app.manifest);
+			await init.openAppInFolder(app.rootFolder, app.manifest, caps);
 		}
 	} else {
 		await init.openInbuiltApp(CLIENT_APP_DOMAIN, core.makeCAPs);

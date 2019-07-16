@@ -71,8 +71,8 @@ describe('signUp process', () => {
 			const isCreated = await w3n.signUp.addUser(userId);
 			expect(isCreated).toBe(true);
 		}, [ userId ], 1);
-		await sleep(2000);
-	});
+		await sleep(5000);
+	}, 10000);
 
 	itAsync('startup objects are not injected into the second window',
 		checkSecondWindow(() => s.app));

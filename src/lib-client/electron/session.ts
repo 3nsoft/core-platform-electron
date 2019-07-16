@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -30,9 +30,8 @@ export async function makeSessionForApp(appDomain: string,
 
 	await setAppProtocolIn(appSes, appFilesRoot, appDomain);
 
-	const appUrlStart = `${protoSchemas.W3N_APP}://${appDomain}`;
-	// current (electron 1.6.11) definition misses option with one argument
-	(appSes.webRequest.onBeforeRequest as any)((details, cb) => {
+	const appUrlStart = `${protoSchemas.W3N_APP.scheme}://${appDomain}`;
+	appSes.webRequest.onBeforeRequest((details, cb) => {
 		if (details.url.startsWith(appUrlStart)
 		|| (urlFilter && urlFilter(details.url))) {
 			cb({ cancel: false });
@@ -68,9 +67,8 @@ export async function makeSessionForViewer(fs: FS, path: string,
 
 	await setFsProtocolIn(viewSes, fs, path, itemType);
 
-	const appUrlStart = `${protoSchemas.W3N_FS}://${itemType}`;
-	// current (electron 1.6.11) definition misses option with one argument
-	(viewSes.webRequest.onBeforeRequest as any)((details, cb) => {
+	const appUrlStart = `${protoSchemas.W3N_FS.scheme}://${itemType}`;
+	viewSes.webRequest.onBeforeRequest((details, cb) => {
 		if (details.url.startsWith(appUrlStart)) {
 			cb({ cancel: false });
 		} else {
@@ -80,6 +78,16 @@ export async function makeSessionForViewer(fs: FS, path: string,
 	});
 	
 	return viewSes;
+}
+
+export function makeForMockWithAppCodeFromUrl(url: string): Electron.Session {
+	const appSes = session.fromPartition(generatePartition(), { cache: false });
+
+	// XXX there are absolutely no restrictions here.
+	// Should we tighten this? Or should devs do further testing with folder
+	// based load to feed out requests that won't run in production?
+
+	return appSes;
 }
 
 Object.freeze(exports);

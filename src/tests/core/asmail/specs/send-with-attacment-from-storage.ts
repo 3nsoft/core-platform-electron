@@ -74,8 +74,11 @@ it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 	const txtBody = 'Some text\nBlah-blah-blah';
 
 	// user 1 sends message to user 2
-	const msgId = await execExpects(app1().c, async function(recipient: string,
-			txtBody: string, files: FileParams[], folder: FolderParams) {
+	app1().c.timeouts('script', 7000);
+	const msgId = await execExpects(app1().c, async function(
+		recipient: string, txtBody: string, files: FileParams[],
+		folder: FolderParams
+	) {
 		// make fs objects for attachment
 		const appFS = await w3n.storage.getAppSyncedFS('computer.3nweb.test');
 		const filesToAttach: File[] = [];
@@ -137,8 +140,10 @@ it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 		`got bad message id after sending: ${msgId}`); }
 	
 	// user 2 gets incoming message
-	await execExpects(app2().c, async function(msgId: string, txtBody: string,
-			files: FileParams[], folder: FolderParams) {
+	app2().c.timeouts('script', 7000);
+	await execExpects(app2().c, async function(
+		msgId: string, txtBody: string, files: FileParams[], folder: FolderParams
+	) {
 		// check message
 		const msgs = await w3n.mail.inbox.listMsgs();
 		const msgInfo = msgs.find(m => (m.msgId === msgId));
@@ -177,7 +182,8 @@ it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 specs.its.push(it);
 
 async function doRoundTripSendingToEstablishInvites(
-		app1: AppRunner, app2: AppRunner): Promise<void> {
+	app1: AppRunner, app2: AppRunner
+): Promise<void> {
 	// send message from 1 to 2
 	await execExpects(app1.c,
 		sendTxtMsg, [ app2.user.userId, 'some text' ], sendTxtMsgNumOfChecks);
@@ -219,8 +225,10 @@ it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 	const fileName = 'big file';
 
 	// user 1 sends message to user 2
-	const msgId = await execExpects(app1().c, async function(recipient: string,
-			txtBody: string, fileName: string) {
+	app1().c.timeouts('script', 7000);
+	const msgId = await execExpects(app1().c, async function(
+		recipient: string, txtBody: string, fileName: string
+	) {
 		// make big file for attachment
 		const appFS = await w3n.storage.getAppSyncedFS('computer.3nweb.test');
 		const sink = await appFS.getByteSink(fileName);
@@ -271,8 +279,10 @@ it.func = async function(app1: () => AppRunner, app2: () => AppRunner) {
 		`got bad message id after sending: ${msgId}`); }
 
 	// user 2 gets incoming message
-	await execExpects(app2().c, async function(msgId: string, txtBody: string,
-			fileName: string) {
+	app2().c.timeouts('script', 7000);
+	await execExpects(app2().c, async function(
+		msgId: string, txtBody: string, fileName: string
+	) {
 		// check message
 		const msgs = await w3n.mail.inbox.listMsgs();
 		const msgInfo = msgs.find(m => (m.msgId === msgId));

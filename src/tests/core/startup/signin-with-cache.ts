@@ -76,7 +76,7 @@ describe('signIn process (with cache)', () => {
 			checkKeyDerivNotifications(notifications);
 		}, [ user.userId, user.pass ]);
 		app.c.timeouts('script', 5000);
-		await sleep(500);	// for windows switch over
+		await sleep(5000);	// for windows switch over
 	}, 60000);
 
 	itAsync('startup objects are not injected into the second window',

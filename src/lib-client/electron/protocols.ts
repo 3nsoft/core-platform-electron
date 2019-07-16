@@ -14,7 +14,7 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
  
-import { protocol } from 'electron';
+import { protocol, CustomScheme } from 'electron';
 import { defer } from '../../lib-common/processes';
 import * as path from 'path';
 import { parse as parseUrl, Url } from 'url';
@@ -23,8 +23,20 @@ import * as mime from 'mime';
 import { logWarning } from '../logging/log-to-file';
 
 export const protoSchemas = {
-	W3N_APP: 'w3n-app',
-	W3N_FS: 'w3n-fs'
+	W3N_APP: {
+		scheme: 'w3n-app',
+		privileges: {
+			standard: true,
+			secure: true,
+		}
+	} as CustomScheme,
+	W3N_FS: {
+		scheme: 'w3n-fs',
+		privileges: {
+			standard: true,
+			secure: true,
+		}
+	} as CustomScheme
 };
 Object.freeze(protoSchemas);
 
@@ -32,7 +44,7 @@ Object.freeze(protoSchemas);
  * This sets up our standard protocol schema(s).
  */
 export function registerAllProtocolShemas(): void {
-	protocol.registerStandardSchemes([
+	protocol.registerSchemesAsPrivileged([
 		protoSchemas.W3N_APP,
 		protoSchemas.W3N_FS
 	]);
@@ -44,7 +56,7 @@ export async function setAppProtocolIn(session: Electron.Session,
 		appRoot: string|FS, appDomain: string): Promise<void> {
 
 	const isProtoAlreadySet = await new Promise<boolean>(resolve => {
-		session.protocol.isProtocolHandled(protoSchemas.W3N_APP,
+		session.protocol.isProtocolHandled(protoSchemas.W3N_APP.scheme,
 			// current definition doesn't say that callback's argument is boolean
 			isHandled => resolve(!!isHandled));
 	});
@@ -56,15 +68,15 @@ export async function setAppProtocolIn(session: Electron.Session,
 		else { deferred.resolve(); }
 	};
 	if (typeof appRoot === 'string') {
-		session.protocol.registerFileProtocol(protoSchemas.W3N_APP,
+		session.protocol.registerFileProtocol(protoSchemas.W3N_APP.scheme,
 			makeFileProtocolListenerForAppProto(appRoot, appDomain),
 			completionFn);
 	} else {
-		session.protocol.registerBufferProtocol(protoSchemas.W3N_APP,
+		session.protocol.registerBufferProtocol(protoSchemas.W3N_APP.scheme,
 			makeBufferProtocolListenerForAppProto(appRoot, appDomain),
 			completionFn);
 	}
-	return deferred.promise;
+	await deferred.promise;
 }
 
 function isGetOK(method: string, url: Url, appDomain: string): boolean {
@@ -73,7 +85,6 @@ function isGetOK(method: string, url: Url, appDomain: string): boolean {
 	return true;
 }
 
-// current (electron 1.6.11) definition misses number option in callback
 type FileProtocolHandler = (request: Electron.RegisterFileProtocolRequest, callback: (filePath?: string) => void) => void;
 
 function makeFileProtocolListenerForAppProto(appRoot: string,
@@ -93,7 +104,6 @@ function makeFileProtocolListenerForAppProto(appRoot: string,
 
 type FileException = web3n.files.FileException;
 
-// current (electron 1.6.11) definition misses number option in callback
 type BufferProtocolHandler = (request: Electron.RegisterBufferProtocolRequest,
 	callback: (buffer?: Buffer | Electron.MimeTypedBuffer) => void) => void;
 
@@ -174,7 +184,7 @@ export async function setFsProtocolIn(session: Electron.Session,
 		fs: FS, path: string, appDomain: 'file'|'folder'): Promise<void> {
 
 	const isProtoAlreadySet = await new Promise<boolean>(resolve => {
-		session.protocol.isProtocolHandled(protoSchemas.W3N_FS,
+		session.protocol.isProtocolHandled(protoSchemas.W3N_FS.scheme,
 			// current definition doesn't say that callback's argument is boolean
 			isHandled => resolve(!!isHandled));
 	});
@@ -185,7 +195,7 @@ export async function setFsProtocolIn(session: Electron.Session,
 		if (regErr) { deferred.reject(regErr); }
 		else { deferred.resolve(); }
 	};
-	session.protocol.registerBufferProtocol(protoSchemas.W3N_FS,
+	session.protocol.registerBufferProtocol(protoSchemas.W3N_FS.scheme,
 		makeBufferProtocolListenerForFsProto(fs, path, appDomain),
 		completionFn);
 	return deferred.promise;

@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2017 3NSoft Inc.
+ Copyright (C) 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -68,10 +68,8 @@ function makeUploadProcSection(objId: ObjId, ver: number, data: ReadingProc,
 
 			const opts: FirstSaveReqOpts = {
 				ver, header: c.fst.header, diff: c.fst.diff };
-			if (append) {
-				opts.append = true;
-			} else {
-				opts.segs = c.fst.segsLen;
+			if (c.last) {
+				opts.last = true;
 			}
 
 			transactionId = await remoteStorage.saveNewObjVersion(objId,
@@ -79,12 +77,8 @@ function makeUploadProcSection(objId: ObjId, ver: number, data: ReadingProc,
 
 		} else if (transactionId) {
 
-			const opts: FollowingSaveReqOpts = { trans: transactionId };
-			if (append) {
-				opts.append = true;
-			} else {
-				opts.ofs = c.segsOfs;
-			}
+			const opts: FollowingSaveReqOpts = {
+				trans: transactionId, ofs: c.segsOfs };
 			if (c.last) {
 				opts.last = true;
 			}

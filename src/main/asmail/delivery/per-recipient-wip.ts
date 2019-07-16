@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2016 - 2017 3NSoft Inc.
+ Copyright (C) 2016 - 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -495,17 +495,13 @@ export class WIP {
 		// prepare request options
 		const opts: FirstSaveReqOpts = { header: header.length };
 		if (isObjDone) {
-			opts.segs = segsChunk.length;
-		} else if (typeof segsSize !== 'number') {
-			opts.append = true;
-		} else {
-			opts.segs = segsSize;
+			opts.last = true;
 		}
 
 		// send bytes
 		await this.sender.sendObj(obj.objId, [ header, segsChunk ],
 			opts, undefined);
-		
+
 		// record progress
 		obj.upload.headerDone = true;
 		obj.upload.segsOffset = segsChunk.length;
@@ -529,8 +525,9 @@ export class WIP {
 		
 		// return early, when there are no bytes
 		if (!chunk) {
-			await this.sender.sendObj(obj.objId, EMPTY_BYTE_ARR, undefined,
-				{ last: true });
+		const opts: FollowingSaveReqOpts = {
+			ofs: obj.upload.segsOffset, last: true };
+		await this.sender.sendObj(obj.objId, EMPTY_BYTE_ARR, undefined, opts);
 			return true;
 		}
 
@@ -544,12 +541,7 @@ export class WIP {
 			(!!segsSize && ((obj.upload.segsOffset + chunk.length) === segsSize));
 		
 		// prepare request options
-		const opts: FollowingSaveReqOpts = {};
-		if (!segsSize) {
-			opts.append = true;
-		} else {
-			opts.ofs = offset;
-		}
+		const opts: FollowingSaveReqOpts = { ofs: obj.upload.segsOffset };
 		if (isObjDone) {
 			opts.last = true;
 		}

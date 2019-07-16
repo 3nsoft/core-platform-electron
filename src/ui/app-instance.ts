@@ -113,7 +113,7 @@ export class AppInstance {
 			domain, parent, appFilesRoot, caps, exposeW3N, opts);
 	}
 
-	loadContent(path?: string): void {
+	async loadContent(path?: string): Promise<void> {
 		if (typeof path === 'string') {
 			if (!path.startsWith('/')) {
 				path = `/${path}`;
@@ -121,8 +121,8 @@ export class AppInstance {
 		} else {
 			path = '/index.html';
 		}
-		const url = `${protoSchemas.W3N_APP}://${this.domain}${path}`;
-		this.window.loadURL(url);
+		const url = `${protoSchemas.W3N_APP.scheme}://${this.domain}${path}`;
+		await this.window.loadURL(url);
 	}
 
 	get remotedW3N(): W3N {

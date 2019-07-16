@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015, 2017 3NSoft Inc.
+ Copyright (C) 2015, 2017, 2019 3NSoft Inc.
  
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -36,7 +36,8 @@ export const ERR_SC = {
 	server: 500,
 	contentTooLong: 413,
 	contentLenMissing: 411,
-	wrongContentType: 415
+	wrongContentType: 415,
+	objIncomplete: 479
 };
 Object.freeze(ERR_SC);
 
@@ -183,35 +184,19 @@ export interface PutObjFirstQueryOpts {
 	header: number;
 
 	/**
-	 * This is a total length of segments in the object. When total segments
-	 * length is known a priori, this field must be present. Else, append flag
-	 * must be present instead of this field.
-	 * Segments bytes are located in http body after object's header.
+	 * This is a boolean flag, which true value indicates that this is the last
+	 * request in sending the object.
 	 */
-	segs?: number;
-
-	/**
-	 * This is a boolean flag, which true value indicates that total length of
-	 * segment is not known, and that segment bytes in this transaction should be
-	 * appended to new object's version.
-	 */
-	append?: boolean;
+	last?: boolean;
 
 }
 
 export interface PutObjSecondQueryOpts {
 
 	/**
-	 * This is an offset into segments. It must be present in a non-appending
-	 * request, and must be absent in appending requests.
+	 * This is an offset into segments.
 	 */
-	ofs?: number;
-
-	/**
-	 * This is a boolean flag, which true value indicates that segment bytes in
-	 * the body should be appended to new object's version.
-	 */
-	append?: boolean;
+	ofs: number;
 
 	/**
 	 * This is a boolean flag, which true value indicates that this is the last
@@ -227,12 +212,12 @@ export namespace msgObj {
 	
 	export function firstPutReqUrlEnd(objId: string,
 			opts: PutObjFirstQueryOpts): string {
-		return `msg/obj/${objId}?${stringifyOpts(opts)}`;
+		return `msg/obj/${objId}?${stringifyOpts(opts as any)}`;
 	}
 	
 	export function secondPutReqUrlEnd(objId: string,
 			opts: PutObjSecondQueryOpts): string {
-		return `msg/obj/${objId}?${stringifyOpts(opts)}`;
+		return `msg/obj/${objId}?${stringifyOpts(opts as any)}`;
 	}
 	
 	export const SC = {

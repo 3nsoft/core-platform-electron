@@ -1,5 +1,5 @@
 /*
- Copyright (C) 2015 - 2018 3NSoft Inc.
+ Copyright (C) 2015 - 2018, 2019 3NSoft Inc.
 
  This program is free software: you can redistribute it and/or modify it under
  the terms of the GNU General Public License as published by the Free Software
@@ -14,10 +14,8 @@
  You should have received a copy of the GNU General Public License along with
  this program. If not, see <http://www.gnu.org/licenses/>. */
 
-import { checkAvailableAddressesForName, addUser }
-	from '../lib-client/3nweb-signup';
+import { checkAvailableAddressesForName, addUser } from '../lib-client/3nweb-signup';
 import { makeNetClient, NetClient } from '../lib-client/electron/net';
-import { IdManager } from './id-manager';
 import { parse as parseUrl } from 'url';
 import { use as keyUse, JsonKey, keyToJson } from '../lib-common/jwkeys';
 import { base64 } from '../lib-common/buffer-utils';
@@ -27,27 +25,16 @@ import { getUsersOnDisk } from '../lib-client/local-files/app-files';
 import * as random from '../lib-common/random-node';
 import { Cryptor } from '../lib-client/cryptor/cryptor';
 import { secret_box as sbox, box, arrays } from 'ecma-nacl';
-import { GenerateKey, makeKeyGenProgressCB } from './sign-in';
+import { makeKeyGenProgressCB } from './sign-in';
 import { Subject } from 'rxjs';
 import { logError } from '../lib-client/logging/log-to-file';
+import { UserMidParams, UserStorageParams } from '../lib-common/user-admin-api/signup';
 
 export interface ScryptGenParams {
 	logN: number;
 	r: number;
 	p: number;
 	salt: string;
-}
-
-export interface MidParams {
-	defaultPKey: {
-		pkey: JsonKey;
-		params: ScryptGenParams;
-	};
-	otherPKeys: JsonKey[];
-}
-
-export interface StoreParams {
-	params: ScryptGenParams;
 }
 
 /**
@@ -89,11 +76,11 @@ export class SignUp {
 	private mid: {
 		defaultSKey: Uint8Array;
 		labeledSKey: JsonKey;
-		params: MidParams;
+		params: UserMidParams;
 	} = (undefined as any);
 	private store: {
 		skey: Uint8Array;
-		params: StoreParams;
+		params: UserStorageParams;
 	} = (undefined as any);
 	private serviceURL: string;
 
@@ -162,7 +149,7 @@ export class SignUp {
 		this.store = {
 			skey: skey,
 			params: {
-				params: derivParams
+				kdParams: derivParams
 			}
 		};
 	}
@@ -187,7 +174,7 @@ export class SignUp {
 			params: {
 				defaultPKey: {
 					pkey: defaultPair.pkey,
-					params: derivParams
+					kdParams: derivParams
 				},
 				otherPKeys: [ labeledKey.pkey ]
 			}
