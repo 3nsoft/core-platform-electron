@@ -1,0 +1,41 @@
+syntax = "proto3";
+
+package appsdownloader;
+
+
+// ==== apps.downloader capability ====
+
+// --- apps.downloader.getAppChannels ---
+// Request body is RequestWithAppId
+// Reply body is common.StringValue with json string
+
+message RequestWithAppId {
+	string id = 1;
+}
+
+// --- apps.downloader.getLatestAppVersion ---
+// Reply body is common.StringValue
+message GetLatestAppVersionRequestBody {
+	string id = 1;
+	string channel = 2;
+}
+
+message RequestWithAppIdAndVersion {
+	string id = 1;
+	string version = 2;
+}
+
+// --- apps.downloader.getAppVersionList ---
+// Request body is RequestWithAppIdAndVersion
+// Reply body is common.StringValue with json string
+
+// --- apps.downloader.downloadWebApp ---
+// Its an observable call
+// Request body is RequestWithAppIdAndVersion
+message DownloadProgress {
+	uint32 totalFiles = 1;
+	uint32 filesLeft = 2;
+	uint32 totalBytes = 3;
+	uint32 bytesLeft = 4;
+	uint32 currentFileSize = 5;
+}

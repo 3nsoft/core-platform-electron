@@ -1,17 +1,19 @@
 {
   "name": "3nweb",
-  "version": "0.9.0",
+  "version": "0.12.13",
   "private": true,
   "description": "3NWeb platform client for desktop environments",
   "main": "build/all/main.js",
   "scripts": {
-    "gulp": "./node_modules/.bin/gulp",
-    "compile-native": "./node_modules/.bin/electron-build-env npm rebuild",
-    "postinstall": "npm run compile-native",
-    "build": "./node_modules/.bin/gulp prep-app-for-dist && ./node_modules/.bin/build --publish never --config ./packing/app.json",
-    "build-mock": "./node_modules/.bin/gulp prep-mock-for-dist && ./node_modules/.bin/build --publish never --config ./packing/mock.json",
-    "build-on-windows": ".\\node_modules\\.bin\\gulp prep-app-for-dist && .\\node_modules\\.bin\\build --publish never  --config .\\packing\\app.json",
-    "build-mock-on-windows": ".\\node_modules\\.bin\\gulp prep-mock-for-dist && .\\node_modules\\.bin\\build --publish never  --config .\\packing\\mock.json"
+    "postinstall": "bash packing/patch-type-files.sh ; bash -c 'cd platform-tester-apps/apps-menu.3nweb.computer && npm ci' ; bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm ci'",
+    "compile-ts": "tsc -p ts-code && bash packing/protos-to-module.sh",
+    "compile-tests": "bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm run build' && bash -c 'cd platform-tester-apps/apps-menu.3nweb.computer && npm run build'",
+    "compile-all": "npm run compile-ts && npm run compile-tests",
+    "tests": "bash platform-tester-apps/run-tests-on.sh ",
+    "prepack": "bash packing/prepack.sh",
+    "build-from-prepack": "bash packing/build-from-prepack.sh",
+    "start-app": "electron build/all/main.js --data-dir=3NWeb --devtools --console-log-http --allow-multi-instances",
+    "pack-ts-defs-for-apps": "bash packing/zip-ts-defs-for-apps.sh"
   },
   "repository": {
     "type": "git",
@@ -30,31 +32,23 @@
     "url": "https://3nsoft.com",
     "email": "hq@3nsoft.com"
   },
-  "license": "GPL-3.0",
+  "license": "GPL-3.0-or-later",
   "dependencies": {
-    "ecma-nacl": "^2.4.2",
-    "electron-localshortcut": "^3.1.0",
+    "adm-zip": "^0.5.5",
+    "core-3nweb-client-lib": "^0.20.2",
+    "electron-localshortcut": "^3.2.1",
+    "electron-updater": "^4.3.9",
     "mime": "^1.3.4",
-    "rxjs": "^5.3.0",
-    "weak-napi": "^1.0.3",
-    "ws": "^7.0.0",
-    "xsp-files": "^1.0.8"
+    "node-fuse-bindings": "^2.12.4",
+    "protobufjs": "^6.10.1",
+    "rxjs": "^6.5.2"
   },
   "devDependencies": {
-    "@types/jasmine": "^2.5.46",
-    "@types/node": "^8.0.0",
-    "@types/webdriverio": "^4.13.0",
-    "@types/ws": "^4.0.0",
-    "del": "2.2.0",
-    "electron": "^5.0.6",
+    "@types/node": "^16.11.9",
+    "electron": "^16.0.1",
     "electron-build-env": "^0.2.0",
-    "electron-builder": "^20.38.4",
-    "gulp": "^4.0.0",
-    "gulp-rename": "^1.2.2",
-    "gulp-shell": "^0.5.2",
-    "gulp-typescript": "^4.0.1",
-    "jasmine": "^2.4.1",
-    "spectron": "^7.0.0",
-    "typescript": "^2.9.1"
+    "electron-builder": "^22.14.5",
+    "js-yaml": "^4.1.0",
+    "typescript": "^3.9.9"
   }
 }

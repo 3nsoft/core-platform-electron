@@ -1,0 +1,38 @@
+appId: computer.3nweb
+productName: 3NWeb
+copyright: Copyright © 2017 - 2021 ${author}
+artifactName: ${productName}-${version}-${os}-${arch}.${ext}
+
+directories:
+  app: ./build/app
+  output: ./dist/app
+
+asarUnpack:
+  # node's worker_threads can read only unpacked plain files, hence unpack
+
+  # cryptor-worker sets path path for workers, depending on own location
+  - node_modules/core-3nweb-client-lib/build/lib-client/cryptor/cryptor-worker.js
+
+  # cryptor js worker from core files (uncomment when using it)
+  # - node_modules/core-3nweb-client-lib/build/lib-client/cryptor/worker-js.js
+  # - node_modules/core-3nweb-client-lib/build/lib-common/exceptions/error.js
+  # - node_modules/ecma-nacl/**/*
+
+  # cryptor wasm worker from core files
+  - node_modules/core-3nweb-client-lib/build/lib-client/cryptor/worker-wasm.js
+  - node_modules/core-3nweb-client-lib/build/lib-client/cryptor/wasm-mp1-modules.js
+  - node_modules/core-3nweb-client-lib/build/lib-client/cryptor/cryptor.wasm
+
+  # app unzipper worker files
+  - app-installer/unzip-worker.js
+  - node_modules/adm-zip/**/*
+
+  # bundled apps are also read by unzipper
+  - apps/*.zip
+
+# In local test ing we use this
+# linux:
+#   category: Utility
+#   packageCategory: Utility
+#   icon:  ./packing/icons/linux/256x256.png
+#   artifactName: ${productName}-${arch}.${ext}

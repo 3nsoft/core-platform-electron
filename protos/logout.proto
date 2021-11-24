@@ -1,0 +1,12 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package logout;
+
+
+// ==== logout capability (single function now) ====
+// Reply body is empty
+message LogoutRequestBody {
+	bool closePlatform = 1;
+}

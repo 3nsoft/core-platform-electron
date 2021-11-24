@@ -1,0 +1,161 @@
+syntax = "proto3";
+
+import "common.proto";
+import "file.proto";
+import "fs.proto";
+
+package asmail;
+
+// --- getUserId ---
+// Request body is empty
+// Reply body contains utf8 bytes of user id
+
+
+// ==== inbox capability ====
+
+// --- inbox.listMsgs ---
+message ListMsgsRequestBody {
+	common.UInt64Value from_t_s = 1;
+}
+message ListMsgsInboxReplyBody {
+	message MsgInfo {
+		string msg_id = 1;
+		uint64 delivery_t_s = 2;
+		string msg_type = 10;
+	}
+	repeated MsgInfo infos = 1;
+}
+
+// --- inbox.removeMsg ---
+// Reply has only status and body is empty
+message RemoveMsgRequestBody {
+	string msg_id = 1;
+}
+
+// --- inbox.getMsg ---
+// Reply body is IncomingMessageMsg
+message GetMsgRequestBody {
+	string msg_id = 1;
+}
+
+message IncomingMessageMsg {
+	string msg_id = 1;
+	uint64 delivery_t_s = 2;
+	string sender = 3;
+	bool established_sender_key_chain = 4;
+
+	string msg_type = 10;
+	repeated string recipients = 11;
+	common.StringValue subject = 12;
+	common.StringValue plain_txt_body = 13;
+	common.StringValue html_txt_body = 14;
+	common.StringValue json_body = 15;
+	repeated string carbon_copy = 16;
+	fs.FS attachments = 17;
+
+}
+
+// --- inbox.subscribe ---
+// Its an observable call.
+// Intermediate values are IncomingMessageMsg's.
+message SubscribeStartCallBody {
+	string event = 1;
+}
+
+
+// ==== delivery capability ====
+
+// --- delivery.preFlight ---
+// Reply body is common.UInt64Value
+message PreFlightRequestBody {
+	string to_address = 1;
+}
+
+// --- delivery.addMsg ---
+// Reply has only status and body is empty
+message AddMsgRequestBody {
+	repeated string recipients = 1;
+	OutgoingMessageMsg msg = 2;
+	string id = 3;
+	common.BooleanValue send_immediately = 4;
+	common.AnyValue local_meta = 5;
+}
+
+message OutgoingMessageMsg {
+	message AttachmentsContainer {
+		repeated NamedFSItem files = 1;
+		repeated NamedFSItem folders = 2;
+	}
+	message NamedFSItem {
+		string name = 1;
+		common.ObjectReference item = 2;
+	}
+
+	common.StringValue msg_id = 1;
+
+	string msg_type = 10;
+	repeated string recipients = 11;
+	common.StringValue subject = 12;
+	common.StringValue plain_txt_body = 13;
+	common.StringValue html_txt_body = 14;
+	common.StringValue json_body = 15;
+	repeated string carbon_copy = 16;
+	AttachmentsContainer attachments = 17;
+}
+
+// --- delivery.listMsgs ---
+// Request body is empty
+message ListMsgsDeliveryReplyBody {
+	message MsgInfo {
+		string id = 1;
+		DeliveryProgressMsg info = 2;
+	}
+	repeated MsgInfo msgs = 1;
+}
+
+message DeliveryProgressMsg {
+	message DeliveryInfo {
+		bool done = 1;
+		common.StringValue id_on_delivery = 2;
+		uint64 bytes_sent = 3;
+		common.ErrorValue err = 4;
+	}
+	message AddrAndDeliveryInfo {
+		string address = 1;
+		DeliveryInfo info = 2;
+	}
+	common.BooleanValue not_connected = 1;
+	bool all_done = 2;
+	uint64 msg_size = 3;
+	common.AnyValue local_meta = 4;
+	repeated AddrAndDeliveryInfo recipients = 5;
+}
+
+// --- delivery.currentState ---
+// Reply is either DeliveryProgressMsg or an empty body
+message CurrentStateRequestBody {
+	string id = 1;
+}
+
+// --- delivery.observeDelivery ---
+// Its an observable call.
+// Observer expects DeliveryProgressMsg in next.
+message ObserveDeliveryRequestBody {
+	string id = 1;
+}
+
+// --- delivery.rmMsg ---
+// Reply has only status and body is empty
+message RmMsgRequestBody {
+	string id = 1;
+	common.BooleanValue cancel_sending = 2;
+}
+
+// --- delivery.observeAllDeliveries ---
+// Its an observable call, and initial request is empty.
+message DeliveryNotificationWithId {
+	string id = 1;
+	DeliveryProgressMsg progress = 2;
+}
+
+

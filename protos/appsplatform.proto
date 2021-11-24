@@ -1,0 +1,32 @@
+syntax = "proto3";
+
+package appsplatform;
+
+
+// ==== apps.platform capability ====
+
+// --- apps.platform.getCurrentVersion ---
+// Request body is empty
+// Reply body is common.StringValue
+
+// --- apps.platform.getChannels ---
+// Request body is empty
+// Reply body is common.StringValue with json string
+
+// --- apps.platform.getLatestVersion ---
+// Request body is RequestWithChannel
+// Reply body is common.StringValue
+
+message RequestWithChannel {
+	string channel = 1;
+}
+
+// --- apps.platform.getVersionList ---
+// Reply body is common.StringValue with json string
+message GetVersionListRequestBody {
+	string version = 1;
+}
+
+// --- apps.platform.downloadAndApplyUpdate ---
+// Request body is RequestWithChannel
+// Its an observable call, events are common.StringValue with json string

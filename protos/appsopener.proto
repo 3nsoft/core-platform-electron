@@ -1,0 +1,33 @@
+syntax = "proto3";
+
+import "file.proto";
+
+package appsopener;
+
+
+// ==== appsOpener capability ====
+
+// --- appsOpener.listApps ---
+// Request body is empty
+// Reply body is common.StringValue with json string
+
+message RequestWithAppId {
+	string id = 1;
+}
+
+// --- apps.Opener.getAppInfo ---
+// Request body is RequestWithAppId
+// Reply body is common.StringValue with json string
+
+// --- apps.Opener.getAppIcon ---
+// Request body is RequestWithAppId
+message GetAppIconReplyBody {
+	file.File file = 1;
+}
+
+// --- apps.Opener.openApp ---
+// Reply body is empty
+message OpenAppRequestBody {
+	string id = 1;
+	bool devtools = 2;
+}

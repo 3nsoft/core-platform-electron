@@ -15,6 +15,6 @@ All object operations should use this device folder as either a start or an end 
 
 Currently, there are four file types:
  1. single `status` json file with info about object's versions, i.e. status of the object,
- 2. multiple `v.` files with object bytes, where `v` is an integer, 1 or greater, a particular object version,
+ 2. multiple `N.v` files with object bytes, where `N` is an integer, 1 or greater, a particular object version,
  3. multiple `v.progress` json files that track a download progress of a particular version, when not all bytes are on the disk,
  4. single `sync-upload` json file with info about sync-ing process.

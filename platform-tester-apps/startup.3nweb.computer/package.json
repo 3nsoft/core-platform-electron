@@ -1,0 +1,18 @@
+{
+  "name": "test-startup.3nweb.computer",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build": "rm -rf app && tsc -p src && cp -LHr public/* app/ || cp -r public/* app/"
+  },
+  "devDependencies": {
+    "@types/jasmine": "^3.9.1",
+    "typescript": "~4.1.5"
+  },
+  "author": {
+    "name": "3NSoft Inc.",
+    "url": "https://3nsoft.com",
+    "email": "hq@3nsoft.com"
+  },
+  "license": "GPL-3.0-or-later"
+}

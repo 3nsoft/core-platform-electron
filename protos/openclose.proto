@@ -1,0 +1,67 @@
+syntax = "proto3";
+
+import "common.proto";
+
+package openclose;
+
+// --- closeSelf ---
+// Request body is empty
+// Reply body is empty
+
+// --- openViewer ---
+// Reply body is empty
+message OpenViewerRequestBody {
+	common.ObjectReference fs = 1;
+	string path = 2;
+	string itemType = 3;
+	WindowOptions opts = 4;
+}
+
+message WindowOptions {
+	common.UInt32Value width = 1;
+	common.UInt32Value height = 2;
+	common.UInt32Value x = 3;
+	common.UInt32Value y = 4;
+	common.BooleanValue useContentSize = 5;
+	common.BooleanValue center = 6;
+	common.UInt32Value minWidth = 7;
+	common.UInt32Value minHeight = 8;
+	common.UInt32Value maxWidth = 9;
+	common.UInt32Value maxHeight = 10;
+	common.BooleanValue resizable = 11;
+	common.BooleanValue movable = 12;
+	common.BooleanValue minimizable = 13;
+	common.BooleanValue maximizable = 14;
+	common.BooleanValue skipTaskbar = 15;
+	common.StringValue title = 16;
+	common.StringValue icon = 17;
+	common.BooleanValue frame = 18;
+	common.BooleanValue alwaysAboveParent = 19;
+	common.BooleanValue modal = 20;
+	common.BooleanValue acceptFirstMouse = 21;
+	common.StringValue backgroundColor = 22;
+	common.StringValue titleBarStyle = 23;
+	common.BooleanValue thickFrame = 24;
+}
+
+// --- openWithOSBrowser ---
+// Reply body is empty
+message OpenWithOSBrowserRequestBody {
+	string url = 1;
+}
+
+// --- openWithOSApp ---
+message OpenWithOSAppRequestBody {
+	common.ObjectReference folder = 1;
+	common.ObjectReference file = 2;
+}
+message OpenWithOSAppReplyBody {
+	bool opened = 1;
+}
+
+// --- openChildWindow ---
+// NOTE: stubbed, but not implemented, yet
+// Reply body is ChildWindow
+message OpenChildWindowRequestBody {}
+
+message ChildWindow {}

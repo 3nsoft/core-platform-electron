@@ -1,0 +1,42 @@
+{
+	"name": "3NWeb platform tester",
+	
+	"appDomain": "apps-menu.3nweb.computer",
+
+	"version": "0.1.0",
+
+	"capsRequested": {
+
+		"apps": "all",
+
+		"mail": {
+			"receivingFrom": "all",
+			"sendingTo": "all"
+		},
+
+		"storage": {
+			"appFS": [
+				{
+					"domain": "apps-menu.3nweb.computer",
+					"storage": "synced-n-local"
+				}, {
+					"domain": "sub-app-1.apps-menu.3nweb.computer",
+					"storage": "synced-n-local"
+				}, {
+					"domain": "sub-app-2.apps-menu.3nweb.computer",
+					"storage": "synced-n-local"
+				}
+			],
+			"userFS": "all",
+			"sysFS": "all"
+		},
+
+		"mailerid": true,
+
+		"logout": "all",
+
+		"log": "all"
+
+	}
+
+}

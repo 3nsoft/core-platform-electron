@@ -2,9 +2,11 @@
 /dist/
 /dist-mock/
 /build/
+/spec-server/
 /.idea/
 /.vscode/
 /3NWeb*
 /npm-debug.log
-/test-data*
+/test-*
 /.history
+/packing/icons/

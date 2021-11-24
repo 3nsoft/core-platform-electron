@@ -1,0 +1,27 @@
+syntax = "proto3";
+
+package appsinstaller;
+
+
+// ==== apps.installer capability ====
+
+message RequestWithAppId {
+	string id = 1;
+}
+
+message RequestWithAppIdAndVersion {
+	string id = 1;
+	string version = 2;
+}
+
+// --- apps.installer.unpackBundledWebApp ---
+// Its an observable call, and initial request is RequestWithAppId.
+message BundleUnpackProgress {
+	uint32 numOfFiles = 1;
+	uint32 numOfProcessed = 2;
+	string fileInProgress = 3;
+}
+
+// --- apps.installer.installWebApp ---
+// Request body is RequestWithAppIdAndVersion
+// Reply body is empty
