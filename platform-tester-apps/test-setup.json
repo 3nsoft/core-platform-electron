@@ -1,0 +1,19 @@
+{
+	"apps": {
+		"tests.3nweb.computer": {
+			"dir": "tests.3nweb.computer"
+		},
+		"startup.3nweb.computer": {
+			"dir": "startup.3nweb.computer"
+		}
+	},
+	"users": [
+		{
+			"idTemplate": "platform tester %d @3nweb.com",
+			"testStartup": true
+		},
+		{
+			"idTemplate": "platform tester %d @3nweb.com"
+		}
+	]
+}

@@ -17,7 +17,7 @@
 
 import { bytesSync } from '../../../lib-common/random-node.js';
 import { SpecDescribe } from '../../libs-for-tests/spec-module.js';
-import { askUserToSendMsg, FileTreeListing, listenForOneMsgEcho } from '../second-user.js';
+import { askSecondUserToSendMsg, FileTreeListing, listenForOneMsgEchoFromSecondUser } from '../second-user.js';
 import { SpecIt, throwDeliveryErrorFrom, FileTreeContent, writeFilesTreeContent, compareTreeListingWithExpectedContent } from '../test-utils.js';
 import { logErr } from '../../../test-page-utils.js';
 
@@ -45,12 +45,11 @@ let it: SpecIt = {
 };
 it.func = async function(s) {
 	await writeFilesTreeContent(folderContent, s.testFolder);
-	const msgEchoPromise = listenForOneMsgEcho();
+	const msgEchoPromise = listenForOneMsgEchoFromSecondUser();
 
 	const txtBody = 'Some text\nBlah-blah-blah';
 
-	// this user 1 (index 0) sends message to user 2 (index 1)
-	const recipient = s.users[1];
+	const recipient = s.secondUser;
 
 	// put message together
 	const outMsg: OutgoingMessage = {
@@ -108,9 +107,7 @@ it.func = async function(s) {
 };
 specs.its.push(it);
 
-async function doRoundTripSendingToEstablishInvites(
-	userId: string
-): Promise<void> {
+async function doRoundTripSendingToEstablishInvites(): Promise<void> {
 	const msgFromSub = new Promise<IncomingMessage>((resolve, reject) => {
 		const unsub = w3n.mail!.inbox.subscribe('message', {
 			next: msg => {
@@ -120,7 +117,7 @@ async function doRoundTripSendingToEstablishInvites(
 			error: reject
 		});
 	});
-	await askUserToSendMsg(userId, {
+	await askSecondUserToSendMsg({
 		msgType: 'mail',
 		plainTxtBody: `Message for roundtrip around ${Date.now()}`
 	});
@@ -136,12 +133,10 @@ it = {
 };
 it.func = async function(s) {
 
-	// this user 1 (index 0) sends message to user 2 (index 1)
-	const recipient = s.users[1];
+	await doRoundTripSendingToEstablishInvites();
 
-	await doRoundTripSendingToEstablishInvites(recipient);
-
-	const msgEchoPromise = listenForOneMsgEcho();
+	const recipient = s.secondUser;
+	const msgEchoPromise = listenForOneMsgEchoFromSecondUser();
 
 	const fileName = 'big file';
 	const fileLen = 3000000;

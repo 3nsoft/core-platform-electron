@@ -15,9 +15,9 @@
  this program. If not, see <http://www.gnu.org/licenses/>.
 */
 
-import { addMsgToPage, getUserCreds, progressOnPage } from "./test-page-utils.js";
+import { addMsgToPage, progressOnPage } from "./test-page-utils.js";
 
-declare var w3n: web3n.startup.W3N;
+declare var w3n: web3n.testing.StartupW3N;
 
 // NOTE: it-specs inside signUp process expect to run in a given order -- they
 //		change app's state, expected by following specs in this describe.
@@ -28,7 +28,7 @@ describe('Startup process', () => {
 	let userExists: boolean;
 
 	beforeAll(async () => {
-		creds = await getUserCreds(1);
+		creds = await w3n.testStand.staticTestInfo()
 		name = creds.userId.substring(0, creds.userId.indexOf('@'));
 	});
 

@@ -1,7 +1,7 @@
 {
 	"name": "3NWeb platform tester",
 	
-	"appDomain": "apps-menu.3nweb.computer",
+	"appDomain": "tests.3nweb.computer",
 
 	"version": "0.1.0",
 
@@ -17,13 +17,13 @@
 		"storage": {
 			"appFS": [
 				{
-					"domain": "apps-menu.3nweb.computer",
+					"domain": "tests.3nweb.computer",
 					"storage": "synced-n-local"
 				}, {
-					"domain": "sub-app-1.apps-menu.3nweb.computer",
+					"domain": "sub-app-1.tests.3nweb.computer",
 					"storage": "synced-n-local"
 				}, {
-					"domain": "sub-app-2.apps-menu.3nweb.computer",
+					"domain": "sub-app-2.tests.3nweb.computer",
 					"storage": "synced-n-local"
 				}
 			],

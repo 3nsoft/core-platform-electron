@@ -1,5 +1,5 @@
 import { thisAppDomain } from "./test-app-constants.js";
-import { getTestUsersOrdered, logErr } from "./test-page-utils.js";
+import { logErr } from "./test-page-utils.js";
 
 export interface TestSignal {
 	testSignal: string;
@@ -100,34 +100,4 @@ export function listenForTestSignals<T extends TestSignal>(
 			signalListeners!.delete(sigType);
 		}
 	};
-}
-
-const closeAppSignalType = 'close-app';
-
-export async function sendCloseSignalToAllUsers(): Promise<void> {
-	const allUsers = await getTestUsersOrdered();
-	const thisUser = await w3n.mailerid!.getUserId();
-	const closeCalls = allUsers
-	.filter(uId => (uId !== thisUser))
-	.map(userId => sendTestSignal(userId, {
-		testSignal: closeAppSignalType
-	}));
-	await Promise.all(closeCalls);
-}
-
-export function setupAppClosingOnSignal(timeoutSecs: number): void {
-	try {
-		listenForTestSignals(closeAppSignalType, sig => {
-			if (sig.testSignal === closeAppSignalType) {
-				w3n.logout!(true);
-			}
-		});
-	} catch (err) {
-		logErr(`Fail to listen for test signal`, err);
-	}
-	setTimeout(() => {
-		if ((window as any).closeW3NAfterTests) {
-			w3n.logout!(true);
-		}
-	}, timeoutSecs*1000);
 }

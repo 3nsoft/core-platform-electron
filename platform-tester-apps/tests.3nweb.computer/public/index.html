@@ -14,8 +14,8 @@
     <div id="test-out"></div>
 
     <div>
-      <button onclick="w3n.logout(true)">Close</button>
-      <button id="cancel-autoclose" onclick="(function () {
+      <button onclick="w3n.testStand.exitAll()">Exit All</button>
+      <button id="cancel-autoclose" hidden="true" onclick="(function () {
         window.closeW3NAfterTests = undefined;
         document.getElementById('cancel-autoclose').hidden = true;
       })()">Cancel autoclose</button>

@@ -72,72 +72,60 @@
   const specsCounts = {
     pass: 0,
     fail: 0,
-    pending: 0
+    pending: 0,
+    skipped: 0,
+    suiteFails: 0,
   };
   env.addReporter({
     jasmineStarted: () => {
       specsCounts.pass = 0;
       specsCounts.fail = 0;
       specsCounts.pending = 0;
+      w3n.testStand.record('tests-start');
     },
     specDone: async (result) => {
       if (result.status == 'passed') {
         specsCounts.pass += 1;
+        w3n.testStand.record('spec-pass', result.fullName);
       } else if (result.status == 'pending') {
         specsCounts.pending += 1;
-        let infoStr = `--- Jasmine spec pending ---`;
-        infoStr += `\n${result.pendingReason}:\n${result.fullName}\n`;
-        await w3n.log('info', infoStr);
+        w3n.testStand.record('spec-pending', result.fullName);
+      } else if (result.status == 'excluded') {
+        specsCounts.skipped += 1;
       } else {
         specsCounts.fail += 1;
-        let infoStr = `--- Jasmine spec failed ---`;
-        infoStr += '\n';
-        const excludingPassedExpectations = (key, value) => (
-          (key == 'passedExpectations') ? undefined : value);
-        infoStr += JSON.stringify(result, excludingPassedExpectations, 2);
-        infoStr += '\n';
-        await w3n.log('info', infoStr);
+        w3n.testStand.record('spec-fail', result.fullName +
+          '\n' + JSON.stringify(
+            result,
+            (k, v) => ((k == 'passedExpectations') ? undefined : v),
+            2));
       }
     },
     suiteDone: async (result) => {
       if (result.status == 'passed') { return; }
-      let infoStr = `--- Jasmine suite failed ---`;
-      infoStr += '\n';
-      infoStr += JSON.stringify(result, null, 2);
-      await w3n.log('info', infoStr);
+      specsCounts.suiteFails += 1;
+      w3n.testStand.record('suite-fail', JSON.stringify(result, null, 2));
     },
 		jasmineDone: async (info) => {
-      let infoStr = (info.overallStatus == 'passed') ?
-        `--- Jasmine tests passed ---` :
-        `--- Jasmine tests failed ---`;
-      infoStr += `\n`;
-      if (specsCounts.pass > 0) {
-        infoStr += `${specsCounts.pass} passed\n`;
-      }
-      if (specsCounts.fail > 0) {
-        infoStr += `${specsCounts.fail} failed\n`;
-      }
-      if (specsCounts.pending > 0) {
-        infoStr += `${specsCounts.pending} pending\n`;
-      }
-      infoStr += JSON.stringify(info, null, 2);
-      await w3n.log('info', infoStr);
+      const { pass, pending, skipped, fail, suiteFails } = specsCounts;
+      const noSpecs = ((pass + pending + fail) === 0);
+      const recType = ((info.overallStatus == 'passed') ?
+        'tests-pass' : 'tests-fail');
+      w3n.testStand.record(recType, (noSpecs ?
+        `No specs reported. Where any setup?` :
+        `${
+          (skipped > 0) ? `${skipped} skipped\n` : ''}${
+          (pass > 0) ? `${pass} passed\n` : ''}${
+          (fail > 0) ? `${fail} failed\n` : ''}${
+          (pending > 0) ? `${pending} pending\n` : ''}${
+          (suiteFails > 0) ? `${suiteFails} non-ok test suites\n` : ''}`));
       const closing = window.closeW3NAfterTests;
       if (closing) {
         const coolDownSecs = (closing.waitSecs ? closing.waitSecs : 5);
-        setTimeout(async () => {
-          try {
-            if (closing.closeOtherApps) {
-              try {
-                await closing.closeOtherApps();
-              } catch (err) {
-                console.error(err);
-              }
-            }
-            await w3n.logout(true);
-          } catch (err) {
-            await w3n.log('error', `Attempting to close platform in accordance with instructions set in window object`, err);
-          }  
+        setTimeout(() => {
+          if (closeW3NAfterTests) {
+            w3n.testStand.exitAll();
+          }
         }, coolDownSecs*1000);
       }
     }

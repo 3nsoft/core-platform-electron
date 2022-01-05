@@ -1,13 +1,13 @@
 {
   "name": "3nweb",
-  "version": "0.12.13",
+  "version": "0.12.14",
   "private": true,
   "description": "3NWeb platform client for desktop environments",
   "main": "build/all/main.js",
   "scripts": {
-    "postinstall": "bash packing/patch-type-files.sh ; bash -c 'cd platform-tester-apps/apps-menu.3nweb.computer && npm ci' ; bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm ci'",
+    "postinstall": "bash packing/patch-type-files.sh ; bash -c 'cd platform-tester-apps/tests.3nweb.computer && npm ci' ; bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm ci'",
     "compile-ts": "tsc -p ts-code && bash packing/protos-to-module.sh",
-    "compile-tests": "bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm run build' && bash -c 'cd platform-tester-apps/apps-menu.3nweb.computer && npm run build'",
+    "compile-tests": "bash -c 'cd platform-tester-apps/startup.3nweb.computer && npm run build' && bash -c 'cd platform-tester-apps/tests.3nweb.computer && npm run build'",
     "compile-all": "npm run compile-ts && npm run compile-tests",
     "tests": "bash platform-tester-apps/run-tests-on.sh ",
     "prepack": "bash packing/prepack.sh",
@@ -35,7 +35,7 @@
   "license": "GPL-3.0-or-later",
   "dependencies": {
     "adm-zip": "^0.5.5",
-    "core-3nweb-client-lib": "^0.20.2",
+    "core-3nweb-client-lib": "^0.20.9",
     "electron-localshortcut": "^3.2.1",
     "electron-updater": "^4.3.9",
     "mime": "^1.3.4",

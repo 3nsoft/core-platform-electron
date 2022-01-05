@@ -17,7 +17,7 @@
 
 import { SpecDescribe } from '../../libs-for-tests/spec-module.js';
 import { SpecIt, throwDeliveryErrorFrom } from '../test-utils.js';
-import { listenForOneMsgEcho } from '../second-user.js';
+import { listenForOneMsgEchoFromSecondUser } from '../second-user.js';
 import { deepEqual } from '../../libs-for-tests/json-equal.js';
 
 export const specs: SpecDescribe = {
@@ -32,7 +32,8 @@ const it: SpecIt = {
 	expectation: 'send message to existing address and get it'
 };
 it.func = async function(s) {
-	const msgEchoPromise = listenForOneMsgEcho();
+	const recipient = s.secondUser;
+	const msgEchoPromise = listenForOneMsgEchoFromSecondUser();
 
 	const txtBody = 'Some text\nBlah-blah-blah';
 	const jsonBody = {
@@ -40,8 +41,6 @@ it.func = async function(s) {
 		field2: 'blah-blah'
 	};
 
-	// this user 1 (index 0) sends message to user 2 (index 1)
-	const recipient = s.users[1];
 	const outMsg: OutgoingMessage = {
 		msgType: 'mail',
 		plainTxtBody: txtBody,

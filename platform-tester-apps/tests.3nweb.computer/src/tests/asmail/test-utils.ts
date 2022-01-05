@@ -26,7 +26,8 @@ type WritableFS = web3n.files.WritableFS;
 
 export interface SetupForASMail {
 	isUp: boolean;
-	users: string[];
+	thisUser: string;
+	secondUser: string;
 	testFolder: WritableFS;
 }
 

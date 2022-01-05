@@ -16,7 +16,7 @@
 */
 
 import { AppInstance } from './app-instance';
-import { makeDeviceFileOpener } from '../device/device';
+import { makeDeviceFileOpener } from '../device';
 import { AppCAPsAndSetup } from '../core/core-driver';
 // XXX comment out till rpc will be done
 // import { makeRPCLink } from '../lib-common/apps-rpc/core-side';

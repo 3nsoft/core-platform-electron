@@ -16,7 +16,7 @@
 */
 
 import { SpecDescribe } from '../../libs-for-tests/spec-module.js';
-import { askUserToSendMsg } from '../second-user.js';
+import { askSecondUserToSendMsg } from '../second-user.js';
 import { SpecIt } from '../test-utils.js';
 
 export const specs: SpecDescribe = {
@@ -31,8 +31,6 @@ const it: SpecIt = {
 	expectation: `delivers new messages to listeners of event 'message'`
 };
 it.func = async function(s) {
-	// sender is user 2 (index 1)
-	const sender = s.users[1];
 
 	// subscribe to message
 	const msgFromSub = new Promise<IncomingMessage>((resolve, reject) => {
@@ -50,11 +48,11 @@ it.func = async function(s) {
 		plainTxtBody: `Some text\nBlah-blah-blah\nEpoch moment ${Date.now()}`
 	};
 
-	await askUserToSendMsg(sender, outMsg);
+	await askSecondUserToSendMsg(outMsg);
 
 	const inMsg = await msgFromSub;
 	expect(inMsg.msgId).toBeDefined();
-	expect(inMsg.sender).toBe(sender);
+	expect(inMsg.sender).toBe(s.secondUser);
 	expect(inMsg.msgType).toBe(outMsg.msgType);
 	expect(inMsg.plainTxtBody).toBe(outMsg.plainTxtBody);
 

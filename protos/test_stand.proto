@@ -1,0 +1,43 @@
+syntax = "proto3";
+
+package test_stand;
+
+// ==== testStand capability ====
+
+// --- log ---
+// is the same as in core's logger.proto
+
+// --- exitAll ---
+// Request body is empty
+// Reply body is empty
+
+// --- staticTestInfo ---
+// Request body is empty
+// Reply body is common.StringValue with json values
+
+// --- record ---
+// Reply body is empty
+message RecordRequestBody {
+	string type = 1;
+	string msg = 2;
+}
+
+// --- idOfTestUser ---
+// Request body is common.UInt64Value
+// Reply body is common.StringValue with json values
+
+// --- sendMsgToOtherLocalTestUser ---
+// Reply body is empty
+message SendMsgToOtherLocalTestUserRequestBody {
+	uint32 user_num = 1;
+	string app_domain = 2;
+	string msg_json = 3;
+}
+
+// --- observeMsgsFromOtherLocalTestUser ---
+// Its an observable call.
+// Intermediate values are common.StringValue's with json values.
+message ObserveOtherTestUserRequestBody {
+	uint32 user_num = 1;
+	string app_domain = 2;
+}

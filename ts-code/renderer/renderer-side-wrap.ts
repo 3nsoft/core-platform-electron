@@ -27,6 +27,7 @@ import { makeLogoutCaller } from "../app-init/logout-cap-ipc";
 import { makeAppsDownloaderCaller } from "../app-downloader/apps-downloader-cap-ipc";
 import { makeAppsInstallerCaller } from "../app-installer/apps-installer-cap-ipc";
 import { makePlatformDownloaderCaller } from "../app-platform/platform-downloader-cap-ipc";
+import { makeStartupTestStandCaller, makeTestStandCaller } from "../test-stand/test-stand-cap-ipc";
 
 type StartupW3N = web3n.startup.W3N;
 type W3N = web3n.ui.W3N;
@@ -61,21 +62,27 @@ function makeClientSideConnector(): ObjectsConnector {
 
 export function makeStartupW3N(): StartupW3N {
 	const clientSide = makeClientSideConnector();
-	return makeStartupW3Nclient(clientSide.caller);
+	const clientW3N = makeStartupW3Nclient<web3n.testing.StartupW3N>(
+		clientSide.caller, {
+			testStand: makeStartupTestStandCaller
+		});
+	return clientW3N;
 }
 
 export function makeW3N(): W3N {
 	const clientSide = makeClientSideConnector();
-	const clientW3N = makeW3Nclient<W3N>(clientSide.caller, {
-		closeSelf: closeSelf.makeClient,
-		device: makeDeviceCaller,
-		openChildWindow: openChildWindow.makeClient,
-		openViewer: openViewer.makeClient,
-		openWithOSApp: openWithOSApp.makeClient,
-		openWithOSBrowser: openWithOSBrowser.makeClient,
-		apps: makeAppsCaller,
-		logout: makeLogoutCaller
-	});
+	const clientW3N = makeW3Nclient<web3n.testing.CommonW3N>(
+		clientSide.caller, {
+			closeSelf: closeSelf.makeClient,
+			device: makeDeviceCaller,
+			openChildWindow: openChildWindow.makeClient,
+			openViewer: openViewer.makeClient,
+			openWithOSApp: openWithOSApp.makeClient,
+			openWithOSBrowser: openWithOSBrowser.makeClient,
+			apps: makeAppsCaller,
+			logout: makeLogoutCaller,
+			testStand: makeTestStandCaller,
+		});
 	return clientW3N;
 }
 

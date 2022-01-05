@@ -19,6 +19,7 @@
 /// <reference path="./apps.d.ts" />
 /// <reference path="./device.d.ts" />
 /// <reference path="./ui.d.ts" />
+/// <reference path="./test-stand.d.ts" />
 
 declare namespace web3n.ui {
 
@@ -31,17 +32,13 @@ declare namespace web3n.ui {
 	 * One has to ensure that any particular capability is given, before trying
 	 * to use it.
 	 */
-	interface W3N {
+	interface W3N extends caps.common.W3N {
 		device?: device.Service;
-		mail?: asmail.Service;
-		storage?: storage.Service;
-		mailerid?: mailerid.Service;
 		openChildWindow?: OpenChildWindow;
 		// parent?: rpc.RPC;
 		openViewer?: OpenViewer;
 		openWithOSBrowser?: OpenWithOSBrowser;
 		openWithOSApp?: OpenWithOSApp;
-		log?: Logger;
 		closeSelf?: () => void;
 		apps?: web3n.ui.Apps;
 		logout?: Logout;

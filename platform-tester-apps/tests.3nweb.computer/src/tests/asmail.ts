@@ -20,7 +20,6 @@ import { loadSpecs } from './libs-for-tests/spec-module.js';
 import { SetupForASMail } from './asmail/test-utils.js';
 import { areAddressesEqual } from '../lib-common/canonical-address.js';
 import { specs } from './asmail/specs/index.js';
-import { getTestUsersOrdered } from '../test-page-utils.js';
 
 type WritableFS = web3n.files.WritableFS;
 
@@ -31,7 +30,8 @@ describe('ASMail', () => {
 	let appFS: WritableFS;
 
 	beforeAll(async () => {
-		s.users = await getTestUsersOrdered();
+		s.thisUser = await w3n.testStand.idOfTestUser(1);
+		s.secondUser = await w3n.testStand.idOfTestUser(2);
 		appFS = await w3n.storage!.getAppLocalFS();
 		s.testFolder = await appFS.writableSubRoot(testFolderName);
 		s.isUp = true;
@@ -51,7 +51,7 @@ describe('ASMail', () => {
 
 	itCond('gets current user id', async () => {
 		const userId = await w3n.mail!.getUserId();
-		expect(areAddressesEqual(userId, s.users[0])).toBeTrue();
+		expect(areAddressesEqual(userId, s.thisUser)).toBeTrue();
 	}, undefined, s);
 
 	itCond('lists incoming messages in the inbox', async () => {

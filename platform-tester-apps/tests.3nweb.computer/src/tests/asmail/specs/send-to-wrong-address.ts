@@ -32,7 +32,7 @@ const it: SpecIt = {
 };
 it.func = async function(s) {
 	const txtBody = 'Some text\nBlah-blah-blah';
-	const atDomain = s.users[0].substring(s.users[0].lastIndexOf('@'));
+	const atDomain = s.thisUser.substring(s.thisUser.lastIndexOf('@'));
 	const recipient = `unknown user ${atDomain}`;
 
 	const msg: OutgoingMessage = {

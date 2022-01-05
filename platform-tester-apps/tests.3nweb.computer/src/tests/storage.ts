@@ -26,9 +26,9 @@ import { specs as specsFileSink } from './file-sink-checks/index.js';
 type StorageException = web3n.storage.StorageException;
 
 const allowedAppFS = [
-	"apps-menu.3nweb.computer",
-	"sub-app-1.apps-menu.3nweb.computer",
-	"sub-app-2.apps-menu.3nweb.computer"
+	"tests.3nweb.computer",
+	"sub-app-1.tests.3nweb.computer",
+	"sub-app-2.tests.3nweb.computer"
 ].map(d => d.split('.').reverse().join('.'));
 
 describe('3NStorage', () => {
@@ -39,9 +39,9 @@ describe('3NStorage', () => {
 
 	describe('.getAppSyncedFS', () => {
 
-		itCond('will not produce FS for domain (reversed), not associated with app',
+		itCond('will not produce FS for domain, not associated with app',
 				async () => {
-			await w3n.storage!.getAppSyncedFS('com.app.unknown')
+			await w3n.storage!.getAppSyncedFS('unknown.app.com')
 			.then(() => {
 				fail('should not produce FS for an arbitrary app');
 			}, (e: StorageException) => {

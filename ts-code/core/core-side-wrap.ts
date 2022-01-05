@@ -27,6 +27,7 @@ import { exposeLogoutCAP } from "../app-init/logout-cap-ipc";
 import { exposeAppsDownloaderCAP } from "../app-downloader/apps-downloader-cap-ipc";
 import { exposeAppsInstallerCAP } from "../app-installer/apps-installer-cap-ipc";
 import { exposePlatformDownloaderCAP } from "../app-platform/platform-downloader-cap-ipc";
+import { exposeStartupTestStandCAP, exposeTestStandCAP } from "../test-stand/test-stand-cap-ipc";
 
 type StartupW3N = web3n.startup.W3N;
 type W3N = web3n.ui.W3N;
@@ -60,7 +61,12 @@ export class CoreSideConnectors {
 
 	connectStartupW3N(coreW3N: StartupW3N, client: WebContents): void {
 		const coreSide = this.makeCoreSideConnector(client);
-		exposeStartupW3N(coreSide.exposedServices, coreW3N);
+		exposeStartupW3N(
+			coreSide.exposedServices, coreW3N as web3n.testing.StartupW3N,
+			{
+				testStand: exposeStartupTestStandCAP,
+			}
+			);
 	}
 
 	connectW3N(coreW3N: W3N, client: WebContents): void {
@@ -68,16 +74,19 @@ export class CoreSideConnectors {
 		ipcMain.on(IPC_SYNCED_W3N_LIST, (event, path) => {
 			event.returnValue = coreSide.exposedServices.listObj(path);
 		});
-		exposeW3N(coreSide.exposedServices, coreW3N, {
-			closeSelf: closeSelf.expose,
-			device: exposeDeviceCAP,
-			openChildWindow: openChildWindow.expose,
-			openViewer: openViewer.expose,
-			openWithOSApp: openWithOSApp.expose,
-			openWithOSBrowser: openWithOSBrowser.expose,
-			apps: exposeAppsCAP,
-			logout: exposeLogoutCAP
-		});
+		exposeW3N(
+			coreSide.exposedServices, coreW3N as web3n.testing.CommonW3N,
+			{
+				closeSelf: closeSelf.expose,
+				device: exposeDeviceCAP,
+				openChildWindow: openChildWindow.expose,
+				openViewer: openViewer.expose,
+				openWithOSApp: openWithOSApp.expose,
+				openWithOSBrowser: openWithOSBrowser.expose,
+				apps: exposeAppsCAP,
+				logout: exposeLogoutCAP,
+				testStand: exposeTestStandCAP,
+			});
 	}
 
 	private makeCoreSideConnector(client: WebContents): ObjectsConnector {

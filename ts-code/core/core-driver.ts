@@ -18,7 +18,7 @@
 import { Core, CoreConf, FactoryOfFSs, cryptors } from "core-3nweb-client-lib";
 import { makeNetClient } from "../electron/net";
 import { AppManifest, BASE_APP_DOMAIN } from '../app-init/app-settings';
-import { makeDeviceFileOpener } from "../device/device";
+import { makeDeviceFileOpener } from "../device";
 import { AppInstance } from "../app-init/app-instance";
 import { shell } from "electron";
 import { makeChildOpener } from "../app-init/child-app";
@@ -90,11 +90,9 @@ class Driver implements CoreDriver {
 		await this.core.close().catch(logError);
 	}
 
-	start(
-		logCAP = false
-	): { capsForStartup: web3n.startup.W3N; coreInit: Promise<void>; } {
+	start(): { capsForStartup: web3n.startup.W3N; coreInit: Promise<void>; } {
 		if (!this.core) { throw new Error(`Core is already closed`); }
-		const { capsForStartup, coreInit } = this.core.start(logCAP);
+		const { capsForStartup, coreInit } = this.core.start();
 		return {
 			capsForStartup,
 			coreInit: coreInit.then(userId => this.doAfterInit(userId))
