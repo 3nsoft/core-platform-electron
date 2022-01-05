@@ -24,7 +24,7 @@ import { readFileSync, statSync, writeFileSync } from "fs";
 import { errWithCause } from "../lib-common/exceptions/error";
 import { AppCAPsAndSetup, AppSetter, CoreDriver } from "../core/core-driver";
 import { Code } from "../lib-common/exceptions/file";
-import { stringOfB64UrlSafeCharsSync } from "../lib-common/random-node";
+import { stringOfB64CharsSync, stringOfB64UrlSafeCharsSync } from "../lib-common/random-node";
 import { Observer, Subject } from "rxjs";
 
 export interface TestStandConfig {
@@ -434,7 +434,7 @@ function readOrGenerateCreds(
 				typeof idTemplate === 'string',
 				`Test stand user configuration should have string idTemplate in user ${i+1}.`
 			)
-			const userId = idTemplate.replace('%d', `${Date.now()}`);
+			const userId = idTemplate.replace('%d', `${stringOfB64CharsSync(12)}`);
 			assert(
 				!!checkAndTransformAddress(userId),
 				`idTemplate for user ${i+1} in configuration doesn't yield valid address`
@@ -508,7 +508,6 @@ async function startUserDirectly(
 					console.log(`Creation of '${userId}' in progress`);
 					progressIndicated = true;
 				}
-				console.log(`Creating keys for '${userId}': ${p}%`);
 			});
 			const ok = await signUp.addUser(userId, signupToken);
 			assert(ok, `User creation failed.`);

@@ -22,4 +22,8 @@ echo
 
 $platform --data-dir="$data_dir" --allow-multi-instances --devtools --signup-url=$signup_url --test-stand="$tester_dir/test-setup.json"
 
+test_result=$?
+
 rm -rf "$data_dir"
+
+exit $test_result
