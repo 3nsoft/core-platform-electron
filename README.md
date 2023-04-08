@@ -1,3 +1,6 @@
+## Archival note
+
+[PrivacySafe](https://github.com/PrivacySafe/privacysafe-platform-electron) in now a reference implementation of 3NWeb client platform.
 
 
 # Client-side 3NWeb platform
